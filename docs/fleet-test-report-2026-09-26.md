@@ -49,3 +49,32 @@
 - uninstall.sh：新增安全边界——仅 bootout/删除 LAUNCH_DIR 下实际存在的 plist（防 --home 指错误杀其他舰队）；沙箱 --purge 精确移除 9 个 com.localtest.* 并 purge 目录，exit 0。
 - live 舰队复核：com.local.* 9 桥 + lingxi-login 助手未受影响；8787-8795 在线（401=需 key 属正常，qoder/gemini 静态模型表 200）。
 - 打包：~/fleet-kit.tar.gz（1.0M，44 个文件），解包后 diff -r 与源码一致。
+
+## 自动签到 + 一键部署验证（2026-09-26，kit 内）
+
+沙箱命令：
+
+    FLEET_LAUNCH_DIR=/tmp/fleet-deploy-test/LaunchAgents FLEET_LABEL_PREFIX=com.localtest2 \
+    FLEET_LOG_DIR=/tmp/fleet-deploy-test/logs bash deploy.sh --home /tmp/fleet-deploy-test \
+      --port-base 9687 --with-checkin --no-opencodex
+
+- **deploy.sh 全链路跑通到 `done.`**：preflight → install（复用 venv）→ 9 桥 launchd 起 → 逐桥 finish → checkin timer → status.sh 汇总。
+- **8/9 桥 up，finalized 2/8**（qoder、gemini exit 0）；workbuddy / workbuddy-gpt / codely / trae /
+  lingxi / xhx 报 exit 3「login needed」，与「登录表」一致（沙箱没有 auths 目录），非 bug。
+- **catpaw unreachable 不再中断部署**：原版 deploy.sh 任一桥起不来就 exit 1，实测 catpaw 因美团内网
+  不可达（Tunnel 503）把整条流水线掐死。已改为按桥容错——连不上的桥列入 unreachable、其余桥照常
+  收尾，只有「一座都没起来」才 exit 1。本次输出 `bridges up:workbuddy ... gemini` +
+  `[warn] unreachable (offline / needs VPN or login): catpaw`，汇总行 `bridges 8/9 up | finalized 2/8`。
+- **签到 timer 实测**：`com.localtest2.fleet-checkin.plist` 写入沙箱 LaunchAgents 并 load（launchctl list
+  可见），StartCalendarInterval 09:00 + RunAtLoad；RunAtLoad 立即跑了一次真实 xhx 签到（用 live
+  `~/.box-agent` auth，幂等）→ `xhx OK today | points 9207 | 今日已发放过（桌面端启动时已领或非首登）`。
+- **checkin.sh 命令实测**：`status` 输出今日已签 + 余额；`run-now xhx` 幂等跳过（今日已成功）。
+  状态落 `$FLEET_HOME/checkin/state.json`，日志 `$FLEET_HOME/logs/checkin.log`，均按 `--home` 隔离。
+- **status.sh 新增 check-in 段**：deploy 末尾打印 `check-in: xhx OK today | last ... | points 9207 | ...`。
+- **卸载清理**：`uninstall.sh --purge` 精确移除 9 个 com.localtest2.* + fleet-checkin 并 purge 目录，
+  exit 0；live 舰队（com.local.*、8787-8795）未受影响。
+- **CI**：新增 `.github/workflows/ci.yml`，push/PR 触发三段——bash -n 全部 .sh、
+  compileall bridges/tools/opencodex、泄漏扫描（`sk-<32hex>` / `ghp_` / gmail|qq 邮箱 / `/Users/` /
+  PRIVATE KEY）。四步在本机预跑全绿（bash -n fail=0、compileall OK、leak hits=0）。
+- 环境附注：长任务必须放 tmux（`tmux new-session -d`）里跑；裸 `nohup ... & disown` 会随 exec 会话
+  结束被回收，表现为停在 venv / launchd 步骤不动，需轮询日志 + 重跑。

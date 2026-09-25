@@ -1,5 +1,7 @@
 # fleet-kit — 9 桥反代理舰队一键部署包
 
+[![ci](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+
 把一套「Codex → 本地反代理桥 → 各 AI 订阅服务」的舰队打包成可在其他 macOS 电脑
 一键部署的 kit：9 座 OpenAI 兼容本地桥 + opencodex 集成 + 登录/验收/卸载脚本。
 
@@ -75,6 +77,56 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
     FLEET_LAUNCH_DIR=/tmp/f2/LaunchAgents FLEET_LABEL_PREFIX=com.localtest \
     FLEET_LOG_DIR=/tmp/f2/logs bash install.sh --home /tmp/f2 --port-base 9787
 
+## 部署自动化（deploy.sh）
+
+一条命令跑完整条流水线，适合新机首装或整套重装：
+
+    bash deploy.sh                      # 装到 ~/fleet，端口 8787..8795
+
+    bash deploy.sh --home /tmp/fleet-a --port-base 9687 \
+        --with-checkin --no-opencodex --smoke
+
+流程：preflight（Darwin/python3/curl/launchctl + 端口占用）→ 可选 --update（git pull）
+→ install.sh → 轮询 9 个端口（120s 超时）→ bridges/finish.sh 逐桥收尾
+→ setup-providers.sh + 签到 timer → status.sh + 汇总。
+
+| 选项 | 作用 |
+|------|------|
+| `--home DIR` | 安装根目录，默认 ~/fleet |
+| `--port-base N` | 起始端口，默认 8787 |
+| `--with-checkin` | 装每日 09:00 CST 签到 timer |
+| `--no-opencodex` | 跳过 ocx provider 注册 |
+| `--smoke` | 每桥跑一次聊天冒烟（需要已登录） |
+| `--update` | 安装前先 git pull 更新 kit |
+
+退出语义：`0` = 该起的桥都就绪（个别没登录只算 warning）；`1` = preflight 失败或
+**一座桥都没起来**。单座桥连不上（VPN、内网、地域封锁）不会中断部署，只在汇总里
+列为 unreachable，其余桥照常收尾；之后用 `bash ~/fleet/bridges/finish.sh <name>` 补收。
+
+## 自动签到（checkin.sh）
+
+部分上游服务每日登录送积分/额度，过期不补。kit 内置一个 launchd 定时任务，
+每天 09:00（CST）自动跑一遍，幂等：当天已签、或桌面端启动时已领，就直接跳过。
+
+    bash ~/fleet/tools/checkin.sh status          # 今日是否签 + 余额
+    bash ~/fleet/tools/checkin.sh run-now         # 立即跑全部任务
+    bash ~/fleet/tools/checkin.sh run-now xhx     # 只跑指定任务
+    bash ~/fleet/tools/checkin.sh install-timer   # 装每日 timer
+    bash ~/fleet/tools/checkin.sh uninstall-timer # 卸掉 timer
+
+安装时加一个开关即可（等价于装完再跑 install-timer）：
+
+    bash install.sh --with-checkin
+
+状态与日志位置（`--home DIR` 可改根目录，默认 ~/fleet）：
+
+    <home>/checkin/state.json     # 每任务：今日是否成功、余额、上次时间
+    <home>/logs/checkin.log       # timer 运行日志
+
+当前注册的任务只有 `xhx`（商汤小浣熊每日登录积分，凭据 ~/.box-agent/config/auth.json）。
+workbuddy 的签到是 workbuddy2codex 桥内的账号池模块（account_pool.py /
+workbuddy_checkin.py），跟着桥自己的节奏跑，不归 checkin.sh 管。
+
 ## 登录表
 
 | name | 登录方式 | 凭据位置 | 备注 |
@@ -94,9 +146,12 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
 
 ## 随附工具
 
+- deploy.sh：一条命令跑完 preflight → 安装 → 等桥 → 逐桥收尾 → ocx → 签到 timer → 汇总
 - bridges/finish.sh <name> [--home DIR] [--tries N] [--skip-chat]：单桥收尾（重启+验收+同步）
-- tools/status.sh [--home DIR]：9 桥健康表（launchd/监听/模型数/key md5）+ ocx 状态
+- tools/status.sh [--home DIR]：9 桥健康表（launchd/监听/模型数/key md5）+ ocx 状态 + 今日签到
 - tools/fleet_chat_test.py [--port-base N]：全舰队 /v1/models + 聊天测试（只打印 key 的 md5）
+- tools/checkin.sh status|run-now|install-timer|uninstall-timer [--home DIR]：每日积分签到
+- tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
 - opencodex/setup-providers.sh：重新注册 9 个 ocx provider（新机换端口后用）
 - uninstall.sh [--home DIR] [--purge]：卸载 launchd 服务和 plist；--purge 连目录一起删
 
@@ -122,12 +177,13 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
 
     fleet-kit/
       install.sh            一键安装（plist + venv + fleet.env + ocx 注册）
+      deploy.sh             一键部署流水线（install + finish + 签到 timer + 汇总）
       uninstall.sh          卸载
       requirements.txt      Python 依赖
       README.md             本文
       bridges/              9 座桥源码 + finish.sh
       opencodex/            setup-providers.sh（ocx provider 注册）
-      tools/                status.sh / fleet_chat_test.py / fleet_split.py
+      tools/                status.sh / checkin.sh / checkin.py / fleet_chat_test.py / fleet_split.py
       docs/                 各桥 runbook + 全量实测报告
 
 ## 可选：TokenDance

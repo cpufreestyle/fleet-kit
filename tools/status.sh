@@ -109,3 +109,24 @@ if command -v ocx >/dev/null 2>&1; then
 else
   echo "opencodex: not installed (npm install -g @bitkyc08/opencodex)"
 fi
+
+echo
+echo "check-in:"
+CHECKIN_STATE="$FLEET_HOME/checkin/state.json"
+if [ -f "$CHECKIN_STATE" ]; then
+  python3 - "$CHECKIN_STATE" "$(date +%Y-%m-%d)" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+today = sys.argv[2]
+if not state:
+    print("  (no tasks recorded yet)")
+for name in sorted(state):
+    s = state[name]
+    mark = "OK today" if s.get("last_success_date") == today else "not today"
+    print("  %-6s %-10s | last %s | points %s | %s" % (
+        name, mark, s.get("at", "never"), s.get("available_points", "-"),
+        str(s.get("detail", ""))[:60]))
+PY
+else
+  echo "  (no state yet; run: bash $FLEET_HOME/tools/checkin.sh --home $FLEET_HOME status)"
+fi

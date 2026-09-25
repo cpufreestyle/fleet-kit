@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n every shell script
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            printf "== %s\n" "$f"
+            bash -n "$f" || { echo "::error file=$f::bash -n failed"; fail=1; }
+          done < <(find . -name "*.sh" -not -path "./.git/*" -type f | sort)
+          exit $fail
+
+      - name: python syntax check
+        run: python3 -m compileall -q bridges tools opencodex
+
+      - name: secret and PII leak scan
+        run: |
+          hits=0
+          for pattern in "sk-[0-9a-f]{32,}" "ghp_[0-9A-Za-z]{20,}" "[A-Za-z0-9._%+-]+@(gmail|qq)[.]com" "/Users/[A-Za-z0-9._-]+" "BEGIN [A-Z ]*PRIVATE KEY"; do
+            out=$(grep -rEn "$pattern" . --exclude-dir=.git || true)
+            if [ -n "$out" ]; then
+              echo "::error::possible leak matched: $pattern"
+              printf "%s\n" "$out"
+              hits=1
+            fi
+          done
+          exit $hits

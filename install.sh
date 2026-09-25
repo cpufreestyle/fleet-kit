@@ -17,6 +17,7 @@ DRY_RUN=0
 DO_START=1
 WITH_OCX=1
 SKIP_DEPS=0
+WITH_CHECKIN=0
 
 usage() {
   cat <<'USAGE'
@@ -28,6 +29,7 @@ Usage: install.sh [options]
   --port-base N     first bridge port; bridges use N..N+8 (default: 8787)
   --with-opencodex  register bridges with opencodex after install (default)
   --no-opencodex    skip opencodex wiring
+  --with-checkin   install the daily check-in timer (09:00 CST)
   --no-start        write files and plists but do not launch bridges
   --skip-deps       do not create the virtualenv or install Python deps
   --dry-run         print the plan, change nothing
@@ -56,6 +58,7 @@ while [ "$#" -gt 0 ]; do
     --port-base=*) PORT_BASE="${1#*=}" ;;
     --with-opencodex) WITH_OCX=1 ;;
     --no-opencodex) WITH_OCX=0 ;;
+    --with-checkin) WITH_CHECKIN=1 ;;
     --no-start) DO_START=0 ;;
     --skip-deps) SKIP_DEPS=1 ;;
     --dry-run) DRY_RUN=1 ;;
@@ -207,6 +210,7 @@ LAUNCH_DIR=${LAUNCH_DIR}
 LABEL_PREFIX=${LABEL_PREFIX}
 LOG_DIR=${LOG_DIR}
 FLEET_PYTHON=${FLEET_PYTHON}
+CODEX_CHECKIN_HOME=${FLEET_HOME}/checkin
 
 CODEBUDDY2OPENAI_KEY=${CODEBUDDY2OPENAI_KEY}
 QODER2CODEX_KEY=${QODER2CODEX_KEY}
@@ -347,6 +351,16 @@ for row in "${BRIDGES[@]}"; do
     fi
   fi
 done
+
+# ---------- 4b. check-in timer (optional) ----------
+if [ "$WITH_CHECKIN" = "1" ]; then
+  echo "[checkin] installing daily check-in timer"
+  if [ "$DRY_RUN" = "1" ]; then
+    info "[dry-run] tools/checkin.sh install-timer"
+  else
+    bash "${FLEET_HOME}/tools/checkin.sh" --home "${FLEET_HOME}" install-timer
+  fi
+fi
 
 # ---------- 5. opencodex ----------
 if [ "$WITH_OCX" = "1" ]; then

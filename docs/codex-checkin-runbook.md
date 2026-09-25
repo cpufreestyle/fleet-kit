@@ -15,6 +15,26 @@ launchd(com.local.codex-checkin) 每日 09:00 + RunAtLoad
 
 ## 任务清单
 
+## fleet-kit 集成
+
+同一套签到逻辑也打进了 fleet-kit，与本机已有的 `~/codex-checkin` 服务**各自独立、可并存**
+（live 那个 label 是 `com.local.codex-checkin`，kit 这个是 `${LABEL_PREFIX}.fleet-checkin`）：
+
+```
+launchd(${LABEL_PREFIX}.fleet-checkin)  每日 09:00 + RunAtLoad
+   -> $FLEET_HOME/tools/checkin.py --daemon        (解释器 $FLEET_HOME/.venv/bin/python)
+       -> 状态 CODEX_CHECKIN_HOME=$FLEET_HOME/checkin/state.json
+          日志 $FLEET_HOME/logs/checkin.log
+```
+
+- 装机开关：`bash install.sh --with-checkin`（或 `bash deploy.sh --with-checkin` 一次到位）
+- 日常命令：`bash $FLEET_HOME/tools/checkin.sh status|run-now|install-timer|uninstall-timer`
+  - 都支持 `--home DIR` 换根目录；等价于 `tools/checkin.py --status|--run-now|--daemon`
+- 卸载：`bash $FLEET_HOME/uninstall.sh --purge`（SUFFIXES 里含 `fleet-checkin`，timer 一起摘）
+- 上文「使用方法」的 `~/codex-checkin/...` 是 live 服务路径；kit 版对应换成
+  `$FLEET_HOME/tools/checkin.py`、`$FLEET_HOME/checkin/state.json`、
+  `$FLEET_HOME/logs/checkin.log`。幂等、CST 记「今日」、单次轮换落盘三件事完全一致。
+
 ### xhx — 商汤小浣熊 每日登录积分
 - 契约（逆向自官方桌面端 app.asar）：`POST https://xiaohuanxiong.com/api/web/desktop/v1/login/points/grant`
   - 头：`Authorization: Bearer <access_token>`、`X-Client-Platform: desktop-macos`、`X-Client-Version: v1.0.28`
