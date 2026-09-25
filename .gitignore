@@ -1,0 +1,17 @@
+# local install artifacts -- never commit
+fleet.env
+logs/
+LaunchAgents/
+*.plist
+auths*/
+cookies.txt
+*.log
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# os
+.DS_Store
