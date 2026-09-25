@@ -78,3 +78,67 @@
   PRIVATE KEY）。四步在本机预跑全绿（bash -n fail=0、compileall OK、leak hits=0）。
 - 环境附注：长任务必须放 tmux（`tmux new-session -d`）里跑；裸 `nohup ... & disown` 会随 exec 会话
   结束被回收，表现为停在 venv / launchd 步骤不动，需轮询日志 + 重跑。
+
+## 本地状态面板 status_ui（2026-09-26 新增，--with-ui）
+
+动机：9 座桥 + 签到 + ocx 的实况原先要连着敲 status.sh / checkin.sh status / launchctl list /
+lsof 才能拼出来；workbuddy 这类「桥进程还活着但 launchd 已退出」的情况尤其难看明白。
+新增一个零依赖本地页面板，一屏看完，并可直接点按钮签到 / 强制重签 / 重启单座桥。
+
+实现：`tools/status_ui.py`（Python 标准库单文件，约 37.5KB）+ `tools/status_ui.sh`
+（start / stop / install-timer / uninstall-timer）。不动 requirements.txt，不引入任何新依赖。
+
+- 监听 127.0.0.1，端口 PORT_BASE+9（默认 8796），与 9 座桥错开；端口若落在
+  [PORT_BASE, PORT_BASE+9) 区间内拒绝启动（rc=2）。
+- 数据来源：`launchctl print gui/<uid>/<label>` 判 agent 状态与 last exit code；
+  `lsof -nP -iTCP:<port> -sTCP:LISTEN` 判监听 pid；对每桥打 /v1/models 拿模型数与延迟；
+  读 `<home>/checkin/state.json` 拿今日签到与余额；`ocx service status` 拿 ocx 状态。
+- API：`GET /`、`GET /api/status`（summary / bridges / checkin / ocx / actions / config /
+  warnings）、`GET /api/logs/<name>?lines=N`、`POST /api/action/checkin[?force=1]`、
+  `POST /api/action/restart/<name>`。
+- 安全：只回 key 的 md5 前 8 位，不返回明文；日志接口只接受桥名白名单；重启接口对未知名桥
+  返回 unknown bridge。
+
+### 沙箱全链路实测
+
+    FLEET_LAUNCH_DIR=/tmp/fleet-uitest/LaunchAgents FLEET_LABEL_PREFIX=com.localtest3 \
+    FLEET_LOG_DIR=/tmp/fleet-uitest/logs bash install.sh --home /tmp/fleet-uitest \
+      --port-base 9687 --no-opencodex --no-start --skip-deps --with-checkin --with-ui
+
+- 装完 `com.localtest3.fleet-ui` 已在 launchctl list，KeepAlive + RunAtLoad，落在端口 9696。
+- 端点：`GET /` 200 / 10597B、`GET /api/status` 200（summary + 9 桥 + checkin + ocx + config）。
+- 写操作白名单生效：`POST /api/action/restart/__bogus__` 返回 unknown bridge；
+  日志接口的路径穿越被桥名白名单挡掉。
+- 沙箱签到动作 `POST /api/action/checkin` rc=0，输出「xhx 今日已成功，跳过」（真实 points 9207）。
+  注意：checkin.py 的 xhx 凭据来自**全局** `~/.box-agent/config/auth.json`
+  （`BOX_AGENT_CONFIG_DIR` 可覆盖），与舰队隔离无关——沙箱里点签到打的是真实账号，上游
+  「今日已发放过」不重复发放，无害。UI 签到按钮全链路验证通过。
+- 清理：`bash uninstall.sh --home /tmp/fleet-uitest --purge` 移除 11 个 com.localtest3.* 服务
+  （含 fleet-ui、fleet-checkin）并 purge 目录，`launchctl list | grep localtest3` = 0；
+  live 舰队（com.local.*、8787-8795）与 live 面板（8796）未受影响。
+
+### 本轮修掉的 2 个真 bug
+
+1. **launchd plist 没传 `--home`**：`tools/status_ui.sh` 的 plist ProgramArguments 缺少
+   `--home`，实例回落默认 home=~/fleet。沙箱里表现为面板显示 live 数据而非沙箱数据。
+   修复：plist 增加 `--home` + `<string>$FLEET_HOME</string>`。
+2. **`build_config()` 不读 fleet.env**：`tools/status_ui.py` 原先只从 CLI / 进程环境取
+   PORT_BASE / LABEL_PREFIX / LOG_DIR / LAUNCH_DIR（fleet.env 只被解析出 bridge keys），
+   于是 launchd 起的实例拿不到沙箱的 port-base 与 label，页面显示的全是默认值。
+   修复：把 `keys = parse_env_file(env_file)` 移到四值解析之前，四值改为
+   `CLI > 进程 env > keys.get(XXX) > 默认`，PORT_BASE 非整数时打 warning；fleet.env 缺失时
+   降级显示 MISSING 而不是崩。修复后沙箱实测：
+   `labels: com.localtest3.qoder2codex, port: 9689, agent_up 0/9, listening 0`（符合 --no-start）。
+
+### 面板暴露出的真实问题（不是 bug，是需要用户处理的状态）
+
+- workbuddy：launchd `not running`，last exit code 1，但 8787 端口被残留 PID 7488 占用
+  （桥进程其实还活着，launchd 记录的是它自己那次启动失败）。面板把 launchd 状态与端口监听
+  pid 分两列展示，就是为了区分这种情况。恢复命令：
+  `launchctl kickstart -k gui/$(id -u)/com.local.workbuddy2codex`。
+- live 机没有 `~/fleet/fleet.env`（该文件不入库），面板如实显示 fleet.env MISSING 且 6 座桥
+  401，这是 live 实况、符合预期。
+- live 实测（重启加载新代码后）：agent_up 8/9、listening 9、probe_ok 2
+  （qoder 15 models + gemini 4 models，合计 19）、xhx points 9505
+  （last_success 2026-09-25）、ocx PID 4978 running。
+

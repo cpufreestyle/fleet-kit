@@ -53,16 +53,21 @@ Codex 里模型以 `桥名/模型` 出现，例如 `workbuddy/hy4-preview`。
        bash ~/fleet/tools/status.sh
        python3 ~/fleet/tools/fleet_chat_test.py
 
+   如果装了状态面板（--with-ui），顺手打开 http://127.0.0.1:8796/ 看一眼。
+
 在 Codex 中使用：确保 ocx 服务在跑（ocx service），模型选择器里选
 `桥名/模型`（如 `workbuddy/hy4-preview`）。
 
 ## 安装选项
 
     install.sh [--home DIR] [--port-base N] [--with-opencodex|--no-opencodex]
-               [--no-start] [--skip-deps] [--dry-run] [-h]
+               [--no-start] [--skip-deps] [--dry-run]
+               [--with-checkin] [--with-ui] [-h]
 
 - `--home DIR`：安装根目录，默认 ~/fleet
 - `--port-base N`：起始端口，9 座桥依次占用 N .. N+8，默认 8787
+- `--with-checkin`：装每日 09:00 CST 签到 timer（当前只有 xhx 任务）
+- `--with-ui`：装本地状态面板 launchd 常驻服务，端口 N+9（默认 8796）
 - `--no-opencodex`：跳过 ocx provider 注册（之后可手动跑 bash ~/fleet/opencodex/setup-providers.sh）
 - `--no-start`：只写文件和 plist，不启动桥
 - `--skip-deps`：跳过 venv/依赖安装（用系统 python3）
@@ -77,6 +82,9 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
     FLEET_LAUNCH_DIR=/tmp/f2/LaunchAgents FLEET_LABEL_PREFIX=com.localtest \
     FLEET_LOG_DIR=/tmp/f2/logs bash install.sh --home /tmp/f2 --port-base 9787
 
+第二套同样可以加 `--with-checkin --with-ui`：签到 key 落在 /tmp/f2/fleet.env，状态面板
+落 N+9（9787 → 9796），plist 带 `--home /tmp/f2`，读的是第二套的 fleet.env。
+
 ## 部署自动化（deploy.sh）
 
 一条命令跑完整条流水线，适合新机首装或整套重装：
@@ -84,7 +92,7 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
     bash deploy.sh                      # 装到 ~/fleet，端口 8787..8795
 
     bash deploy.sh --home /tmp/fleet-a --port-base 9687 \
-        --with-checkin --no-opencodex --smoke
+        --with-checkin --with-ui --no-opencodex --smoke
 
 流程：preflight（Darwin/python3/curl/launchctl + 端口占用）→ 可选 --update（git pull）
 → install.sh → 轮询 9 个端口（120s 超时）→ bridges/finish.sh 逐桥收尾
@@ -95,6 +103,7 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
 | `--home DIR` | 安装根目录，默认 ~/fleet |
 | `--port-base N` | 起始端口，默认 8787 |
 | `--with-checkin` | 装每日 09:00 CST 签到 timer |
+| `--with-ui` | 装本地状态面板 launchd 常驻服务（端口 N+9） |
 | `--no-opencodex` | 跳过 ocx provider 注册 |
 | `--smoke` | 每桥跑一次聊天冒烟（需要已登录） |
 | `--update` | 安装前先 git pull 更新 kit |
@@ -127,6 +136,29 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
 workbuddy 的签到是 workbuddy2codex 桥内的账号池模块（account_pool.py /
 workbuddy_checkin.py），跟着桥自己的节奏跑，不归 checkin.sh 管。
 
+## 本地状态面板（status_ui）
+
+零依赖的本地网页面板（Python 标准库单文件），用来看舰队整体运行情况：9 座桥的健康、
+模型数、ocx、今日签到、日志尾巴，并且可以直接点按钮做签到 / 强制重签 / 重启单座桥。
+
+    bash tools/status_ui.sh start            # 启动（默认 http://127.0.0.1:8796/）
+    bash tools/status_ui.sh stop
+    bash tools/status_ui.sh install-timer    # launchd 常驻（KeepAlive + RunAtLoad）
+    bash tools/status_ui.sh uninstall-timer
+
+页面内容：每座桥一行，显示 launchd 状态 + 退出码、端口监听 pid、/v1/models 模型数与
+探针延迟、key 的 md5 前 8 位、可用 / 未登录 chips；下面依次是 ocx 状态、今日签到结果
+与余额、各桥日志 tail。提供签到 / 强制重签按钮、单桥重启按钮、10 秒自动刷新。
+
+安装时装上：`bash install.sh --with-ui`（或 `bash deploy.sh --with-ui`）。面板端口是
+PORT_BASE+9，默认 8796，与 9 座桥错开；端口若落在 [PORT_BASE, PORT_BASE+9) 区间内会
+拒绝启动（退出码 2）。配置读取优先级：命令行参数 > 进程环境 > `<home>/fleet.env` > 默认，
+fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而不是崩掉。
+
+安全：只监听 127.0.0.1，不对外暴露；key 一律只显示 md5 前 8 位；日志接口只接受桥名
+白名单，路径穿越会被挡掉。写操作只有 `/api/action/checkin` 与 `/api/action/restart/<name>`，
+桥名不在白名单里直接返回 unknown bridge。
+
 ## 登录表
 
 | name | 登录方式 | 凭据位置 | 备注 |
@@ -151,6 +183,8 @@ workbuddy_checkin.py），跟着桥自己的节奏跑，不归 checkin.sh 管。
 - tools/status.sh [--home DIR]：9 桥健康表（launchd/监听/模型数/key md5）+ ocx 状态 + 今日签到
 - tools/fleet_chat_test.py [--port-base N]：全舰队 /v1/models + 聊天测试（只打印 key 的 md5）
 - tools/checkin.sh status|run-now|install-timer|uninstall-timer [--home DIR]：每日积分签到
+- tools/status_ui.sh start|stop|install-timer|uninstall-timer [--home DIR]：状态面板（默认 127.0.0.1:8796）
+- tools/status_ui.py [--port N] [--no-browser] [--once]：面板实现（stdlib 单文件；/api/status、/api/logs/<name>、/api/action/*）
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
 - opencodex/setup-providers.sh：重新注册 9 个 ocx provider（新机换端口后用）
 - uninstall.sh [--home DIR] [--purge]：卸载 launchd 服务和 plist；--purge 连目录一起删
@@ -172,6 +206,7 @@ workbuddy_checkin.py），跟着桥自己的节奏跑，不归 checkin.sh 管。
 - 8 个本地 key 只写在 <home>/fleet.env（权限 600），仅本机使用，不要提交 git 或外发
 - 所有桥只监听 127.0.0.1；gemini/catpaw 两桥不校验本地 key（Authorization 只用于上游 Google/美团）
 - 测试脚本只打印 key 的 md5，不打印明文
+- 状态面板只监听 127.0.0.1；key 只显示 md5 前 8 位；日志接口走桥名白名单
 
 ## 目录结构
 
@@ -183,7 +218,7 @@ workbuddy_checkin.py），跟着桥自己的节奏跑，不归 checkin.sh 管。
       README.md             本文
       bridges/              9 座桥源码 + finish.sh
       opencodex/            setup-providers.sh（ocx provider 注册）
-      tools/                status.sh / checkin.sh / checkin.py / fleet_chat_test.py / fleet_split.py
+      tools/                status.sh / status_ui.sh / status_ui.py / checkin.sh / checkin.py / fleet_chat_test.py / fleet_split.py
       docs/                 各桥 runbook + 全量实测报告
 
 ## 可选：TokenDance

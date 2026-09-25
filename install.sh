@@ -18,6 +18,7 @@ DO_START=1
 WITH_OCX=1
 SKIP_DEPS=0
 WITH_CHECKIN=0
+WITH_UI=0
 
 usage() {
   cat <<'USAGE'
@@ -30,6 +31,7 @@ Usage: install.sh [options]
   --with-opencodex  register bridges with opencodex after install (default)
   --no-opencodex    skip opencodex wiring
   --with-checkin   install the daily check-in timer (09:00 CST)
+  --with-ui        install the local status panel (port PORT_BASE+9)
   --no-start        write files and plists but do not launch bridges
   --skip-deps       do not create the virtualenv or install Python deps
   --dry-run         print the plan, change nothing
@@ -59,6 +61,7 @@ while [ "$#" -gt 0 ]; do
     --with-opencodex) WITH_OCX=1 ;;
     --no-opencodex) WITH_OCX=0 ;;
     --with-checkin) WITH_CHECKIN=1 ;;
+    --with-ui) WITH_UI=1 ;;
     --no-start) DO_START=0 ;;
     --skip-deps) SKIP_DEPS=1 ;;
     --dry-run) DRY_RUN=1 ;;
@@ -362,6 +365,16 @@ if [ "$WITH_CHECKIN" = "1" ]; then
   fi
 fi
 
+# ---------- 4c. status panel (optional) ----------
+if [ "$WITH_UI" = "1" ]; then
+  echo "[ui] installing local status panel (port $((PORT_BASE + 9)))"
+  if [ "$DRY_RUN" = "1" ]; then
+    info "[dry-run] tools/status_ui.sh install-timer"
+  else
+    bash "${FLEET_HOME}/tools/status_ui.sh" --home "${FLEET_HOME}" install-timer
+  fi
+fi
+
 # ---------- 5. opencodex ----------
 if [ "$WITH_OCX" = "1" ]; then
   echo "[5/5] opencodex wiring"
@@ -398,7 +411,8 @@ Next steps
   1. Log in to each service you want (README.md, "logins" table).
   2. After each login:  bash ${FLEET_HOME}/bridges/finish.sh <name>
   3. Health check:      bash ${FLEET_HOME}/tools/status.sh
-  4. Full chat test:    python3 ${FLEET_HOME}/tools/fleet_chat_test.py
+  4. Status panel:      http://127.0.0.1:$((PORT_BASE + 9))/  (only with --with-ui)
+  5. Full chat test:    python3 ${FLEET_HOME}/tools/fleet_chat_test.py
 
 Codex usage: opencodex proxies the bridges at http://127.0.0.1:10100/v1.
 Models appear as <bridge>/<model>, e.g. workbuddy/hy4-preview.

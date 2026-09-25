@@ -33,7 +33,7 @@ fi
 LAUNCH_DIR="${LAUNCH_DIR:-${HOME}/Library/LaunchAgents}"
 LABEL_PREFIX="${LABEL_PREFIX:-com.local}"
 
-SUFFIXES="workbuddy2codex workbuddy2codex-gpt qoder2codex codely2codex trae2codex lingxi2codex xhx2codex gemini2codex catpaw2codex fleet-checkin"
+SUFFIXES="workbuddy2codex workbuddy2codex-gpt qoder2codex codely2codex trae2codex lingxi2codex xhx2codex gemini2codex catpaw2codex fleet-checkin fleet-ui"
 
 for suffix in $SUFFIXES; do
   label="${LABEL_PREFIX}.${suffix}"

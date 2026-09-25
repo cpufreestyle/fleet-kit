@@ -5,7 +5,7 @@
 # (finish.sh) -> opencodex providers -> optional check-in timer -> report.
 # Missing logins are reported, not fatal. Safe to re-run.
 #
-# Usage: deploy.sh [--home DIR] [--port-base N] [--with-checkin]
+# Usage: deploy.sh [--home DIR] [--port-base N] [--with-checkin] [--with-ui]
 #                  [--no-opencodex] [--smoke] [--update] [-h|--help]
 set -euo pipefail
 
@@ -14,6 +14,7 @@ FLEET_HOME=""
 PORT_BASE=""
 WITH_OCX=1
 WITH_CHECKIN=0
+WITH_UI=0
 SMOKE=0
 UPDATE=0
 BRIDGES="workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw"
@@ -27,6 +28,7 @@ Usage: deploy.sh [options]
   --home DIR        install root (default: ~/fleet)
   --port-base N     first bridge port; bridges use N..N+8 (default: 8787)
   --with-checkin    install the daily check-in timer (09:00 CST)
+  --with-ui         install the local status panel (port PORT_BASE+9)
   --no-opencodex    skip opencodex provider wiring
   --smoke           run a chat smoke test per bridge (needs logins)
   --update          git pull the kit first (when run from a clone)
@@ -49,6 +51,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --port-base=*) PORT_BASE="$(echo "$1" | cut -d= -f2-)" ;;
     --with-checkin) WITH_CHECKIN=1 ;;
+    --with-ui) WITH_UI=1 ;;
     --no-opencodex) WITH_OCX=0 ;;
     --smoke) SMOKE=1 ;;
     --update) UPDATE=1 ;;
@@ -206,6 +209,9 @@ fi
 if [ "$WITH_CHECKIN" = "1" ]; then
   bash "$FLEET_HOME/tools/checkin.sh" --home "$FLEET_HOME" install-timer
 fi
+if [ "$WITH_UI" = "1" ]; then
+  bash "$FLEET_HOME/tools/status_ui.sh" --home "$FLEET_HOME" install-timer
+fi
 
 bash "$FLEET_HOME/tools/status.sh" --home "$FLEET_HOME" || true
 echo
@@ -219,5 +225,8 @@ done
 echo "deploy summary: bridges $up_count/9 up | finalized $ok/$up_count | login needed:${failed:- none}"
 if [ -n "$failed" ]; then
   echo "next: log in per README, then bash $FLEET_HOME/bridges/finish.sh <name>"
+fi
+if [ "$WITH_UI" = "1" ]; then
+  echo "status panel: http://127.0.0.1:$((PORT_BASE + 9))/  (bash $FLEET_HOME/tools/status_ui.sh status)"
 fi
 echo "done."
