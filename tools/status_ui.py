@@ -62,6 +62,7 @@ BRIDGES = (
     ("gemini", "gemini2codex", 7, "GEMINI2CODEX_KEY"),
     ("catpaw", "catpaw2codex", 8, "CATPAW2CODEX_KEY"),
     ("antigravity", "antigravity2codex", 10, "ANTIGRAVITY2CODEX_KEY"),
+    ("qwen", "qwen2codex", 11, "QWEN2CODEX_KEY"),
 )
 BRIDGE_BY_NAME = dict((item[0], item) for item in BRIDGES)
 
@@ -1006,12 +1007,12 @@ function renderFree(){
   var hh=document.getElementById('free-hidden');
   if(hh){hh.textContent=hiddenN?('已隐藏 '+hiddenN+' 个不可用模型 '+hk):'';}
   meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+cnt.join(' · ')+' · 显示 '+list.length+'/'+all.length;
-  rows.innerHTML=list.map(function(m){
+  rows.innerHTML=list.length?list.map(function(m){
     return '<tr><td>'+esc(m.picker_name||m.picker_slug||m.model)+'</td>'+
       '<td>'+pill(freeKind(m.free),m.badge)+'</td>'+
       '<td class="dim">'+esc(m.window)+'</td>'+
       '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('')
-    : '<tr><td colspan="4" class="dim">当前无可用模型'+(hiding?'（可取消勾选"隐藏不可用"）':'')+'</td></tr>';
+    : '<tr><td colspan="4" class="dim">当前无可用模型'+(hiding?'（可取消勾选「隐藏不可用」）':'')+'</td></tr>';
   document.getElementById('free-gaps').textContent=(f.gaps||[]).map(function(g){
     return '['+g.provider+'] '+g.reason;}).join('   |   ');
 }

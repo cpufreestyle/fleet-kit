@@ -1,4 +1,4 @@
-# FleetKit — 10 桥反代理舰队一键部署包
+# FleetKit — 11 桥反代理舰队一键部署包
 
 [![ci](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
 
@@ -14,7 +14,7 @@
     Codex ──▶ opencodex 代理 (127.0.0.1:10100)
                  │  [model_providers.*] allow-private-network
                  ▼
-           10 座本地桥 (127.0.0.1:8787 .. 8797)
+           11 座本地桥 (127.0.0.1:8787 .. 8798)
                  ▼
            WorkBuddy 国内版 / 海外版 / Qoder / 团结AI / Trae / 灵犀 / 小浣熊 / Gemini / CatPaw / TokenDance
 
@@ -30,24 +30,25 @@
 | gemini           | 8794    | Google Gemini       | gemini-3-pro-preview 等   |
 | catpaw           | 8795    | CatPawAI (美团)     | glm-5.2 等                |
 | antigravity      | 8797    | Google Antigravity  | claude-opus-4-8 / gemini-3.1-pro-preview 等 |
+| qwen             | 8798    | 阿里 Qwen Cloud     | qwen3.8-flash / qwen3.8-max 等          |
 
 Codex 里模型以 `桥名/模型` 出现，例如 `workbuddy/hy4-preview`。
 
 ## 项目命名与目录
 
-项目名 **FleetKit**（十桥反代理舰队）。本机所有相关文件都收在 `/Users/a1-6/AI Shared/repo/FleetKit/` 一个目录里，
+项目名 **FleetKit**（十一桥反代理舰队）。本机所有相关文件都收在 `/Users/a1-6/AI Shared/repo/FleetKit/` 一个目录里，
 git 源码与运行目录分离：
 
     /Users/a1-6/AI Shared/repo/FleetKit/kit/       git 仓库（本文档所在）：改代码、git pull 都在这里
-    /Users/a1-6/AI Shared/repo/FleetKit/runtime/   运行根（FLEET_HOME）：10 座桥、fleet.env、logs、checkin
+    /Users/a1-6/AI Shared/repo/FleetKit/runtime/   运行根（FLEET_HOME）：11 座桥、fleet.env、logs、checkin
 
-launchd 侧共 14 个服务（10 座桥 + lingxi 登录助手 + workbuddy 主桥 + 签到 timer +
+launchd 侧共 15 个服务（11 座桥 + lingxi 登录助手 + workbuddy 主桥 + 签到 timer +
 qoder 登录 + ocx catalog 看门狗）全部指向 `/Users/a1-6/AI Shared/repo/FleetKit/runtime/`，日志统一落在
 `/Users/a1-6/AI Shared/repo/FleetKit/runtime/logs/`。换机器或起第二套时用 `install.sh --home <目录>` 指定别的运行根。
 
 日常命令：
 
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/status.sh"            # 10 座桥健康表 + ocx 状态
+    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/status.sh"            # 11 座桥健康表 + ocx 状态
     bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/checkin.sh" status    # 签到状态
     bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/bridges/finish.sh" <name>   # 某座桥登录后收尾
     bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/uninstall.sh"               # 卸载
@@ -125,7 +126,7 @@ FleetKit 设计为可整体搬走：`kit/`（源码）与 `runtime/`（运行根
                [--with-checkin] [--with-ui] [--no-ocx-guard] [-h]
 
 - `--home DIR`：安装根目录，默认 "/Users/a1-6/AI Shared/repo/FleetKit/runtime"
-- `--port-base N`：起始端口，9 座桥依次占用 N .. N+8，默认 8787
+- `--port-base N`：起始端口，11 座桥依次占用 N .. N+11，默认 8787
 - `--with-checkin`：装每日 09:00 CST 签到 timer（当前只有 xhx 任务）
 - `--with-ui`：装本地状态面板 launchd 常驻服务，端口 N+9（默认 8796）
 - `--no-ocx-guard`：关掉反代理模型 catalog 看门狗（默认随 opencodex 一起装）
@@ -150,7 +151,7 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
 
 一条命令跑完整条流水线，适合新机首装或整套重装：
 
-    bash deploy.sh                      # 装到 "/Users/a1-6/AI Shared/repo/FleetKit/runtime，端口" 8787..8795
+    bash deploy.sh                      # 装到 "/Users/a1-6/AI Shared/repo/FleetKit/runtime，端口" 8787..8798
 
     bash deploy.sh --home /tmp/fleet-a --port-base 9687 \
         --with-checkin --with-ui --no-opencodex --smoke
@@ -200,7 +201,7 @@ workbuddy_checkin.py），跟着桥自己的节奏跑，不归 checkin.sh 管。
 
 ## 本地状态面板（status_ui）
 
-零依赖的本地网页面板（Python 标准库单文件），用来看舰队整体运行情况：9 座桥的健康、
+零依赖的本地网页面板（Python 标准库单文件），用来看舰队整体运行情况：11 座桥的健康、
 模型数、ocx、今日签到、日志尾巴、每座桥的真实调用判定，并且可以直接点按钮做签到 / 强制重签 /
 重启单座桥 / 发起真实调用核验。
 
@@ -218,7 +219,7 @@ verify_real_calls.py 的最近一次快照）；下面依次是 ocx 状态、今
 与余额、各桥日志 tail。提供签到 / 强制重签按钮、单桥重启按钮、10 秒自动刷新。
 
 安装时装上：`bash install.sh --with-ui`（或 `bash deploy.sh --with-ui`）。面板端口是
-PORT_BASE+9，默认 8796，与 10 座桥错开；端口若等于某个“实际桥端口”(PORT_BASE+offset) 会
+PORT_BASE+9，默认 8796，与 11 座桥错开；端口若等于某个“实际桥端口”(PORT_BASE+offset) 会
 拒绝启动（退出码 2）。配置读取优先级：命令行参数 > 进程环境 > `<home>/fleet.env` > 默认，
 fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而不是崩掉。
 
@@ -259,6 +260,7 @@ provider 默认隐藏，并在 meta 行标注「已隐藏 N 个不可用模型 p
 | Gemini（Code Assist） | 订阅内含 | 免费档月度限额 + 本机 Google AI Pro 会员；当前桥 502 需重新登录 |
 | CatPaw（美团） | 未明示 | 官网/App 未公示价格；provider 已注册（10 个模型在选择器），聊天需连美团内网/VPN |
 | Antigravity | 登录免费带速率限制 | Google 账号登录即用；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口（12 个模型由 App 二进制提取） |
+| Qwen Cloud（阿里国际站） | 免费额度 | 注册即赠 70M+ tokens（官网定价页标注）；「Qwen4 架构预览」= HF Qwen3.8-Flash-Next（开放权重、无邀请码），生产托管版 qwen3.8-flash 同架构、1M 上下文、官网明示支持 Codex |
 
 ### 选择器短名（short_aliases）
 
@@ -329,6 +331,18 @@ docs/stepfun2codex-runbook.md。
   命名是文档记载，尚未实测，桥内已做「带后缀↔裸名」与「ANTIGRAVITY→GEMINI_CLI ide 元数据」
   两级回退。**注意**：本机网络到 `cloudcode-pa.googleapis.com` 不通（系统 DNS 给 fake-IP），
   真实聊天需代理/VPN 恢复后才能验证；`verify_real_calls.py` 里该桥基线因此与 gemini 同样预期待挂。
+- **qwen**（2026-09-26 新增，第十一桥）：8798，上游阿里 Qwen Cloud 托管 API
+  `https://maas.qwencloudapi.com/compatible-mode/v1`（OpenAI 兼容 + Anthropic Messages
+  双协议），Bearer key 透传 + SSE 流式。**「Qwen4 邀请码」不存在**：chat.qwen.ai 公开只有
+  qwen3.7-plus / qwen3.8-max / qwen3.8-omni-flash 三个模型，qwencloud.com Marketplace
+  在售 9 个模型（Qwen3.8-Max、Qwen3.8-Flash、Qwen-Image-3.0-Pro、Wan3.0-Video、GLM-5.3、
+  DeepSeek-V4-Flash、Kimi K3、TTS、ASR），均无 qwen4/preview/waitlist 入口。「Qwen4
+  架构预览」对应 HF `Qwen/Qwen3.8-Flash-Next`（架构名 Qwen4ExpForConditionalGeneration，
+  gated: false 开放权重；NVFP4 版约 124GB，无 DGX Spark 跑不动），**生产可用版是托管
+  `qwen3.8-flash`**（同为 Qwen4 架构、1M 上下文[输入 991K / 输出 131K]、OpenAI+Anthropic
+  双协议、官网明示支持 Codex）。无 key 时桥返回静态兜底目录（qwen3.8-flash /
+  qwen3.8-max）；到 qwencloud.com 注册拿 key 写入 `fleet.env` 的 `QWEN2CODEX_KEY` 后
+  `bash bridges/finish.sh qwen` 透传上游全量目录。细节见 docs/qwen2codex-runbook.md。
 - **qoder**（2026-09-26 修复）：桥（8789）一直有 15 个模型，但从未注册进 ocx
   （live = 0）。已执行 `ocx provider add qoder --adapter openai-chat --base-url
   http://127.0.0.1:8789/v1 --api-key <plist 里的 QODER2CODEX_KEY> --allow-private-network`，14 个模型进入 catalog；已 `ocx service restart` 让代理加载，qoder 聊天经代理实测 OK。`opencodex/setup-providers.sh` 本就包含 qoder（本机当初漏注册），已加 plist key 回退。
@@ -354,7 +368,7 @@ kit 因此带一个看门狗，数 catalog 里带 `/` 的桥模型，少于阈�
 
 默认装 launchd 常驻（`StartInterval` 300s + `RunAtLoad`），随 opencodex 接线一起启用，
 `--no-ocx-guard` 可关掉。日志：`~/Library/Logs/ocx-catalog-guard.log`。
-阈值 `--min-models` 默认 60（10 桥齐全约 72，个别桥掉线不会误触发）。
+阈值 `--min-models` 默认 60（11 桥齐全 70+，个别桥掉线不会误触发）。
 
 注意：磁盘上的 catalog 修好之后，**已经在跑的 app 仍显示旧列表**，需要重启一次
 Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中的会话）。
@@ -375,7 +389,8 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 （过小的 spark 模型）也归入噪声，选择器 154 → 149；`--no-hide-junk` 可整体关掉这层清理。
 
 规则：
-- 只删「有桥且非 REAL」的斜杠模型；tokendance / stepfun / 原生模型永不动。
+- 只删「有桥且非 REAL」的斜杠模型；tokendance / stepfun 永不动。
+- 无斜杠前缀的「原生模型」没有桥可判定，默认保留；只有 --hide-native-when-pool-down 显式探测确认账号池不可用时才隐藏（见下）。
 - 垃圾行清理先于桥判定执行（只看 slug），面板挂了也照删；`--no-hide-junk` 关闭。
 - 权威源是 `http://127.0.0.1:8796/api/status` 的 `verify.real`（不是 `bridges[].probe.ok`）。
 - 写前做 byte 级 round-trip 校验，不符即拒绝落库（exit 5）；面板不可达（3）或 real 为空（4）一概不删，防止误清空。
@@ -383,6 +398,23 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 - `--keep P[,P]` 临时保留某 provider；`--only P[,P]` 只处理指定 provider。
 
 用 `catalog-filter.sh install-timer` 装 launchd 常驻（`com.local.catalog-filter`，`StartInterval` 300s + `RunAtLoad`），日志：`~/Library/Logs/catalog-filter.log`。
+
+### 原生模型（无前缀行）与账号池
+
+选择器里没有 `vendor/` 前缀的行（gpt-5.5 / gpt-5.6-* / gpt-6-* / step-3.7-flash）不是反代理模型，而是走 ocx 内置 openai provider 的 Codex 账号池模型（`codexAccountMode: pool`）。它们没有桥，所以 `verify.real` 永远覆盖不到，`catalog_filter` 默认也不动它们。
+
+账号池空了（未登录 ChatGPT、或 `~/.codex/auth.json` 里的 key 失效）时，这些行是选择器里最坏的一种失败：**看得见、选得动，一提交就 401**。`OpenAI account pool has no usable account credential` 就是这么来的。
+
+`--hide-native-when-pool-down` 用一次最小请求（`gpt-5.5` + 16 token）探测 `http://127.0.0.1:10100/v1/responses`：只有明确读到「池无可用凭据」的 401 才判定不可用；其余任何结果（成功、其它 4xx/5xx、代理不可达）都按「可用」处理，探测失败不会误清空选择器。探测为不可用时隐藏这些行，池恢复后下个周期自动加回。
+
+    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/catalog-filter.sh" run --hide-native-when-pool-down --dry-run
+
+`install-timer` 生成的 plist 默认已带 `--hide-native-when-pool-down`。2026-09-26 实测：池为空 → 8 个原生行隐藏，选择器 149 → 141，其余 141 个反代理模型不受影响。
+
+想让原生模型真正可用，只能在 Codex 里重新登录 ChatGPT 账号（账号池属用户侧凭据，脚本不代办）：
+
+    ocx account list openai   # 看账号池里到底还有没有账号
+
 
 与 `ocx-catalog-guard` 互补：guard 在桥模型数 < 60 时 `ocx sync` 加回，filter 再剔除非 REAL。当前 REAL 桥：workbuddy、workbuddy-gpt、qoder、codely、trae、lingxi、xhx；连同 tokendance/stepfun 与原生行，清理后选择器 149 行，远高于 guard 阈值，两者不互踩。
 
@@ -402,6 +434,7 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 | gemini | gemini login，或 python3 "/Users/a1-6/AI Shared/repo/FleetKit/runtime/bridges/gemini/extract_cookies.py" 导出 cookie | ~/.gemini/jetski-standalone-oauth-token 或 ~/.gemini2codex/cookies.txt | 账号需通过 Google 验证（见已知问题） |
 | catpaw | CatPawAI 桌面 App 登录 | ~/Library/Application Support/CatPawAI/User/globalStorage/state.vscdb | 需美团内网/VPN（见已知问题） |
 | antigravity | Antigravity 桌面 App 登录（或 gemini login） | ~/.gemini/jetski-standalone-oauth-token | 与 gemini 共用 token；需能连 cloudcode-pa.googleapis.com |
+| qwen | qwencloud.com 控制台创建 API key，写入 `fleet.env` 的 `QWEN2CODEX_KEY` | `fleet.env`（无本地登录态） | 上游 maas.qwencloudapi.com；key 丢失可在控制台重建 |
 
 每个服务登录后运行对应的 bridges/finish.sh <name>：重启桥 → 等待 /v1/models →
 列出模型 → 注入 Codex 模型目录 → ocx sync → 冒烟聊天一次。
@@ -451,7 +484,7 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 
 - deploy.sh：一条命令跑完 preflight → 安装 → 等桥 → 逐桥收尾 → ocx → 签到 timer → 汇总
 - bridges/finish.sh <name> [--home DIR] [--tries N] [--skip-chat]：单桥收尾（重启+验收+同步）
-- tools/status.sh [--home DIR]：10 桥健康表（launchd/监听/模型数/key md5）+ ocx 状态 + 今日签到
+- tools/status.sh [--home DIR]：11 桥健康表（launchd/监听/模型数/key md5）+ ocx 状态 + 今日签到
 - tools/fleet_chat_test.py [--port-base N]：全舰队 /v1/models + 聊天测试（只打印 key 的 md5）
 - tools/verify_real_calls.py [--port-base N] [--only NAME] [--json]：真实调用核验（抗伪造运算题 + usage 佐证）
 - tools/checkin.sh status|run-now|install-timer|uninstall-timer [--home DIR]：每日积分签到
@@ -462,7 +495,7 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 - tools/free_models.py [--free-only] [--provider P] [--missing] [--json] [--check-sources]：免费模型标注（数据在仓库根 free-windows.json，状态面板同源）
 - tools/short_aliases.py [--dry-run]：选择器短名（ocx 别名，路由不受影响）
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
-- opencodex/setup-providers.sh：重新注册 10 桥
+- opencodex/setup-providers.sh：重新注册 11 桥
 - uninstall.sh [--home DIR] [--purge]：卸载 launchd 服务和 plist；--purge 连目录一起删
 
 ## 已知问题（2026-09-26 实测，均为用户侧/外部条件）
@@ -494,7 +527,12 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 6. trae：桥 8791 上游曾挂（先 401 鉴权失效，后 502「param invalid」），已不是
   默认路线。经 CC Switch 对外表现为
   `503 所有供应商已熔断，无可用渠道`——看到这个报错先确认默认模型是不是又
-  指回了死掉的桥；现默认为 stepfun 官方直连，实测 200。
+ 指回了死掉的桥；现默认为 stepfun 官方直连，实测 200。
+7. **qwen**（第十一桥）：代码/catalog/ocx 注册全部就绪，8798 桥在跑；无 key 时
+   `/v1/models` 只有静态兜底两个模型（qwen3.8-flash / qwen3.8-max），
+   `verify_real_calls.py` 判非 REAL，catalog_filter 随之隐藏——属设计行为，不会污染
+   选择器。到 qwencloud.com 注册并创建 API key 写入 `runtime/fleet.env` 的
+   `QWEN2CODEX_KEY`，然后 `bash bridges/finish.sh qwen` 即透传上游全量目录。
 
 2026-09-26 fleet_chat_test 实测（10 桥）：5 桥 PASS（workbuddy、workbuddy-gpt、
 qoder、trae、xhx）；5 项失败——codely 400 onboarding 门禁、lingxi 401 session
@@ -506,7 +544,7 @@ Plan API 后不受影响。
 
 ## 安全说明
 
-- 11 个本地 key 只写在 <home>/fleet.env（权限 600，9 座桥 + tokundance + stepfun），仅本机使用，不要提交 git 或外发
+- 12 个本地 key 只写在 <home>/fleet.env（权限 600，10 座桥 + tokundance + stepfun），仅本机使用，不要提交 git 或外发
 - 所有桥只监听 127.0.0.1；gemini/catpaw/antigravity 三桥不校验本地 key（Authorization 只用于上游 Google/美团）
 - 测试脚本只打印 key 的 md5，不打印明文
 - 状态面板只监听 127.0.0.1；key 只显示 md5 前 8 位；日志接口走桥名白名单
@@ -520,14 +558,14 @@ Plan API 后不受影响。
         uninstall.sh          卸载
         requirements.txt      Python 依赖
         README.md             本文
-        bridges/              9 座桥源码 + finish.sh
+        bridges/              11 座桥源码 + finish.sh
         opencodex/            setup-providers.sh（ocx provider 注册）
         free-windows.json     免费模型标注数据（官网信息 + 时段，改这里不改代码）
         tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / verify_real_calls.py / fleet_split.py / free_models.py / short_aliases.py / catalog_filter.py / catalog-filter.sh
         docs/                 各桥 runbook + stepfun/tokundance 官方 API runbook + 全量实测报告
       runtime/                运行根（install.sh --home 的默认值）
         fleet.env             桥 API key + FLEET_HOME/PORT_BASE（600，不入库）
-        bridges/<name>/       9 座桥运行副本（登录态、state.json 都在这里）
+        bridges/<name>/       11 座桥运行副本（登录态、state.json 都在这里）
         tools/ docs/ opencodex/   从 kit/ 复制来的运行副本
         checkin/              每日签到 timer 的状态目录
         logs/                 13 个 launchd 服务的日志

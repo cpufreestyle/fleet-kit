@@ -76,6 +76,7 @@ PROVIDERS=(
   "gemini|7|GEMINI2CODEX_KEY"
   "catpaw|8|CATPAW2CODEX_KEY"
   "antigravity|10|ANTIGRAVITY2CODEX_KEY"
+  "qwen|11|QWEN2CODEX_KEY"
 )
 
 echo "opencodex provider setup (port base ${PORT_BASE})"
@@ -96,7 +97,16 @@ for row in "${PROVIDERS[@]}"; do
       if [ -n "$got" ]; then key="$got"; break; fi
     done
   fi
-  [ -z "$key" ] && key="local"   # bridges that do not enforce a key tolerate this
+  # "local" only works for bridges that do not enforce a key. A bridge that does
+  # (qwen) would come back as 401 on every request, so it stays unregistered until
+  # its real key is in fleet.env; tools/catalog_filter.py hides its picker rows.
+  if [ -z "$key" ]; then
+    if grep -qs "BRIDGE_KEY = os.environ" "${FLEET_HOME:-.}/bridges/${name}/${name}_bridge.py" 2>/dev/null; then
+      echo "  (skipping ${name}: ${keyenv} is not set anywhere)" >&2
+      continue
+    fi
+    key="local"
+  fi
   run ocx provider add "$name" --adapter openai-chat --base-url "http://127.0.0.1:${port}/v1" --api-key "$key" --allow-private-network --force
   run ocx models provider "$name" on
 done

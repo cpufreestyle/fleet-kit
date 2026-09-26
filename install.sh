@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # FleetKit installer
 #
-# Deploys ten local reverse-proxy bridges as macOS launchd agents and
+# Deploys eleven local reverse-proxy bridges as macOS launchd agents and
 # optionally registers them with opencodex so Codex can call them.
 #
 # Bridges (default ports): workbuddy 8787, workbuddy-gpt 8788, qoder 8789,
 # codely 8790, trae 8791, lingxi 8792, xhx 8793, gemini 8794, catpaw 8795,
+# qwen 8798 (Qwen Cloud 海外托管; qwen3.8-flash = Qwen4 架构生产版),
 # antigravity 8797 (Cloudflare-style gap: 8796 is the status panel).
 set -euo pipefail
 
-KIT_VERSION="1.1.0"
+KIT_VERSION="1.2.0"
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 FLEET_HOME="${HOME}/FleetKit/runtime"
@@ -107,12 +108,13 @@ BRIDGES=(
   "gemini|gemini2codex|gemini|gemini_bridge.py|7|GEMINI2CODEX_KEY||GEMINI2CODEX_PORT=@PORT@"
   "catpaw|catpaw2codex|catpaw|catpaw_bridge.py|8|CATPAW2CODEX_KEY||CATPAW_PORT=@PORT@"
   "antigravity|antigravity2codex|antigravity|antigravity_bridge.py|10|ANTIGRAVITY2CODEX_KEY||ANTIGRAVITY2CODEX_PORT=@PORT@"
+  "qwen|qwen2codex|qwen|qwen_bridge.py|11|QWEN2CODEX_KEY|--host 127.0.0.1 --port @PORT@|QWEN_CALL_TIMEOUT=300"
 )
 
 echo "FleetKit installer v${KIT_VERSION}"
 info "kit        : ${KIT_DIR}"
 info "fleet home : ${FLEET_HOME}"
-info "ports      : ${PORT_BASE} .. $((PORT_BASE + 10))"
+info "ports      : ${PORT_BASE} .. $((PORT_BASE + 11))"
 info "launch dir : ${LAUNCH_DIR}"
 info "log dir    : ${LOG_DIR}"
 if [ "$DRY_RUN" = "1" ]; then info "mode       : DRY RUN (nothing is written)"; fi
@@ -266,6 +268,7 @@ XHX2CODEX_KEY="$(pick_key XHX2CODEX_KEY)"
 GEMINI2CODEX_KEY="$(pick_key GEMINI2CODEX_KEY)"
 CATPAW2CODEX_KEY="$(pick_key CATPAW2CODEX_KEY)"
 ANTIGRAVITY2CODEX_KEY="$(pick_key ANTIGRAVITY2CODEX_KEY)"
+QWEN2CODEX_KEY="$(pick_key QWEN2CODEX_KEY)"
 
 # Antigravity google oauth client pair is never committed to git (push protection
 # rejects it) and every install ships it in its own binary, so read it from there.
@@ -326,6 +329,7 @@ XHX2CODEX_KEY="${XHX2CODEX_KEY}"
 GEMINI2CODEX_KEY="${GEMINI2CODEX_KEY}"
 CATPAW2CODEX_KEY="${CATPAW2CODEX_KEY}"
 ANTIGRAVITY2CODEX_KEY="${ANTIGRAVITY2CODEX_KEY}"
+QWEN2CODEX_KEY="${QWEN2CODEX_KEY}"
 ANTIGRAVITY_OAUTH_CLIENT_ID="${ANTIGRAVITY_OAUTH_CLIENT_ID}"
 ANTIGRAVITY_OAUTH_CLIENT_SECRET="${ANTIGRAVITY_OAUTH_CLIENT_SECRET}"
 # Optional extra id:secret pairs tried after the primary (Antigravity rotates these).
@@ -338,7 +342,7 @@ ENV
 }
 
 if [ "$DRY_RUN" = "1" ]; then
-  info "[dry-run] would write ${ENVFILE} (mode 600) with 10 bridge keys"
+  info "[dry-run] would write ${ENVFILE} (mode 600) with 11 bridge keys"
 else
   ( umask 077; emit_fleet_env > "$ENVFILE" )
 fi
@@ -452,6 +456,13 @@ for row in "${BRIDGES[@]}"; do
   workdir="${FLEET_HOME}/bridges/${bridgedir}"
   if [ ! -f "$scriptpath" ] && [ "$DRY_RUN" != "1" ]; then
     echo "  [warn] missing ${scriptpath}; skipping ${label}" >&2
+    continue
+  fi
+  # A bridge with no key can never answer: the picker would show rows that 401 on
+  # every request. Skip the launchd agent entirely instead of leaving a dead port,
+  # and say which env var to fill in so the next install picks it up.
+  if [ -z "$(eval echo \${$keyenv:-})" ]; then
+    echo "  [skip] ${label}: ${keyenv} is not set; run 'bash bridges/finish.sh ${name}' after logging in" >&2
     continue
   fi
   if [ "$DRY_RUN" = "1" ]; then

@@ -33,6 +33,8 @@ INTERVAL=300
 CODEX_HOME_DIR="${CODEX_HOME:-${HOME}/.codex}"
 STATUS_URL="${FLEET_STATUS_URL:-http://127.0.0.1:8796/api/status}"
 KEEP_PROVIDERS=""
+HIDE_NATIVE=0
+PROXY_BASE="${FLEET_PROXY_BASE:-http://127.0.0.1:10100}"
 LOG_FILE="${CATALOG_FILTER_LOG:-${HOME}/Library/Logs/catalog-filter.log}"
 LAUNCH_DIR="${FLEET_LAUNCH_DIR:-${HOME}/Library/LaunchAgents}"
 LABEL_PREFIX="${FLEET_LABEL_PREFIX:-com.local}"
@@ -58,6 +60,10 @@ Options:
   --interval SEC      timer interval in seconds (default 300)
   --log FILE          log file
   --dry-run           report only
+  --proxy-base URL    local proxy base used for the native-pool probe
+  --hide-native-when-pool-down
+                      hide the unprefixed native picker rows when the local proxy
+                      reports its account pool has no usable credential
 USAGE
 }
 
@@ -93,6 +99,7 @@ cmd_run() {
   local args=(--codex-home "$CODEX_HOME_DIR" --status-url "$STATUS_URL")
   [ -n "$KEEP_PROVIDERS" ] && args+=(--keep "$KEEP_PROVIDERS")
   [ "$DRY_RUN" = "1" ] && args+=(--dry-run)
+  [ "$HIDE_NATIVE" = "1" ] && args+=(--hide-native-when-pool-down --proxy-base "$PROXY_BASE")
 
   local rc=0
   if ! python3 "$FILTER" "${args[@]}" >"$report" 2>&1; then
@@ -137,6 +144,7 @@ cmd_install_timer() {
     <string>/bin/bash</string>
     <string>${SCRIPT_DIR}/catalog-filter.sh</string>
     <string>run</string>
+    <string>--hide-native-when-pool-down</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -251,6 +259,9 @@ while [ "$#" -gt 0 ]; do
     --log) shift; LOG_FILE="${1:?--log needs a value}" ;;
     --log=*) LOG_FILE="${1#*=}" ;;
     --dry-run) DRY_RUN=1 ;;
+    --hide-native-when-pool-down) HIDE_NATIVE=1 ;;
+    --proxy-base) shift; PROXY_BASE="${1:?--proxy-base needs a value}" ;;
+    --proxy-base=*) PROXY_BASE="${1#*=}" ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac

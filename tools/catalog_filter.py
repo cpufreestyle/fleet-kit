@@ -147,6 +147,49 @@ def provider_of(model):
     return slug.split("/", 1)[0]
 
 
+def probe_native_pool(proxy_base, timeout):
+    """True when the local proxy's native (account-pool) provider can still serve.
+
+    The native rows in the Codex picker have no slash prefix, so no bridge verdict
+    covers them. When the account pool behind them is empty they all fail with
+    "OpenAI account pool has no usable account credential" at request time, which is
+    the worst failure mode for a picker: the option looks available and only breaks
+    after the user commits to it.
+
+    Returns (ok, detail). Never raises; an unknown pool is reported as usable so a
+    probe failure cannot silently empty the picker.
+    """
+    base = (proxy_base or "").rstrip("/")
+    if not base:
+        return True, "no proxy base configured"
+    body = json.dumps({
+        "model": "gpt-5.5",
+        "input": "ping",
+        "max_output_tokens": 16,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        base + "/v1/responses", data=body, method="POST",
+        headers={"Content-Type": "application/json",
+                 "Authorization": "Bearer sk-local"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return (200 <= response.status < 300), "HTTP %s" % response.status
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = exc.read().decode("utf-8", "replace")[:200]
+        except Exception:
+            payload = ""
+        text = (payload or "").lower()
+        if exc.code == 401 and "no usable account credential" in text:
+            return False, "account pool has no usable credential (HTTP 401)"
+        # Any other status is a probe we cannot read as "pool down"; stay permissive.
+        return True, "HTTP %s %s" % (exc.code, payload[:120])
+    except Exception as exc:
+        # Unreachable proxy means the whole fleet is down anyway; do not act on it.
+        return True, "%s: %s" % (type(exc).__name__, exc)
+
+
 def drop_junk(models):
     """Return (keepers, dropped) after hiding junk rows, dropped keyed by provider."""
     # A dated snapshot (trailing -MMDD) is only redundant when its plain sibling is
@@ -267,6 +310,13 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--no-hide-junk", action="store_true",
                         help="keep non-chat junk rows (TTS/OCR/embedding/video/web tools)")
+    parser.add_argument("--hide-native-when-pool-down", action="store_true",
+                        help="hide the unprefixed native picker rows when the "
+                             "local proxy reports its account pool has no usable "
+                             "credential")
+    parser.add_argument("--proxy-base", default=os.environ.get(
+        "FLEET_PROXY_BASE", "http://127.0.0.1:10100"),
+        help="local proxy base used for the native-pool probe")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -392,11 +442,25 @@ def main(argv=None):
     unavailable = sorted(candidates - real)
     summary["unavailable"] = unavailable
 
+    native_down = False
+    if args.hide_native_when_pool_down:
+        pool_ok, detail = probe_native_pool(args.proxy_base, args.timeout)
+        native_down = not pool_ok
+        summary["native_pool"] = detail
+        summary["native_pool_down"] = native_down
+
     keepers, dropped = [], {}
     for model in models:
         provider = provider_of(model)
-        if provider in unavailable:
-            slug = model.get("slug") or model.get("id") or model.get("model") or "?"
+        slug = model.get("slug") or model.get("id") or model.get("model") or "?"
+        if provider is None:
+            # No bridge owns a native row, so no verdict can reach it. Only the
+            # explicit pool probe may hide it, and only while the pool is down.
+            if native_down:
+                dropped.setdefault("<native>", []).append(slug)
+                continue
+            keepers.append(model)
+        elif provider in unavailable:
             dropped.setdefault(provider, []).append(slug)
         else:
             keepers.append(model)
