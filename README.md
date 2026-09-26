@@ -200,7 +200,8 @@ workbuddy_checkin.py），跟着桥自己的节奏跑，不归 checkin.sh 管。
 ## 本地状态面板（status_ui）
 
 零依赖的本地网页面板（Python 标准库单文件），用来看舰队整体运行情况：9 座桥的健康、
-模型数、ocx、今日签到、日志尾巴，并且可以直接点按钮做签到 / 强制重签 / 重启单座桥。
+模型数、ocx、今日签到、日志尾巴、每座桥的真实调用判定，并且可以直接点按钮做签到 / 强制重签 /
+重启单座桥 / 发起真实调用核验。
 
     bash tools/status_ui.sh start            # 启动（默认 http://127.0.0.1:8796/）
     bash tools/status_ui.sh stop
@@ -208,7 +209,11 @@ workbuddy_checkin.py），跟着桥自己的节奏跑，不归 checkin.sh 管。
     bash tools/status_ui.sh uninstall-timer
 
 页面内容：每座桥一行，显示 launchd 状态 + 退出码、端口监听 pid、/v1/models 模型数与
-探针延迟、key 的 md5 前 8 位、可用 / 未登录 chips；下面依次是 ocx 状态、今日签到结果
+探针延迟、key 的 md5 前 8 位、以及「真实调用」列（未核验 / REAL / GATE 等判定，来自
+verify_real_calls.py 的最近一次快照）；下面依次是 ocx 状态、今日签到结果与余额、
+「真实调用核验」面板（各桥判据明细 + 立即核验按钮）、各桥日志 tail。汇总卡片新增
+「真实调用 REAL 座数」。核验是真实计费调用（随机运算题抗伪造，一轮约 3 分钟），只在
+点「立即核验」时执行，结果原子落盘 <home>/real_calls.json，刷新面板不重复计费。
 与余额、各桥日志 tail。提供签到 / 强制重签按钮、单桥重启按钮、10 秒自动刷新。
 
 安装时装上：`bash install.sh --with-ui`（或 `bash deploy.sh --with-ui`）。面板端口是
@@ -402,7 +407,7 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 - tools/verify_real_calls.py [--port-base N] [--only NAME] [--json]：真实调用核验（抗伪造运算题 + usage 佐证）
 - tools/checkin.sh status|run-now|install-timer|uninstall-timer [--home DIR]：每日积分签到
 - tools/status_ui.sh start|stop|install-timer|uninstall-timer [--home DIR]：状态面板（默认 127.0.0.1:8796）
-- tools/status_ui.py [--port N] [--no-browser] [--once]：面板实现（stdlib 单文件；/api/status、/api/logs/<name>、/api/action/*）
+- tools/status_ui.py [--port N] [--no-browser] [--once]：面板实现（stdlib 单文件；/api/status、/api/logs/<name>、/api/action/*（含 verify-real-calls））
 - tools/ocx-catalog-guard.sh run|install-timer|uninstall-timer|status：反代理模型 catalog 看门狗（默认 300s）
 - tools/free_models.py [--free-only] [--provider P] [--missing] [--json] [--check-sources]：免费模型标注（数据在仓库根 free-windows.json，状态面板同源）
 - tools/short_aliases.py [--dry-run]：选择器短名（ocx 别名，路由不受影响）

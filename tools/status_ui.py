@@ -69,11 +69,17 @@ PROBE_TIMEOUT = 5.0
 DEFAULT_PORT_BASE = 8787
 MAX_TAIL_LINES = 200
 ACTIONS_LOCK = threading.Lock()
-ACTIONS = {"checkin": None, "restart": {}}
+ACTIONS = {"checkin": None, "restart": {}, "verify": None}
 
 OCX_TTL_SECONDS = 30.0
 _OCX_CACHE = {"at": 0.0, "value": None}
 _OCX_LOCK = threading.Lock()
+
+VERDICT_RANK = {"REAL": 0, "ECHO/MIRROR": 1, "CANNED/MOCK": 2, "UNCLEAR": 3,
+                "AUTH_EXPIRED": 4, "UPSTREAM_DOWN": 5, "BRIDGE_DOWN": 6, "GATE": 7}
+VERDICT_KIND = {"REAL": "ok", "ECHO/MIRROR": "warn", "CANNED/MOCK": "warn",
+                "UNCLEAR": "warn", "AUTH_EXPIRED": "bad", "UPSTREAM_DOWN": "bad",
+                "BRIDGE_DOWN": "bad", "GATE": "bad"}
 
 
 # --------------------------------------------------------------------------- #
@@ -345,6 +351,7 @@ def collect(cfg):
         ocx = ocx_future.result()
     checkin = checkin_state(cfg["checkin_candidates"], today)
     free = free_models()
+    verify = verify_snapshot(cfg)
 
     warnings = list(cfg["warnings"])
     for bridge in bridges:
@@ -365,10 +372,12 @@ def collect(cfg):
         "probe_ok": sum(1 for b in bridges if b["probe"]["ok"]),
         "checkin_ok_today": sum(1 for t in checkin["tasks"] if t["ok_today"]),
         "checkin_total": len(checkin["tasks"]),
+        "verify_real": len(verify["real"]),
+        "verify_at": verify["generated_at"],
     }
     return {"generated_at": now_str(), "elapsed_ms": round((time.time() - started) * 1000),
             "config": cfg["public"], "summary": summary, "warnings": warnings,
-            "bridges": bridges, "ocx": ocx, "checkin": checkin, "free": free,
+"bridges": bridges, "ocx": ocx, "checkin": checkin, "free": free, "verify": verify,
             "actions": snapshot_actions()}
 
 
@@ -397,6 +406,53 @@ def free_models():
     with _FREE_LOCK:
         _FREE_CACHE["at"] = time.time()
         _FREE_CACHE["value"] = value
+    return value
+
+
+def _verify_paths(cfg):
+    here = os.path.dirname(os.path.abspath(__file__))
+    script = os.path.join(here, "verify_real_calls.py")
+    if not os.path.isfile(script):
+        script = os.path.join(cfg.get("home", ""), "tools", "verify_real_calls.py")
+    snapshot = os.path.join(cfg.get("home", os.path.expanduser("~")), "real_calls.json")
+    return script, snapshot
+
+
+def verify_snapshot(cfg):
+    """Last real-call verification, read from a file snapshot (never raises).
+
+    verify_real_calls.py makes genuine (metered) upstream calls and takes a
+    few minutes, so the UI reads a persisted snapshot written on demand by the
+    "immediate verify" action instead of probing on every refresh.
+    """
+    _script, path = _verify_paths(cfg)
+    value = {"available": False, "error": "", "generated_at": None,
+             "by_bridge": {}, "counts": {}, "real": [], "summary": ""}
+    if not os.path.isfile(path):
+        value["error"] = "尚未核验：点「立即核验」生成快照"
+        return value
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError) as exc:
+        value["error"] = "快照不可读: %s" % exc
+        return value
+    by = {}
+    counts = {}
+    real = []
+    for item in raw.get("bridges", []):
+        name = item.get("name")
+        by[name] = {"verdict": item.get("verdict"), "note": item.get("note"),
+                    "model": item.get("model"), "code": item.get("code"),
+                    "secs": item.get("secs"), "reply": item.get("reply")}
+        verdict = item.get("verdict")
+        counts[verdict] = counts.get(verdict, 0) + 1
+        if verdict == "REAL":
+            real.append(name)
+    value.update({"available": True, "generated_at": raw.get("generated_at"),
+                  "by_bridge": by, "counts": counts, "real": real,
+                  "summary": "  ".join("%s=%d" % (k, counts[k])
+                                       for k in sorted(counts, key=lambda x: VERDICT_RANK.get(x, 9)))})
     return value
 
 
@@ -535,6 +591,63 @@ def _checkin_worker(cfg, force):
                               "out": out[-80:]}
 
 
+def actions_verify(cfg):
+    with ACTIONS_LOCK:
+        current = ACTIONS["verify"]
+        if current and current.get("running"):
+            return {"ok": False, "error": "已有一个核验任务在跑",
+                    "started_at": current.get("started_at")}
+        ACTIONS["verify"] = {"running": True, "started_at": now_str(),
+                            "finished_at": None, "returncode": None, "out": []}
+        worker = threading.Thread(target=_verify_worker, args=(cfg,), daemon=True)
+        worker.start()
+    return {"ok": True, "started_at": ACTIONS["verify"]["started_at"]}
+
+
+def _verify_worker(cfg):
+    script, snapshot = _verify_paths(cfg)
+    started = ACTIONS["verify"]["started_at"]
+    if not os.path.isfile(script):
+        with ACTIONS_LOCK:
+            ACTIONS["verify"] = {"running": False, "started_at": started,
+                                 "finished_at": now_str(), "returncode": 127,
+                                 "out": ["verify_real_calls.py 不存在: %s" % script]}
+        return
+    cmd = [sys.executable, script, "--json", "--port-base", str(cfg["port_base"])]
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+    except OSError as exc:
+        with ACTIONS_LOCK:
+            ACTIONS["verify"] = {"running": False, "started_at": started,
+                                 "finished_at": now_str(), "returncode": 127,
+                                 "out": ["启动失败: %s: %s" % (type(exc).__name__, exc)]}
+        return
+    lines = [line for line in proc.stdout]
+    proc.wait()
+    text = "".join(lines)
+    out = []
+    try:
+        data = json.loads(text.strip())
+        tmp = snapshot + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False)
+        os.replace(tmp, snapshot)
+        real = [b.get("name") for b in data.get("bridges", []) if b.get("verdict") == "REAL"]
+        for b in data.get("bridges", []):
+            out.append("%-14s %-26s %-5s %-13s %s" % (
+                b.get("name"), str(b.get("model") or "-")[:26], str(b.get("code")),
+                b.get("verdict"), str(b.get("note") or "")[:38]))
+        out.append("真实可用: %s" % (", ".join(real) if real else "(无)"))
+    except ValueError:
+        out.append("解析核验输出失败（原始输出末尾）：")
+        out.append(text.strip()[-600:])
+    with ACTIONS_LOCK:
+        ACTIONS["verify"] = {"running": False, "started_at": started,
+                             "finished_at": now_str(), "returncode": proc.returncode,
+                             "out": out[-60:]}
+
+
 def actions_restart(cfg, name):
     spec = BRIDGE_BY_NAME.get(name)
     if spec is None:
@@ -595,6 +708,8 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/action/checkin":
             force = (query.get("force", ["0"])[0] or "0").lower() in ("1", "true", "yes")
             self._send(actions_checkin(self.server.cfg, force), "application/json; charset=utf-8")
+        elif route == "/api/action/verify-real-calls":
+            self._send(actions_verify(self.server.cfg), "application/json; charset=utf-8")
         elif route.startswith("/api/action/restart/"):
             name = route[len("/api/action/restart/"):]
             self._send(actions_restart(self.server.cfg, name), "application/json; charset=utf-8")
@@ -702,7 +817,7 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
   <table>
     <thead><tr>
       <th>桥</th><th>端口</th><th>key md5</th><th>launchd</th><th>监听</th>
-      <th>/v1/models</th><th>模型</th><th></th>
+      <th>/v1/models</th><th>模型</th><th>真实调用</th><th></th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
@@ -724,6 +839,17 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
       <tbody id="ck-rows"></tbody></table>
       <pre id="ck-out" style="margin-top:8px"></pre>
     </div>
+  </div>
+  <div class="panel">
+    <h2>真实调用核验（随机运算题抗伪造，真计费 · 一轮约 3 分钟）</h2>
+    <div class="row">
+      <button class="primary" onclick="doVerify()">立即核验</button>
+      <span class="meta" id="vf-at"></span>
+      <span class="meta" id="vf-meta"></span>
+    </div>
+    <table><thead><tr><th>桥</th><th>模型</th><th>HTTP</th><th>判定</th><th>说明</th></tr></thead>
+    <tbody id="vf-rows"></tbody></table>
+    <pre id="vf-out" style="margin-top:8px"></pre>
   </div>
   <div class="panel">
     <h2>免费模型标注（官网信息，更新于 <span id="free-updated">?</span>）</h2>
@@ -777,7 +903,8 @@ function render(){
   var cards=[['桥在线',sum.agent_up+' / '+sum.bridges,'launchd loaded 且在跑'],
              ['端口监听',sum.listening+' / '+sum.bridges,'127.0.0.1 LISTEN'],
              ['模型总数',sum.models,'/v1/models 汇总'],
-             ['今日签到',sum.checkin_ok_today+' / '+sum.checkin_total,'tasks ok today']];
+             ['今日签到',sum.checkin_ok_today+' / '+sum.checkin_total,'tasks ok today'],
+             ['真实调用',sum.verify_real+' / '+sum.bridges,'上次 '+(sum.verify_at||'未核验')]];
   document.getElementById('cards').innerHTML = cards.map(function(c){
     return '<div class="card"><div class="k">'+esc(c[0])+'</div><div class="v">'+esc(c[1])+
            '</div><div class="s">'+esc(c[2])+'</div></div>';}).join('');
@@ -792,6 +919,7 @@ function render(){
                      :pill('bad','no'))+'</td>'+
       '<td>'+probeCell(b.probe)+'</td>'+
       '<td><div class="chips">'+chips+'</div></td>'+
+      '<td>'+verifyCell(b.name)+'</td>'+
       '<td><button onclick="restart(\''+esc(b.name)+'\')">重启</button></td></tr>';}).join('');
   var o=s.ocx, p=document.getElementById('ocx-pill');
   if(!o.available){p.className='pill p-bad';p.textContent='ocx 未安装';}
@@ -825,6 +953,7 @@ function render(){
   if(cur && s.bridges.some(function(b){return b.name===cur;})){pick.value=cur;}
   else if(!pick.value && s.bridges.length){pick.value=s.bridges[0].name;}
   renderFree();
+  renderVerify();
 }
 function freeKind(f){
   if(f==='free'||f==='free-window'||f==='quota'||f==='trial'){return 'ok';}
@@ -854,6 +983,43 @@ function renderFree(){
   document.getElementById('free-gaps').textContent=(f.gaps||[]).map(function(g){
     return '['+g.provider+'] '+g.reason;}).join('   |   ');
 }
+var VF_KIND={REAL:'ok','ECHO/MIRROR':'warn','CANNED/MOCK':'warn',UNCLEAR:'warn',
+  AUTH_EXPIRED:'bad',UPSTREAM_DOWN:'bad',BRIDGE_DOWN:'bad',GATE:'bad'};
+function vfKind(v){return VF_KIND[v]||'idle';}
+function verifyCell(name){
+  var v=(SNAP&&SNAP.verify&&SNAP.verify.by_bridge)||{};
+  var r=v[name];
+  if(!r||!r.verdict)return pill('idle','未核验');
+  return pill(vfKind(r.verdict),r.verdict);
+}
+function renderVerify(){
+  var v=SNAP.verify||{};
+  var meta=document.getElementById('vf-meta');
+  var rows=document.getElementById('vf-rows');
+  if(!v.available){
+    meta.textContent=v.error||'不可用';
+    rows.innerHTML='';
+    document.getElementById('vf-at').textContent='';
+  }else{
+    document.getElementById('vf-at').textContent=v.generated_at?('上次核验 '+v.generated_at):'';
+    meta.textContent=(v.real.length?('REAL '+v.real.length+' 座 · '):'')+(v.summary||'');
+    var names=Object.keys(v.by_bridge).sort();
+    rows.innerHTML=names.length?names.map(function(n){
+      var r=v.by_bridge[n];
+      return '<tr><td><b>'+esc(n)+'</b></td>'
+        +'<td>'+esc(r.model||'?')+'</td>'
+        +'<td>'+(r.code?esc(r.code):'<span class="dim">-</span>')+'</td>'
+        +'<td>'+pill(vfKind(r.verdict),r.verdict)+'</td>'
+        +'<td class="dim">'+esc(r.note||'')+'</td></tr>';}).join('')
+      : '<tr><td colspan="5" class="dim">暂无记录</td></tr>';
+  }
+  var a=SNAP.actions.verify;
+  document.getElementById('vf-out').textContent=a
+    ? ((a.running?'[running] ':'')+'verify @ '+a.started_at
+       +(a.returncode==null?'':' rc='+a.returncode)+'\n'+(a.out||[]).join('\n'))
+    : '';
+}
+function doVerify(){post('/api/action/verify-real-calls').then(function(){load();});}
 function load(){
   fetch('/api/status').then(function(r){return r.json();}).then(function(j){
     SNAP=j; render(); loadLog();}).catch(function(e){
