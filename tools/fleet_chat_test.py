@@ -35,20 +35,21 @@ def parse_args():
 
 
 BRIDGE_NAMES = [
-    ('workbuddy',     'hy4-preview'),
-    ('workbuddy-gpt', 'gpt-5.6'),
-    ('qoder',         'auto'),
-    ('codely',        'codely-core'),
-    ('trae',          'DeepSeek-V4-Pro'),
-    ('lingxi',        'glm-5.3-flash'),
-    ('xhx',           'raccoon-8c4485'),
-    ('gemini',        'gemini-3-pro-preview'),
-    ('catpaw',        'glm-5.2'),
+    ('workbuddy',     0, 'hy4-preview'),
+    ('workbuddy-gpt', 1, 'gpt-5.6'),
+    ('qoder',         2, 'auto'),
+    ('codely',        3, 'codely-core'),
+    ('trae',          4, 'DeepSeek-V4-Pro'),
+    ('lingxi',        5, 'glm-5.3-flash'),
+    ('xhx',           6, 'raccoon-8c4485'),
+    ('gemini',        7, 'gemini-3-pro-preview'),
+    ('catpaw',        8, 'glm-5.2'),
+    ('antigravity',  10, 'claude-opus-4-8@default'),
 ]
 
 
 def bridges(port_base):
-    return [(name, port_base + i, model) for i, (name, model) in enumerate(BRIDGE_NAMES)]
+    return [(name, port_base + off, model) for name, off, model in BRIDGE_NAMES]
 PROBE = '请只回复两个字：正常'
 
 def get_json(url, key=None, timeout=8):

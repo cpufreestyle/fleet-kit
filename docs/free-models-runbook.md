@@ -62,7 +62,9 @@ TRIAL 14（qoder）/ SUB 12（gemini 4 + 原生 8）/ PAID 95（tokendance）/ N
   ocx provider add tokendance ... --force + ocx sync。usage.jsonl 显示 00:02 起全部 401。
 - gemini 桥 502：Google token refresh failed，需重登。
 - codely chat 400：onboarding 门禁（models/key 正常）。
-- fleet_chat_test：6/9 PASS（workbuddy、workbuddy-gpt、qoder、trae、lingxi、xhx）。
+- fleet_chat_test：5/10 PASS（workbuddy、workbuddy-gpt、qoder、trae、xhx）；
+  codely 400 / lingxi 401 / gemini 502 / catpaw 502 / antigravity 90s 超时五项失败，
+  后三项均为网络侧（cloudcode-pa、VPN），详见 README「已知问题」。
 
 ## 复现命令
 

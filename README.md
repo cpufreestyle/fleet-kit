@@ -1,20 +1,20 @@
-# FleetKit — 9 桥反代理舰队一键部署包
+# FleetKit — 10 桥反代理舰队一键部署包
 
 [![ci](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
 
 把一套「Codex → 本地反代理桥 → 各 AI 订阅服务」的舰队打包成可在其他 macOS 电脑
-一键部署的 kit：9 座 OpenAI 兼容本地桥 + opencodex 集成 + 登录/验收/卸载脚本。
+一键部署的 kit：10 座 OpenAI 兼容本地桥 + opencodex 集成 + 登录/验收/卸载脚本。
 
-测试基线（2026-09-26）：6/9 桥实测 PASS，3 项失败均为用户侧条件，见「已知问题」。
-真实调用基线（2026-09-26）：`tools/verify_real_calls.py` 用随机运算题核验，5/9 桥真实推理
-（workbuddy、workbuddy-gpt、qoder、trae、xhx），其余 4 桥为登录门禁/会话失效/上游关停/需 VPN，见「真实调用检测」。
+测试基线（2026-09-26）：5/10 桥实测 PASS，5 项失败均为用户侧条件，见「已知问题」。
+真实调用基线（2026-09-26）：`tools/verify_real_calls.py` 用随机运算题核验，5/10 桥真实推理
+（workbuddy、workbuddy-gpt、qoder、trae、xhx），其余 5 桥为登录门禁/会话失效/上游关停/需 VPN/Google 网络阻断，见「真实调用检测」。
 
 ## 架构
 
     Codex ──▶ opencodex 代理 (127.0.0.1:10100)
                  │  [model_providers.*] allow-private-network
                  ▼
-           9 座本地桥 (127.0.0.1:8787 .. 8795)
+           10 座本地桥 (127.0.0.1:8787 .. 8797)
                  ▼
            WorkBuddy 国内版 / 海外版 / Qoder / 团结AI / Trae / 灵犀 / 小浣熊 / Gemini / CatPaw / TokenDance
 
@@ -29,24 +29,25 @@
 | xhx              | 8793    | 商汤小浣熊          | raccoon-*                 |
 | gemini           | 8794    | Google Gemini       | gemini-3-pro-preview 等   |
 | catpaw           | 8795    | CatPawAI (美团)     | glm-5.2 等                |
+| antigravity      | 8797    | Google Antigravity  | claude-opus-4-8 / gemini-3.1-pro-preview 等 |
 
 Codex 里模型以 `桥名/模型` 出现，例如 `workbuddy/hy4-preview`。
 
 ## 项目命名与目录
 
-项目名 **FleetKit**（九桥反代理舰队）。本机所有相关文件都收在 `/Users/a1-6/AI Shared/repo/FleetKit/` 一个目录里，
+项目名 **FleetKit**（十桥反代理舰队）。本机所有相关文件都收在 `/Users/a1-6/AI Shared/repo/FleetKit/` 一个目录里，
 git 源码与运行目录分离：
 
     /Users/a1-6/AI Shared/repo/FleetKit/kit/       git 仓库（本文档所在）：改代码、git pull 都在这里
-    /Users/a1-6/AI Shared/repo/FleetKit/runtime/   运行根（FLEET_HOME）：9 座桥、fleet.env、logs、checkin
+    /Users/a1-6/AI Shared/repo/FleetKit/runtime/   运行根（FLEET_HOME）：10 座桥、fleet.env、logs、checkin
 
-launchd 侧共 13 个服务（9 座桥 + lingxi 登录助手 + workbuddy 主桥 + 签到 timer +
+launchd 侧共 14 个服务（10 座桥 + lingxi 登录助手 + workbuddy 主桥 + 签到 timer +
 qoder 登录 + ocx catalog 看门狗）全部指向 `/Users/a1-6/AI Shared/repo/FleetKit/runtime/`，日志统一落在
 `/Users/a1-6/AI Shared/repo/FleetKit/runtime/logs/`。换机器或起第二套时用 `install.sh --home <目录>` 指定别的运行根。
 
 日常命令：
 
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/status.sh"            # 9 座桥健康表 + ocx 状态
+    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/status.sh"            # 10 座桥健康表 + ocx 状态
     bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/checkin.sh" status    # 签到状态
     bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/bridges/finish.sh" <name>   # 某座桥登录后收尾
     bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/uninstall.sh"               # 卸载
@@ -255,6 +256,7 @@ fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而�
 | 商汤小浣熊 | 未明示 | 官网 SPA 未公示价格，以登录后控制台为准 |
 | Gemini（Code Assist） | 订阅内含 | 免费档月度限额 + 本机 Google AI Pro 会员；当前桥 502 需重新登录 |
 | CatPaw（美团） | 未明示 | 官网/App 未公示价格；provider 已注册（10 个模型在选择器），聊天需连美团内网/VPN |
+| Antigravity | 登录免费带速率限制 | Google 账号登录即用；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口（12 个模型由 App 二进制提取） |
 
 ### 选择器短名（short_aliases）
 
@@ -266,7 +268,7 @@ fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而�
     # setup-providers.sh 已在所有 provider add 之后自动调用它
 
 provider 别名：workbuddy→wb、workbuddy-gpt→wbg、codely→cdl、lingxi→lx、gemini→gem、
-qoder→qdr、tokendance→tok、catpaw→cpw；模型名按词典压缩（deepseek→ds、flash→fl、preview→pv、
+qoder→qdr、tokendance→tok、catpaw→cpw、antigravity→agy；模型名按词典压缩（deepseek→ds、flash→fl、preview→pv、
 sensenova 直接去掉、gpt- 前缀去掉等）。效果示例：
 
 | 原名 | 短名 |
@@ -302,8 +304,9 @@ docs/stepfun2codex-runbook.md。
 
 ### 为什么有的模型不在选择器
 
-- **tokendance**：ocx 里只 selected 了 `step-5-preview`，其余 94 个 live 模型没进 catalog。
-  要更多：`ocx models selected tokendance --set <id,id>` 然后 `ocx sync`。
+- **tokendance**：95 个 live 模型已全部进入 catalog（`setup-providers.sh` 里原先的
+  `ocx models selected tokendance --set step-5-preview` 会把 provider 收窄成 1 个，
+  已改成 `--clear` 保持 all models，见已知问题第 6 条）。
 - **openai 原生 7 个**（gpt-5.5 / 5.6 / 6.x）：ocx 内置（native），由 ChatGPT 账号直接
   管理，按设计不进反代理 catalog。
 - **catpaw**：8795 静态兜底列得出 10 个模型（`longcat-flash`、`LongCat-2.0`、`glm-5v-turbo`、
@@ -311,6 +314,19 @@ docs/stepfun2codex-runbook.md。
   已注册进 ocx 并进入选择器（显示为 `cpw/xxx`）。但 `catpaw.sankuai.com` 是美团内网域，
   公网 NXDOMAIN，**聊天**必须连美团 VPN（否则 502 Tunnel 503）；连上后
   `launchctl kickstart -k gui/$(id -u)/com.local.catpaw2codex`。
+
+- **antigravity**（2026-09-26 新增，第十桥）：8797，上游 Google Antigravity IDE 的
+  language server（cloudcode-pa.googleapis.com），与 gemini 桥同源但用的是 Antigravity
+  自有 OAuth client。**源码零硬编码**：`install.sh` 用 `bridges/antigravity/extract_client.py
+  --verify` 从 `/Applications/Antigravity.app/Contents/Resources/bin/language_server` 提取并逐个
+  实测 refresh_token 换 token，可用 pair 经 `fleet.env` → launchd 注入
+  `ANTIGRAVITY_OAUTH_CLIENT_ID` / `ANTIGRAVITY_OAUTH_CLIENT_SECRET`（换机/换版本后重跑即可）。
+  12 个模型名同样来自二进制 strings：claude-opus-4-8/4-6/4-5、
+  claude-sonnet-4-5、claude-haiku-4-5、gemini-3.1/3-pro-preview、gemini-3-flash-preview、
+  gemini-2.5-pro/flash、gpt-oss-120b/20b-maas。其中 claude 家族的 `@default`、`@2025xxxx`
+  命名是文档记载，尚未实测，桥内已做「带后缀↔裸名」与「ANTIGRAVITY→GEMINI_CLI ide 元数据」
+  两级回退。**注意**：本机网络到 `cloudcode-pa.googleapis.com` 不通（系统 DNS 给 fake-IP），
+  真实聊天需代理/VPN 恢复后才能验证；`verify_real_calls.py` 里该桥基线因此与 gemini 同样预期待挂。
 - **qoder**（2026-09-26 修复）：桥（8789）一直有 15 个模型，但从未注册进 ocx
   （live = 0）。已执行 `ocx provider add qoder --adapter openai-chat --base-url
   http://127.0.0.1:8789/v1 --api-key <plist 里的 QODER2CODEX_KEY> --allow-private-network`，14 个模型进入 catalog；已 `ocx service restart` 让代理加载，qoder 聊天经代理实测 OK。`opencodex/setup-providers.sh` 本就包含 qoder（本机当初漏注册），已加 plist key 回退。
@@ -336,7 +352,7 @@ kit 因此带一个看门狗，数 catalog 里带 `/` 的桥模型，少于阈�
 
 默认装 launchd 常驻（`StartInterval` 300s + `RunAtLoad`），随 opencodex 接线一起启用，
 `--no-ocx-guard` 可关掉。日志：`~/Library/Logs/ocx-catalog-guard.log`。
-阈值 `--min-models` 默认 60（9 桥齐全约 72，个别桥掉线不会误触发）。
+阈值 `--min-models` 默认 60（10 桥齐全约 72，个别桥掉线不会误触发）。
 
 注意：磁盘上的 catalog 修好之后，**已经在跑的 app 仍显示旧列表**，需要重启一次
 Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中的会话）。
@@ -354,6 +370,7 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 | xhx | 商汤小浣熊桌面 app 登录 | ~/.box-agent/config/auth.json | 桌面端会重写该文件，属正常 |
 | gemini | gemini login，或 python3 "/Users/a1-6/AI Shared/repo/FleetKit/runtime/bridges/gemini/extract_cookies.py" 导出 cookie | ~/.gemini/jetski-standalone-oauth-token 或 ~/.gemini2codex/cookies.txt | 账号需通过 Google 验证（见已知问题） |
 | catpaw | CatPawAI 桌面 App 登录 | ~/Library/Application Support/CatPawAI/User/globalStorage/state.vscdb | 需美团内网/VPN（见已知问题） |
+| antigravity | Antigravity 桌面 App 登录（或 gemini login） | ~/.gemini/jetski-standalone-oauth-token | 与 gemini 共用 token；需能连 cloudcode-pa.googleapis.com |
 
 每个服务登录后运行对应的 bridges/finish.sh <name>：重启桥 → 等待 /v1/models →
 列出模型 → 注入 Codex 模型目录 → ocx sync → 冒烟聊天一次。
@@ -394,15 +411,16 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 | xhx | 8793 | xhx/raccoon-19b265 | REAL | 运算正确 |
 | gemini | 8794 | — | UPSTREAM_DOWN | 上游 refresh/关停（502） |
 | catpaw | 8795 | — | UPSTREAM_DOWN | 隧道不通（需 VPN） |
+| antigravity | 8797 | claude-sonnet-4-5@20250929 | BRIDGE_DOWN | cloudcode-pa TLS 握手超时（凭据有效，纯网络） |
 
-合计：REAL=5，其余 4 桥均为用户侧/外部条件。与 `fleet_chat_test.py`（存活/冒烟）互补：
+合计：REAL=5，其余 5 桥均为用户侧/外部条件。与 `fleet_chat_test.py`（存活/冒烟）互补：
 前者问「真不真」，后者问「通不通」。
 
 ## 随附工具
 
 - deploy.sh：一条命令跑完 preflight → 安装 → 等桥 → 逐桥收尾 → ocx → 签到 timer → 汇总
 - bridges/finish.sh <name> [--home DIR] [--tries N] [--skip-chat]：单桥收尾（重启+验收+同步）
-- tools/status.sh [--home DIR]：9 桥健康表（launchd/监听/模型数/key md5）+ ocx 状态 + 今日签到
+- tools/status.sh [--home DIR]：10 桥健康表（launchd/监听/模型数/key md5）+ ocx 状态 + 今日签到
 - tools/fleet_chat_test.py [--port-base N]：全舰队 /v1/models + 聊天测试（只打印 key 的 md5）
 - tools/verify_real_calls.py [--port-base N] [--only NAME] [--json]：真实调用核验（抗伪造运算题 + usage 佐证）
 - tools/checkin.sh status|run-now|install-timer|uninstall-timer [--home DIR]：每日积分签到
@@ -412,7 +430,7 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 - tools/free_models.py [--free-only] [--provider P] [--missing] [--json] [--check-sources]：免费模型标注（数据在仓库根 free-windows.json，状态面板同源）
 - tools/short_aliases.py [--dry-run]：选择器短名（ocx 别名，路由不受影响）
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
-- opencodex/setup-providers.sh：重新注册 9 桥
+- opencodex/setup-providers.sh：重新注册 10 桥
 - uninstall.sh [--home DIR] [--purge]：卸载 launchd 服务和 plist；--purge 连目录一起删
 
 ## 已知问题（2026-09-26 实测，均为用户侧/外部条件）
@@ -433,20 +451,31 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
    AI Studio key；详见 docs/free-models-runbook.md「Gemini 档位定性」。
 4. catpaw：需要美团内网/VPN，否则 catpaw.sankuai.com 不可达（Tunnel 503）。
    连上 VPN 后执行：launchctl kickstart -k gui/$(id -u)/com.local.catpaw2codex
-5. trae：桥 8791 上游已挂（先 401 鉴权失效，后 502「param invalid」），已不是
+5. **antigravity**（第十桥）：代码/凭据/catalog/ocx 注册全部就绪，12 个模型已进
+   选择器（`agy/*`）。唯一阻塞是网络：本机 VPN 节点对
+   `cloudcode-pa.googleapis.com` TLS 握手超时（`curl` http=000 rc=28），同节点
+   `oauth2.googleapis.com` 可达且 refresh_token 实测刷新成功，所以不是账号问题。
+   换能放行 Google 全域的节点后
+   `launchctl kickstart -k gui/$(id -u)/com.local.antigravity2codex` 再
+   `python3 tools/verify_real_calls.py --only antigravity`。细节见
+   docs/antigravity2codex-runbook.md。
+6. trae：桥 8791 上游曾挂（先 401 鉴权失效，后 502「param invalid」），已不是
   默认路线。经 CC Switch 对外表现为
   `503 所有供应商已熔断，无可用渠道`——看到这个报错先确认默认模型是不是又
   指回了死掉的桥；现默认为 stepfun 官方直连，实测 200。
 
-2026-09-26 fleet_chat_test 实测：6 桥 PASS（workbuddy、workbuddy-gpt、qoder、trae、
-lingxi、xhx），codely 400 / gemini 502 / catpaw VPN 三项失败均为上述用户侧条件。
-当晚 trae 桥上游开始报错（401→502，见第 5 条），step-5 路线改走 StepFun 官方
+2026-09-26 fleet_chat_test 实测（10 桥）：5 桥 PASS（workbuddy、workbuddy-gpt、
+qoder、trae、xhx）；5 项失败——codely 400 onboarding 门禁、lingxi 401 session
+失效（`lingxi/deepseek-v4-flash`，需重跑 finish）、gemini 502（60s）、
+catpaw 502（需 VPN）、antigravity 客户端 90s 超时（HTTP 无响应，服务端 Broken
+pipe，根因同 gemini：cloudcode-pa 网络阻断）。除 lingxi 外均已记录在上方条目。
+trae 本轮已恢复 200 PASS；当晚它曾报 401→502，step-5 路线改走 StepFun 官方
 Plan API 后不受影响。
 
 ## 安全说明
 
-- 10 个本地 key 只写在 <home>/fleet.env（权限 600，8 座桥 + tokundance + stepfun），仅本机使用，不要提交 git 或外发
-- 所有桥只监听 127.0.0.1；gemini/catpaw 两桥不校验本地 key（Authorization 只用于上游 Google/美团）
+- 11 个本地 key 只写在 <home>/fleet.env（权限 600，9 座桥 + tokundance + stepfun），仅本机使用，不要提交 git 或外发
+- 所有桥只监听 127.0.0.1；gemini/catpaw/antigravity 三桥不校验本地 key（Authorization 只用于上游 Google/美团）
 - 测试脚本只打印 key 的 md5，不打印明文
 - 状态面板只监听 127.0.0.1；key 只显示 md5 前 8 位；日志接口走桥名白名单
 

@@ -99,11 +99,12 @@ lingxi|lingxi2codex|5|LINGXI2CODEX_KEY
 xhx|xhx2codex|6|XHX2CODEX_KEY
 gemini|gemini2codex|7|GEMINI2CODEX_KEY
 catpaw|catpaw2codex|8|CATPAW2CODEX_KEY
+antigravity|antigravity2codex|10|ANTIGRAVITY2CODEX_KEY
 ROWS
 
 echo
-if ls "$LOG_DIR"/*-bridge.log >/dev/null 2>&1; then
-  echo "logs: $LOG_DIR/<bridge>-bridge.log"
+if ls "$LOG_DIR"/*.log >/dev/null 2>&1; then
+  echo "logs: $LOG_DIR/<bridge>.log (older agents may use <bridge>-bridge.log)"
 fi
 echo "hint: models=0 means the bridge session is missing/expired. Re-finish with:"
 echo "      bash \"$FLEET_HOME/bridges/finish.sh\" <name>"

@@ -44,6 +44,7 @@ BRIDGES = [
     ("xhx",           "xhx2codex",            6, "xhx/raccoon-19b265",        "XHX2CODEX_KEY"),
     ("gemini",        "gemini2codex",         7, "gemini-2.5-flash",           "GEMINI2CODEX_KEY"),
     ("catpaw",        "catpaw2codex",          8, "glm-5.2",                   "CATPAW2CODEX_KEY"),
+    ("antigravity",    "antigravity2codex",     10, "claude-opus-4-8@default",    "ANTIGRAVITY2CODEX_KEY"),
 ]
 
 

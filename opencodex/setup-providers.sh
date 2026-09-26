@@ -75,6 +75,7 @@ PROVIDERS=(
   "xhx|6|XHX2CODEX_KEY"
   "gemini|7|GEMINI2CODEX_KEY"
   "catpaw|8|CATPAW2CODEX_KEY"
+  "antigravity|10|ANTIGRAVITY2CODEX_KEY"
 )
 
 echo "opencodex provider setup (port base ${PORT_BASE})"
@@ -103,7 +104,11 @@ done
 if [ -n "${TOKENDANCE_API_KEY:-}" ]; then
   run ocx provider add tokendance --adapter openai-chat --base-url "https://tokendance.space/gateway/v1" --api-key "${TOKENDANCE_API_KEY}" --allow-private-network --force
   run ocx models provider tokendance on
-  run ocx models selected tokendance --set step-5-preview
+  # NOTE: an explicit --set narrows the provider to just those ids and ocx sync then
+  # drops every other live model from the Codex catalog. tokendance must stay on
+  # "all models" (95 entries), so clear the selection instead of pinning one id.
+  # The default model is pinned in ~/.codex/config.toml at the end of this script.
+  run ocx models selected tokendance --clear
 else
   echo "  (TOKENDANCE_API_KEY not set; skipping tokendance)"
 fi

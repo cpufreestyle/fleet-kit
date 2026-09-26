@@ -6,7 +6,7 @@
 # and runs a one-shot smoke chat.
 #
 # Usage: finish.sh <name> [--home DIR] [--tries N] [--skip-chat] [-h|--help]
-#   names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw
+#   names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity
 set -euo pipefail
 
 NAME=""
@@ -50,7 +50,7 @@ done
 
 if [ -z "$NAME" ]; then
   echo "bridge name required" >&2
-  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw" >&2
+  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity" >&2
   exit 1
 fi
 
@@ -101,10 +101,11 @@ lingxi|lingxi2codex|5|lingxi|LINGXI2CODEX_KEY|LINGXI
 xhx|xhx2codex|6|xhx|XHX2CODEX_KEY|XHX
 gemini|gemini2codex|7|gemini|GEMINI2CODEX_KEY|
 catpaw|catpaw2codex|8|catpaw|CATPAW2CODEX_KEY|
+antigravity|antigravity2codex|10|antigravity|ANTIGRAVITY2CODEX_KEY|antigravity_bridge.py
 CASES
 if [ -z "$found" ]; then
   echo "unknown bridge: $NAME" >&2
-  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw" >&2
+  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity" >&2
   exit 1
 fi
 

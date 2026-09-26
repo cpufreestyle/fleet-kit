@@ -129,6 +129,18 @@
       ],
       "verified": false
     },
+    "antigravity": {
+      "vendor": "Google Antigravity（Google 账号登录）",
+      "site": "https://antigravity.google/",
+      "free": "quota",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "facts": "Antigravity 为 Google 官方 AI IDE，language server 后端 cloudcode-pa.googleapis.com 与 Gemini Code Assist 同源。Google 弃用页明确 2026-06-18 起个人/Pro/Ultra 档 Code Assist 与 Gemini CLI Login with Google 关停，需迁移 Antigravity。本机以 Antigravity 自有 OAuth client（自 /Applications/Antigravity.app/Contents/Resources/bin/language_server 提取，refresh_token 实测有效 3599 秒）接入，端口 8797。12 个模型名由二进制 strings 提取，其中 claude 家族命名（如 claude-opus-4-8@default）尚未实测，桥内已做 @后缀/裸名 与 ide 元数据回退。归入登录免费档，不占 Google AI Pro 独立额度（官方未公示具体关系）。",
+      "sources": [
+        "https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals",
+        "https://antigravity.google/"
+      ],
+      "verified": true
+    },
     "openai": {
       "vendor": "OpenAI / ChatGPT（ocx 原生）",
       "site": "https://chatgpt.com/",
@@ -200,6 +212,78 @@
       "free": "paid",
       "window": "峰谷定价：空闲时段 5 折；高峰=周一至周五 09:00–12:00、14:00–18:00（DeepSeek 官方端点）",
       "source": "https://tokendance.space/",
+      "verified": true
+    },
+    "antigravity/claude-opus-4-8@default": {
+      "free": "quota",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "source": "https://antigravity.google/",
+      "verified": true
+    },
+    "antigravity/claude-opus-4-6@default": {
+      "free": "quota",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "source": "https://antigravity.google/",
+      "verified": true
+    },
+    "antigravity/claude-opus-4-5@20251101": {
+      "free": "quota",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "source": "https://antigravity.google/",
+      "verified": true
+    },
+    "antigravity/claude-sonnet-4-5@20250929": {
+      "free": "quota",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "source": "https://antigravity.google/",
+      "verified": true
+    },
+    "antigravity/claude-haiku-4-5@20251001": {
+      "free": "quota",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "source": "https://antigravity.google/",
+      "verified": true
+    },
+    "antigravity/gemini-3.1-pro-preview": {
+      "free": "quota",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "source": "https://antigravity.google/",
+      "verified": true
+    },
+    "antigravity/gemini-3-pro-preview": {
+      "free": "quota",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "source": "https://antigravity.google/",
+      "verified": true
+    },
+    "antigravity/gemini-3-flash-preview": {
+      "free": "quota",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "source": "https://antigravity.google/",
+      "verified": true
+    },
+    "antigravity/gemini-2.5-pro": {
+      "free": "quota",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "source": "https://antigravity.google/",
+      "verified": true
+    },
+    "antigravity/gemini-2.5-flash": {
+      "free": "quota",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "source": "https://antigravity.google/",
+      "verified": true
+    },
+    "antigravity/gpt-oss-120b-maas": {
+      "free": "quota",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "source": "https://antigravity.google/",
+      "verified": true
+    },
+    "antigravity/gpt-oss-20b-maas": {
+      "free": "quota",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "source": "https://antigravity.google/",
       "verified": true
     }
   },

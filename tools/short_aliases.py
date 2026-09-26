@@ -33,6 +33,7 @@ PROVIDER_ALIAS = {
     "workbuddy": "wb", "workbuddy-gpt": "wbg", "codely": "cdl",
     "lingxi": "lx", "gemini": "gem", "qoder": "qdr", "tokendance": "tok",
     "catpaw": "cpw",
+    "antigravity": "agy",
 }
 # token replacements applied to the lowercased model id after the bridge-side
 # provider prefix is stripped; "" drops the token entirely.
@@ -45,6 +46,8 @@ TOKEN_MAP = [
     ("gpt-", ""), ("kimi", "km"), ("gemini", "gem"),
     ("evolving", "evol"), ("seed", "sd"),
     ("longcat", "lc"),
+    ("@default", ""), ("@20250929", ""), ("@20251001", ""),
+    ("@20251101", ""),
 ]
 
 

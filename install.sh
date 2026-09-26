@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # FleetKit installer
 #
-# Deploys nine local reverse-proxy bridges as macOS launchd agents and
+# Deploys ten local reverse-proxy bridges as macOS launchd agents and
 # optionally registers them with opencodex so Codex can call them.
 #
 # Bridges (default ports): workbuddy 8787, workbuddy-gpt 8788, qoder 8789,
-# codely 8790, trae 8791, lingxi 8792, xhx 8793, gemini 8794, catpaw 8795.
+# codely 8790, trae 8791, lingxi 8792, xhx 8793, gemini 8794, catpaw 8795,
+# antigravity 8797 (Cloudflare-style gap: 8796 is the status panel).
 set -euo pipefail
 
 KIT_VERSION="1.1.0"
@@ -28,7 +29,7 @@ FleetKit installer v1.1.0
 Usage: install.sh [options]
 
   --home DIR        install root (default: ~/FleetKit/runtime)
-  --port-base N     first bridge port; bridges use N..N+8 (default: 8787)
+  --port-base N     first bridge port; bridges use N..N+10 (default: 8787)
   --with-opencodex  register bridges with opencodex after install (default)
   --no-opencodex    skip opencodex wiring
   --with-checkin   install the daily check-in timer (09:00 CST)
@@ -105,12 +106,13 @@ BRIDGES=(
   "xhx|xhx2codex|xhx|xhx_bridge.py|6|XHX2CODEX_KEY|--host 127.0.0.1 --port @PORT@|XHX_CALL_TIMEOUT=300"
   "gemini|gemini2codex|gemini|gemini_bridge.py|7|GEMINI2CODEX_KEY||GEMINI2CODEX_PORT=@PORT@"
   "catpaw|catpaw2codex|catpaw|catpaw_bridge.py|8|CATPAW2CODEX_KEY||CATPAW_PORT=@PORT@"
+  "antigravity|antigravity2codex|antigravity|antigravity_bridge.py|10|ANTIGRAVITY2CODEX_KEY||ANTIGRAVITY2CODEX_PORT=@PORT@"
 )
 
 echo "FleetKit installer v${KIT_VERSION}"
 info "kit        : ${KIT_DIR}"
 info "fleet home : ${FLEET_HOME}"
-info "ports      : ${PORT_BASE} .. $((PORT_BASE + 8))"
+info "ports      : ${PORT_BASE} .. $((PORT_BASE + 10))"
 info "launch dir : ${LAUNCH_DIR}"
 info "log dir    : ${LOG_DIR}"
 if [ "$DRY_RUN" = "1" ]; then info "mode       : DRY RUN (nothing is written)"; fi
@@ -119,6 +121,30 @@ if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required but was not found in PATH" >&2
   exit 1
 fi
+
+# Copy SRCDIR/. into DESTDIR. Destination symlinks are operator overrides
+# (e.g. runtime/bridges/workbuddy-*/assets -> the npm module): keep them,
+# because cp -R refuses to merge a real directory into a symlink.
+copy_tree() {
+  local src="$1" dst="$2" item rel target
+  [ -d "$src" ] || return 0
+  mkdir -p "$dst"
+  while IFS= read -r item; do
+    rel="${item#"$src"/}"
+    target="$dst/$rel"
+    if [ -L "$target" ]; then
+      info "keeping symlink $target -> $(readlink "$target")"
+    elif [ -d "$item" ] && [ ! -L "$item" ]; then
+      if [ ! -d "$target" ]; then
+        cp -R "$item" "$target" || info "warn: cannot copy $item"
+      fi
+    elif [ -d "$target" ]; then
+      cp -R "$item" "$target/" || info "warn: cannot copy $item"
+    else
+      cp -R "$item" "$target" || info "warn: cannot copy $item"
+    fi
+  done < <(find "$src" -mindepth 1 | sort)
+}
 
 # ---------- 1. layout ----------
 run mkdir -p "${FLEET_HOME}/bridges"
@@ -132,10 +158,10 @@ run mkdir -p "$LAUNCH_DIR"
 if [ "$DRY_RUN" = "1" ]; then
   info "would copy bridges/ tools/ docs/ opencodex/ README.md requirements.txt uninstall.sh"
 else
-  cp -R "${KIT_DIR}/bridges/." "${FLEET_HOME}/bridges/"
-  cp -R "${KIT_DIR}/tools/." "${FLEET_HOME}/tools/"
-  cp -R "${KIT_DIR}/docs/." "${FLEET_HOME}/docs/"
-  cp -R "${KIT_DIR}/opencodex/." "${FLEET_HOME}/opencodex/"
+  copy_tree "${KIT_DIR}/bridges" "${FLEET_HOME}/bridges"
+  copy_tree "${KIT_DIR}/tools" "${FLEET_HOME}/tools"
+  copy_tree "${KIT_DIR}/docs" "${FLEET_HOME}/docs"
+  copy_tree "${KIT_DIR}/opencodex" "${FLEET_HOME}/opencodex"
   cp "${KIT_DIR}/README.md" "${FLEET_HOME}/README.md"
   cp "${KIT_DIR}/requirements.txt" "${FLEET_HOME}/requirements.txt"
   cp "${KIT_DIR}/uninstall.sh" "${FLEET_HOME}/uninstall.sh"
@@ -163,6 +189,39 @@ else
   fi
 fi
 
+# Several bridges are vendored from npm modules that ship their own pip venv
+# containing fastapi. When FLEET_PYTHON cannot import fastapi the bridge dies at
+# import time, so resolve a venv-capable fallback instead of crash-looping.
+python_has_fastapi() { "$1" -c 'import fastapi' >/dev/null 2>&1; }
+
+detect_venv_python() {
+  local cand
+  if [ -n "${FLEET_VENV_PYTHON:-}" ] && python_has_fastapi "${FLEET_VENV_PYTHON}"; then
+    echo "${FLEET_VENV_PYTHON}"; return 0
+  fi
+  for cand in "${HOME}"/.local/node-*/lib/node_modules/*/.venv/bin/python \
+              "${HOME}"/.local/share/pnpm/global/*/node_modules/*/.venv/bin/python \
+              "${FLEET_HOME}"/bridges/*/.venv/bin/python; do
+    [ -x "$cand" ] || continue
+    if python_has_fastapi "$cand"; then echo "$cand"; return 0; fi
+  done
+  echo ""
+}
+
+FLEET_VENV_PYTHON="$(detect_venv_python)"
+if [ -z "$FLEET_VENV_PYTHON" ]; then
+  FLEET_VENV_PYTHON="${FLEET_PYTHON}"
+fi
+info "venv python: ${FLEET_VENV_PYTHON} (fastapi fallback)"
+
+bridge_python() {
+  if python_has_fastapi "${FLEET_PYTHON}"; then
+    echo "${FLEET_PYTHON}"
+  else
+    echo "${FLEET_VENV_PYTHON}"
+  fi
+}
+
 # ---------- 3. fleet.env ----------
 gen_key() {
   if command -v openssl >/dev/null 2>&1; then
@@ -185,12 +244,13 @@ pick_key() {
     return 0
   fi
   if [ -n "$EXISTING" ]; then
-    value="$(echo "$EXISTING" | grep -m1 "^${want}=" | cut -d= -f2- || true)"
+    value="$(echo "$EXISTING" | grep -m1 "^${want}=" | cut -d= -f2- | tr -d '"' || true)"
   fi
   if [ -z "$value" ]; then
     case "$want" in
       GEMINI2CODEX_KEY) value="sk-local-gemini" ;;
       CATPAW2CODEX_KEY) value="sk-local-catpaw" ;;
+      ANTIGRAVITY2CODEX_KEY) value="sk-local-antigravity" ;;
       *) value="$(gen_key)" ;;
     esac
   fi
@@ -205,8 +265,47 @@ LINGXI2CODEX_KEY="$(pick_key LINGXI2CODEX_KEY)"
 XHX2CODEX_KEY="$(pick_key XHX2CODEX_KEY)"
 GEMINI2CODEX_KEY="$(pick_key GEMINI2CODEX_KEY)"
 CATPAW2CODEX_KEY="$(pick_key CATPAW2CODEX_KEY)"
+ANTIGRAVITY2CODEX_KEY="$(pick_key ANTIGRAVITY2CODEX_KEY)"
+
+# Antigravity google oauth client pair is never committed to git (push protection
+# rejects it) and every install ships it in its own binary, so read it from there.
+pick_agy_oauth() {
+  local want="$1" value=""
+  if [ -n "$EXISTING" ]; then
+    value="$(echo "$EXISTING" | grep -m1 "^${want}=" | cut -d= -f2- | tr -d '"' || true)"
+  fi
+  echo "$value"
+}
+
+ANTIGRAVITY_OAUTH_CLIENT_ID="$(pick_agy_oauth ANTIGRAVITY_OAUTH_CLIENT_ID)"
+ANTIGRAVITY_OAUTH_CLIENT_SECRET="$(pick_agy_oauth ANTIGRAVITY_OAUTH_CLIENT_SECRET)"
+ANTIGRAVITY_LEGACY_CLIENTS="$(pick_agy_oauth ANTIGRAVITY_LEGACY_CLIENTS)"
+
+if [ -z "$ANTIGRAVITY_OAUTH_CLIENT_ID" ] || [ -z "$ANTIGRAVITY_OAUTH_CLIENT_SECRET" ]; then
+  AGY_BIN="${AGY_BIN:-/Applications/Antigravity.app/Contents/Resources/bin/language_server}"
+  AGY_LINES="$(python3 "${KIT_DIR}/bridges/antigravity/extract_client.py" --verify "$AGY_BIN" 2>/dev/null || true)"
+  if [ -z "$AGY_LINES" ]; then
+    AGY_LINES="$(python3 "${KIT_DIR}/bridges/antigravity/extract_client.py" "$AGY_BIN" 2>/dev/null || true)"
+  fi
+  if [ -n "$AGY_LINES" ]; then
+    ANTIGRAVITY_OAUTH_CLIENT_ID="$(printf '%s\n' "$AGY_LINES" | head -1 | cut -f1)"
+    ANTIGRAVITY_OAUTH_CLIENT_SECRET="$(printf '%s\n' "$AGY_LINES" | head -1 | cut -f2)"
+    ANTIGRAVITY_LEGACY_CLIENTS="$(printf '%s\n' "$AGY_LINES" | tail -n +2 | paste -sd, -)"
+    info "antigravity oauth: pair read from $(basename "$AGY_BIN")"
+  else
+    echo "  [warn] no antigravity oauth client in ${AGY_BIN}; the bridge starts but" >&2
+    echo "         refresh returns 401 until fleet.env sets ANTIGRAVITY_OAUTH_CLIENT_ID" >&2
+    echo "         and ANTIGRAVITY_OAUTH_CLIENT_SECRET (bridges/antigravity/extract_client.py)" >&2
+  fi
+fi
 
 emit_fleet_env() {
+  local preserved=""
+  if [ -n "$EXISTING" ]; then
+    # Operator-owned keys are not managed by install.sh: carry the exact
+    # previous lines across so a re-install never drops them.
+    preserved="$(echo "$EXISTING" | grep -E '^(HOMEBREW_PYTHON|TOKENDANCE_API_KEY|STEPFUN_PLAN_API_KEY)=' || true)"
+  fi
   cat <<ENV
 # FleetKit environment -- generated by install.sh v${KIT_VERSION}
 # Keep this file private: it holds the bridge API keys.
@@ -226,14 +325,20 @@ LINGXI2CODEX_KEY="${LINGXI2CODEX_KEY}"
 XHX2CODEX_KEY="${XHX2CODEX_KEY}"
 GEMINI2CODEX_KEY="${GEMINI2CODEX_KEY}"
 CATPAW2CODEX_KEY="${CATPAW2CODEX_KEY}"
+ANTIGRAVITY2CODEX_KEY="${ANTIGRAVITY2CODEX_KEY}"
+ANTIGRAVITY_OAUTH_CLIENT_ID="${ANTIGRAVITY_OAUTH_CLIENT_ID}"
+ANTIGRAVITY_OAUTH_CLIENT_SECRET="${ANTIGRAVITY_OAUTH_CLIENT_SECRET}"
+# Optional extra id:secret pairs tried after the primary (Antigravity rotates these).
+ANTIGRAVITY_LEGACY_CLIENTS="${ANTIGRAVITY_LEGACY_CLIENTS}"
 
-# Optional: TokenDance gateway models (https://tokendance.space)
-# TOKENDANCE_API_KEY=
+# Optional: TokenDance gateway models (https://tokendance.space).
+# Operator keys preserved from the previous fleet.env are appended below.
+${preserved}
 ENV
 }
 
 if [ "$DRY_RUN" = "1" ]; then
-  info "[dry-run] would write ${ENVFILE} (mode 600) with 8 bridge keys"
+  info "[dry-run] would write ${ENVFILE} (mode 600) with 10 bridge keys"
 else
   ( umask 077; emit_fleet_env > "$ENVFILE" )
 fi
@@ -254,7 +359,7 @@ detect_path() {
 PATH_VALUE="$(detect_path)"
 
 plist_xml() {
-  local name="$1" labelsuffix="$2" keyenv="$3" script="$4" workdir="$5" extra="$6" extraenv="$7"
+  local name="$1" labelsuffix="$2" keyenv="$3" script="$4" workdir="$5" extra="$6" extraenv="$7" interpreter="$8"
   local label="${LABEL_PREFIX}.${labelsuffix}"
   local keyval="${!keyenv}"
   local entry k v arg
@@ -301,15 +406,15 @@ ${env_xml}  </dict>
   <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${FLEET_PYTHON}</string>
+    <string>${interpreter}</string>
     <string>${script}</string>
 ${args_xml}  </array>
   <key>RunAtLoad</key>
   <true/>
   <key>StandardErrorPath</key>
-  <string>${LOG_DIR}/${name}-bridge.log</string>
+  <string>${LOG_DIR}/${name}.log</string>
   <key>StandardOutPath</key>
-  <string>${LOG_DIR}/${name}-bridge.log</string>
+  <string>${LOG_DIR}/${name}.log</string>
   <key>WorkingDirectory</key>
   <string>${workdir}</string>
 </dict>
@@ -333,7 +438,14 @@ for row in "${BRIDGES[@]}"; do
   extraenv="${extraenv//@PORT@/$port}"
   extraenv="${extraenv//@FLEET_HOME@/$FLEET_HOME}"
   extra="${extra//@HOME@/$HOME}"
-  extraenv="${extraenv//@HOME@/$HOME}"
+ extraenv="${extraenv//@HOME@/$HOME}"
+  if [ "$name" = "antigravity" ] && [ -n "$ANTIGRAVITY_OAUTH_CLIENT_ID" ]; then
+    extraenv="${extraenv};ANTIGRAVITY_OAUTH_CLIENT_ID=${ANTIGRAVITY_OAUTH_CLIENT_ID};ANTIGRAVITY_OAUTH_CLIENT_SECRET=${ANTIGRAVITY_OAUTH_CLIENT_SECRET}"
+    extraenv="${extraenv};ANTIGRAVITY2CODEX_HOST=127.0.0.1"
+    if [ -n "$ANTIGRAVITY_LEGACY_CLIENTS" ]; then
+      extraenv="${extraenv};ANTIGRAVITY_LEGACY_CLIENTS=${ANTIGRAVITY_LEGACY_CLIENTS}"
+    fi
+  fi
   label="${LABEL_PREFIX}.${labelsuffix}"
   plist="${LAUNCH_DIR}/${label}.plist"
   scriptpath="${FLEET_HOME}/bridges/${bridgedir}/${script}"
@@ -345,13 +457,20 @@ for row in "${BRIDGES[@]}"; do
   if [ "$DRY_RUN" = "1" ]; then
     info "[dry-run] ${label} -> :${port} (${plist})"
   else
-    plist_xml "$name" "$labelsuffix" "$keyenv" "$scriptpath" "$workdir" "$extra" "$extraenv" > "$plist"
+    plist_xml "$name" "$labelsuffix" "$keyenv" "$scriptpath" "$workdir" "$extra" "$extraenv" "$(bridge_python "$name")" > "$plist"
     if [ "$DO_START" = "1" ]; then
       if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
         echo "  [warn] port ${port} is already in use; ${label} may fail to bind" >&2
       fi
       launchctl bootout "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
-      launchctl bootstrap "gui/$(id -u)" "$plist"
+      booted=0
+      for _try in 1 2 3 4 5; do
+        if launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1; then booted=1; break; fi
+        sleep 1
+      done
+      if [ "$booted" != "1" ]; then
+        launchctl bootstrap "gui/$(id -u)" "$plist" || echo "  [warn] bootstrap failed for ${label}" >&2
+      fi
       launchctl kickstart -k "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
       info "started ${label} on :${port}"
     else

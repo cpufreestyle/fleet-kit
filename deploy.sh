@@ -18,7 +18,7 @@ WITH_UI=0
 WITH_OCX_GUARD=1
 SMOKE=0
 UPDATE=0
-BRIDGES="workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw"
+BRIDGES="workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity"
 
 usage() {
   cat <<USAGE
@@ -78,6 +78,7 @@ port_of() {
     xhx) echo $((PORT_BASE + 6)) ;;
     gemini) echo $((PORT_BASE + 7)) ;;
     catpaw) echo $((PORT_BASE + 8)) ;;
+    antigravity) echo $((PORT_BASE + 10)) ;;
     *) echo "" ;;
   esac
 }
