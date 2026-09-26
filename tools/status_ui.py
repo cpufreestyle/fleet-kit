@@ -864,6 +864,8 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
   </div>
   <div class="panel">
     <h2>免费模型标注（官网信息，更新于 <span id="free-updated">?</span>）</h2>
+    <label class="meta" style="font-weight:400;margin-left:10px"><input type="checkbox" id="free-hide" checked onchange="renderFree()"> 隐藏不可用</label>
+    <span class="meta" id="free-hidden"></span>
     <div class="row"><span class="meta" id="free-meta"></span></div>
     <table><thead><tr><th>模型（选择器名）</th><th>免费</th><th>时段 / 说明</th><th>在选择器</th></tr></thead>
     <tbody id="free-rows"></tbody></table>
@@ -972,6 +974,14 @@ function freeKind(f){
   if(f==='unknown'){return 'warn';}
   return 'idle';
 }
+function unavailProvider(name){
+  var b=null,i;
+  for(i=0;i<(SNAP.bridges||[]).length;i++){if(SNAP.bridges[i].name===name){b=SNAP.bridges[i];break;}}
+  if(b&&(!b.probe||!b.probe.ok)){return 'down';}
+  var v=SNAP.verify&&SNAP.verify.by_bridge?SNAP.verify.by_bridge[name]:null;
+  if(v&&v.verdict&&v.verdict!=='REAL'){return v.verdict;}
+  return null;
+}
 function renderFree(){
   var f=SNAP.free;
   var meta=document.getElementById('free-meta');
@@ -983,14 +993,25 @@ function renderFree(){
   var live=0;for(var k in (f.live_by_provider||{})){live+=f.live_by_provider[k];}
   var pick=0;for(var k2 in (f.picker_by_provider||{})){pick+=f.picker_by_provider[k2];}
   var cnt=[];for(var c in (f.counts||{})){cnt.push(f.counts[c]+' '+c);}
-  meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+cnt.join(' · ');
-  var list=(f.models||[]).filter(function(m){
+  var hide=document.getElementById('free-hide');
+  var hiding=!!(hide&&hide.checked);
+  var all=(f.models||[]).filter(function(m){
     return m.in_picker||m.free==='free'||m.free==='free-window'||m.free==='quota'||m.free==='trial';});
+  var list=[],hidden={},hiddenN=0;
+  all.forEach(function(m){
+    var u=hiding?unavailProvider(m.provider):null;
+    if(u){hiddenN++;hidden[m.provider]=u;return;}
+    list.push(m);});
+  var hk=Object.keys(hidden).map(function(k){return k+'('+hidden[k]+')';}).join(', ');
+  var hh=document.getElementById('free-hidden');
+  if(hh){hh.textContent=hiddenN?('已隐藏 '+hiddenN+' 个不可用模型 '+hk):'';}
+  meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+cnt.join(' · ')+' · 显示 '+list.length+'/'+all.length;
   rows.innerHTML=list.map(function(m){
     return '<tr><td>'+esc(m.picker_name||m.picker_slug||m.model)+'</td>'+
       '<td>'+pill(freeKind(m.free),m.badge)+'</td>'+
       '<td class="dim">'+esc(m.window)+'</td>'+
-      '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('');
+      '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('')
+    : '<tr><td colspan="4" class="dim">当前无可用模型'+(hiding?'（可取消勾选"隐藏不可用"）':'')+'</td></tr>';
   document.getElementById('free-gaps').textContent=(f.gaps||[]).map(function(g){
     return '['+g.provider+'] '+g.reason;}).join('   |   ');
 }
@@ -1092,9 +1113,10 @@ def main(argv=None):
     if args.once:
         print(json.dumps(collect(cfg), ensure_ascii=False, indent=2))
         return 0
-    if cfg["port_base"] <= cfg["port"] < cfg["port_base"] + len(BRIDGES):
-        sys.stderr.write("refusing to bind %d: it collides with bridge ports %d..%d\n"
-                         % (cfg["port"], cfg["port_base"], cfg["port_base"] + len(BRIDGES) - 1))
+    bridge_ports = set(cfg["port_base"] + spec[2] for spec in BRIDGES)
+    if cfg["port"] in bridge_ports:
+        sys.stderr.write("refusing to bind %d: it collides with a bridge port\n"
+                         % cfg["port"])
         return 2
     try:
         server = FleetUIServer((cfg["host"], cfg["port"]), cfg)
