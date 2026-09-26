@@ -32,6 +32,7 @@ API = "http://127.0.0.1:10100"
 PROVIDER_ALIAS = {
     "workbuddy": "wb", "workbuddy-gpt": "wbg", "codely": "cdl",
     "lingxi": "lx", "gemini": "gem", "qoder": "qdr", "tokendance": "tok",
+    "catpaw": "cpw",
 }
 # token replacements applied to the lowercased model id after the bridge-side
 # provider prefix is stripped; "" drops the token entirely.
@@ -43,6 +44,7 @@ TOKEN_MAP = [
     ("voiceclone", "vc"), ("voicedesign", "vd"), ("web-search", "web"),
     ("gpt-", ""), ("kimi", "km"), ("gemini", "gem"),
     ("evolving", "evol"), ("seed", "sd"),
+    ("longcat", "lc"),
 ]
 
 

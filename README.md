@@ -247,7 +247,7 @@ fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而�
 | TokenDance | 按量 + 峰谷 | DeepSeek V4 官方端点高峰 = 周一至周五 09:00–12:00、14:00–18:00；千帆/阿里云端点（仅 deepseek-v4-flash-0731）高峰 = 每天 08:00–22:00；其余空闲时段 5 折 |
 | 商汤小浣熊 | 未明示 | 官网 SPA 未公示价格，以登录后控制台为准 |
 | Gemini（Code Assist） | 订阅内含 | 免费档月度限额 + 本机 Google AI Pro 会员；当前桥 502 需重新登录 |
-| CatPaw（美团） | 不可达 | 需公司 VPN，无法核实 |
+| CatPaw（美团） | 未明示 | 官网/App 未公示价格；provider 已注册（10 个模型在选择器），聊天需连美团内网/VPN |
 
 ### 选择器短名（short_aliases）
 
@@ -256,9 +256,10 @@ fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而�
 
     python3 tools/short_aliases.py            # 应用 + ocx sync（幂等，可反复跑）
     python3 tools/short_aliases.py --dry-run  # 只看映射
+    # setup-providers.sh 已在所有 provider add 之后自动调用它
 
 provider 别名：workbuddy→wb、workbuddy-gpt→wbg、codely→cdl、lingxi→lx、gemini→gem、
-qoder→qdr、tokendance→tok；模型名按词典压缩（deepseek→ds、flash→fl、preview→pv、
+qoder→qdr、tokendance→tok、catpaw→cpw；模型名按词典压缩（deepseek→ds、flash→fl、preview→pv、
 sensenova 直接去掉、gpt- 前缀去掉等）。效果示例：
 
 | 原名 | 短名 |
@@ -267,10 +268,17 @@ sensenova 直接去掉、gpt- 前缀去掉等）。效果示例：
 | trae/trae-DeepSeek-V4-Flash-Official | trae/ds-v4-fl-off |
 | workbuddy-gpt/gpt-5.6-luna | wbg/gpt-5.6-luna |
 | workbuddy/hy4-preview | wb/hy4-pv |
+| catpaw/glm-5.2 | cpw/glm5.2 |
 
 别名存在 opencodex 代理配置里，catalog 同步 / 重启都不丢；脚本会顺手清理「键写错」
 的旧别名（连字符形式 vs 原生 id 的斜杠形式）。改词典改 `tools/short_aliases.py`
 里的 TOKEN_MAP / PROVIDER_ALIAS 即可。
+
+> **注意**：`ocx provider add <name> --force` 会把该 provider 的 `alias` 和
+> `modelAliases` 两个键**整个清掉**，跑一次 setup 所有短名就全丢。所以
+> `opencodex/setup-providers.sh` 在所有 `provider add` 之后、`ocx service restart`
+> 之前自动重跑一次 `tools/short_aliases.py` 补回短名。手工加/改 provider 后也要同样
+> 补跑，否则选择器名称会退回完整 slug。
 
 ### 为什么有的模型不在选择器
 
@@ -278,7 +286,11 @@ sensenova 直接去掉、gpt- 前缀去掉等）。效果示例：
   要更多：`ocx models selected tokendance --set <id,id>` 然后 `ocx sync`。
 - **openai 原生 7 个**（gpt-5.5 / 5.6 / 6.x）：ocx 内置（native），由 ChatGPT 账号直接
   管理，按设计不进反代理 catalog。
-- **catpaw**：需美团 VPN，8795 不可达 → live = 0。
+- **catpaw**：8795 静态兜底列得出 10 个模型（`longcat-flash`、`LongCat-2.0`、`glm-5v-turbo`、
+  `glm-5.3-flashx`、`glm-5.2`、`glm-5.1`、`glm-5`、`MiniMax-M2.7`、`MiniMax-M2.5`、`deepseek-v3.2`），
+  已注册进 ocx 并进入选择器（显示为 `cpw/xxx`）。但 `catpaw.sankuai.com` 是美团内网域，
+  公网 NXDOMAIN，**聊天**必须连美团 VPN（否则 502 Tunnel 503）；连上后
+  `launchctl kickstart -k gui/$(id -u)/com.local.catpaw2codex`。
 - **qoder**（2026-09-26 修复）：桥（8789）一直有 15 个模型，但从未注册进 ocx
   （live = 0）。已执行 `ocx provider add qoder --adapter openai-chat --base-url
   http://127.0.0.1:8789/v1 --api-key <plist 里的 QODER2CODEX_KEY> --allow-private-network`，14 个模型进入 catalog；已 `ocx service restart` 让代理加载，qoder 聊天经代理实测 OK。`opencodex/setup-providers.sh` 本就包含 qoder（本机当初漏注册），已加 plist key 回退。

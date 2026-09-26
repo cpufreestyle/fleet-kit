@@ -109,5 +109,18 @@ else
 fi
 
 run ocx sync
+
+# `ocx provider add --force` wipes alias/modelAliases on every provider, which
+# puts the long names back in the Codex picker. Re-register the short names
+# after all provider adds; short_aliases.py re-runs `ocx sync` itself.
+KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ "$DRY_RUN" = "1" ]; then
+  run python3 "$KIT/tools/short_aliases.py" --dry-run
+elif [ -f "$KIT/tools/short_aliases.py" ]; then
+  run python3 "$KIT/tools/short_aliases.py"
+else
+  echo "  [warn] $KIT/tools/short_aliases.py missing; picker names stay long" >&2
+fi
+
 run ocx service restart
 echo "done. inspect with: ocx models live"

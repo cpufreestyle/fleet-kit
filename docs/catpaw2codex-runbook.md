@@ -49,7 +49,20 @@
 2. IDE 发消息 + DevTools 抓 chat 端点 -> 填 CATPAW_CHAT_PATH
 3. python3 catpaw_bridge.py, curl 验证 non-stream + stream
 4. ocx provider add catpaw --adapter openai-chat --base-url http://127.0.0.1:8795/v1 --api-key sk-local-catpaw --allow-private-network && ocx sync
-5. 模型 catalog 条目确认, Codex 内 -m catpaw/catpaw-agent 直连
+   (或直接跑 kit/opencodex/setup-providers.sh，catpaw 已在内置 PROVIDERS 表里)
+5. 补选择器短名: python3 kit/tools/short_aliases.py
+   (ocx provider add --force 会清掉 alias/modelAliases，短名必须补跑)
+6. 模型 catalog 条目确认, Codex 内 -m <slug> 直连
+
+## 2026-09-26 12:00 更新：provider 已注册，仅差 VPN
+- chat 端点已内置在 runtime 桥的 catpaw_bridge.py，无需再抓包：
+  POST {MCOPILOT}/api/gpt/chat/completions (OpenAI 兼容请求体)。
+- ocx provider add catpaw 已执行，ocx models live --provider catpaw 为 10 个：
+  longcat-flash / LongCat-2.0 / glm-5v-turbo / glm-5.3-flashx / glm-5.2 /
+  glm-5.1 / glm-5 / MiniMax-M2.7 / MiniMax-M2.5 / deepseek-v3.2。
+- catalog 已有这 10 条，选择器显示为 cpw/xxx 短名 (见 README 选择器短名)。
+- 注意 /v1/models 有 STATIC_MODELS 兜底 (catpaw_bridge.py)，能列模型不等于上游通；
+  未连 VPN 时 chat 全部 502 (Tunnel 503)。所以本机现状是选得到、发不出。
 
 ## 2026-09-26 01:00 更新：公网 host 探测与回滚说明
 - 系统代理 127.0.0.1:1082（MacPacket）对 sankuai.com CONNECT 503 → 桥 502（URLerror Tunnel connect）。
