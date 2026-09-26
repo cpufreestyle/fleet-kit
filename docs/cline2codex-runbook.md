@@ -104,16 +104,83 @@ Cline 的模型网关（OpenRouter 代购层）要的是下游 provider key，�
 另有一条容易误解的：`~/.cline/data/sessions/<id>/*.messages.json` 是从 Codex
 **导入**的历史会话（`metadata.importedFrom.sourceProvider=openai-native`），不是推理记录。
 
-## 下一步（要打通必须做的）
+## 本轮突破：绕开 HTTP 网关，直连本地 hub（可行路径已找到）
 
-抓一次 Cline App 的真实推理流量，读出注入式 key 与真实 URL/body：
+不再需要用户在 App 里点任何东西——**hub daemon 是本地 WebSocket 服务，可直连并驱动推理**。
 
-1. `open -a Cline`，登录 `cpufreestyle@gmail.com`
-2. 带 `--remote-debugging-port` 重启 Cline，attach renderer CDP，开 `Network.enable`
-3. 在 App 里新建任务发一句话
-4. 从 `/api/v1/session*` 请求体与响应里还原推理入口与 header
+### 连接方式（已实测全部跑通）
 
-第 4 步之前写桥没有意义——现在写只会得到一个 401 透传壳。
+启动 App 后 `open -a Cline`，hub 会监听 `127.0.0.1:25463`：
+
+    pgrep -fl 'cline-hub-daemon'   # ... --cline-hub-daemon --cwd / --host 127.0.0.1 --port 25463 --pathname /hub
+
+凭据不用猜，就在 discovery 文件里：
+
+    ~/.cline/data/locks/hub/production.json
+      -> { url, port, pathname, authToken, capabilities[27 个], coreVersion }
+
+鉴权：`authToken` 走 WebSocket 子协议，**必须带前缀** `cline-hub-auth.`；
+或者 HTTP 用 `Authorization: Bearer <authToken>`（`/status`、`/drain` 走这个）。
+
+    HUB_AUTH_PROTOCOL_PREFIX = "cline-hub-auth."
+
+另有一条捷径：loopback + `Origin: http://127.0.0.1:25463` 也能通过
+（`isLocalHubHostName(host) && isLocalHubOrigin(origin)`），但带 token 才是正道。
+
+### 协议（v1，抓包+源码双向确认）
+
+**帧不是裸 envelope，必须包一层**，这是最容易踩的坑：
+
+    -> {"kind":"command","envelope":{"version":"v1","command":"...","clientId":"...","requestId":"...","payload":{...}}}
+    <- {"kind":"reply","envelope":{...,"ok":true,"payload":{...}}}
+    <- {"kind":"event","envelope":{...,"event":"...",...}}
+
+`client.register` 必填字段（缺一个就静默无响应）：
+
+    clientId, clientType, displayName, transport, actorKind, capabilities[],
+    workspaceContext:{workspaceRoot, cwd}
+
+### 已实测可用的命令
+
+| 命令 | 结果 |
+|---|---|
+| `client.register` | ok |
+| `hub.status` | ok（含 activeRpcTurns / eventLog.lastSequence） |
+| `client.list` | ok（能看到 sidecar 与 observer 两个真实 client） |
+| `session.create` | ok（返回 sessionId） |
+| `run.enqueue` | ok（返回 runId + queuePosition） |
+| `run.list` | ok |
+| `session.attach` | ok |
+| `settings.get` | `not_implemented`（服务端没实现，非我方问题） |
+
+`run.enqueue` 的 `sessionId` 放在 **envelope 顶层**（不是 payload 里），
+payload 用 `prompt` 或 `input` 均可。
+
+### 还差的两点（当前阻塞）
+
+1. **run 立即 failed**：`run.list` 显示 `state:failed`、`error:"Run finished with an error."`，
+   从 acceptedAt 到 endedAt 只隔 20~40ms，不是网络超时而是立即拒绝。
+   根因：session 创建时 `model` 固定为 `{providerId:"hub", modelId:"hub"}` 占位，
+   而我传的 `modelSelection:{providerId:"cline",...}` 没有被采纳；
+   真正的 model 选择要走 `session.update` / `setModel`，或经 `settings.set`。
+2. **收不到事件流**：`publish()` 只投递给在HubClient 里 `subscribe()` 声明过的 listener，
+   `session.attach` 只做 participant 管理、不建立事件订阅。
+   需要在命令外加订阅声明（客户端库 `subscribe(listener,{sessionId})` 对应的 wire 动作），
+   或退而用 `run.list` 轮询 + `session.get` 读快照。
+
+两者任一解决即可拿到真实模型输出；建议先攻第 1 点（model 选择），
+   因为 run 失败时根本不会有输出可看。
+
+### 现成资产
+
+- 探测脚本：`/tmp/clh/hub12.py`（register → create → attach → enqueue 全流程）
+- 帧落盘：`/tmp/clh/hub12_dump.jsonl`
+- 关键源码位置（`code-sidecar` 内）：
+  - WS 鉴权：`startHubWebSocketServer` / `readWebSocketAuthToken` / `isValidHubAuthToken`
+  - 帧分发：`switch (frame.kind) { case "command": ... }`
+  - 命令表：`HUB_CAPABILITIES`（27 个）
+  - publish：`publish(event)` 只遍历 `this.listeners`
+  - run 入口：`handleRunEnqueue` → `queue.admit` → `executor.pump`
 
 ## 参考
 
