@@ -218,7 +218,7 @@ verify_real_calls.py 的最近一次快照）；下面依次是 ocx 状态、今
 与余额、各桥日志 tail。提供签到 / 强制重签按钮、单桥重启按钮、10 秒自动刷新。
 
 安装时装上：`bash install.sh --with-ui`（或 `bash deploy.sh --with-ui`）。面板端口是
-PORT_BASE+9，默认 8796，与 9 座桥错开；端口若落在 [PORT_BASE, PORT_BASE+9) 区间内会
+PORT_BASE+9，默认 8796，与 10 座桥错开；端口若等于某个“实际桥端口”(PORT_BASE+offset) 会
 拒绝启动（退出码 2）。配置读取优先级：命令行参数 > 进程环境 > `<home>/fleet.env` > 默认，
 fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而不是崩掉。
 
@@ -239,7 +239,9 @@ fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而�
     python3 tools/free_models.py --json          # 机器可读（状态面板同源）
     python3 tools/free_models.py --check-sources # 官网来源可达性
 
-状态面板（8796）新增「免费模型标注」区块：徽标 + 时段 + 是否在选择器，与 CLI 同源。
+状态面板（8796）新增「免费模型标注」区块：徽标 + 时段 + 是否在选择器，与 CLI 同源；
+并提供「隐藏不可用」开关——对应桥探测即停（probe.ok=false）或核验 verdict≠REAL 的
+provider 默认隐藏，并在 meta 行标注「已隐藏 N 个不可用模型 provider(verdict)...」，可取消恢复。
 
 ### 官网标注结果（2026-09-26 抓取）
 
