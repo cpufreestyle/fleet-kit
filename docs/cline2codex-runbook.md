@@ -85,6 +85,25 @@ Cline 的模型网关（OpenRouter 代购层）要的是下游 provider key，�
     ...
     PY
 
+## 已排查且为空的线索（别再重复）
+
+为找那个运行期注入的 provider key，以下位置全部查过，**都没有**：
+
+| 位置 | 结果 |
+|---|---|
+| `~/.cline/data/settings/global-settings.json` | 只有 autoUpdate/telemetry/web_search |
+| `~/.cline/data/db/*.db`（9 个库全表枚举） | 无 provider key |
+| `~/.cline/data/cache/feature-flags*.json` | 只有开关 |
+| macOS Keychain（`security dump-keychain`） | 无 cline 条目 |
+| `code-sidecar` 静态字符串 | 无 key 赋值源 |
+
+各库里唯一有价值的发现：`sessions.db`.`sessions` 有 `provider` / `model` 两列，
+实际记录是 `provider=cline` + `model=anthropic/claude-sonnet-5`（不是 `cline-free/*`）；
+`tasks.db`.`agenda_tasks` 有 `model_selection_json` 列，但表为 0 行。
+
+另有一条容易误解的：`~/.cline/data/sessions/<id>/*.messages.json` 是从 Codex
+**导入**的历史会话（`metadata.importedFrom.sourceProvider=openai-native`），不是推理记录。
+
 ## 下一步（要打通必须做的）
 
 抓一次 Cline App 的真实推理流量，读出注入式 key 与真实 URL/body：
