@@ -201,8 +201,7 @@ fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而�
 - **catpaw**：需美团 VPN，8795 不可达 → live = 0。
 - **qoder**（2026-09-26 修复）：桥（8789）一直有 15 个模型，但从未注册进 ocx
   （live = 0）。已执行 `ocx provider add qoder --adapter openai-chat --base-url
-  http://127.0.0.1:8789/v1 --allow-private-network`，14 个模型进入 catalog；
-  `opencodex/setup-providers.sh` 本就包含 qoder（本机当初漏注册），已加 key 兜底。
+  http://127.0.0.1:8789/v1 --api-key <plist 里的 QODER2CODEX_KEY> --allow-private-network`，14 个模型进入 catalog；已 `ocx service restart` 让代理加载，qoder 聊天经代理实测 OK。`opencodex/setup-providers.sh` 本就包含 qoder（本机当初漏注册），已加 plist key 回退。
 - 选择器里模型名**不带** provider 前缀（显示 `hy4-preview` 而不是
   `workbuddy/hy4-preview`）；catalog 的 `slug` 字段才带前缀。
 

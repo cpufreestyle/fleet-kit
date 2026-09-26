@@ -46,11 +46,10 @@ TRIAL 14（qoder）/ SUB 12（gemini 4 + 原生 8）/ PAID 95（tokendance）/ N
 2. qoder 15 live 0 个在选（本日修复）：桥 8789 一直健康，但 qoder 从未注册进 ocx
    （~/.opencodex/config.json 的 providers 列表里没有它）。opencodex/setup-providers.sh
    其实包含 qoder（本机当初漏注册）。已手动补：
-   ocx provider add qoder --adapter openai-chat --base-url http://127.0.0.1:8789/v1 --api-key local --allow-private-network
-   catalog +14。脚本已加兜底：fleet.env 里 key 缺失时用 local 占位（qoder 桥不校验
-   key：plist 里环境变量名是 CODEX_KEY，桥代码读 QODER2CODEX_KEY，为空即放行）。
-   注意：ocx 代理进程（com.opencodex.proxy）启动于新 provider 注册之前，需要
-   ocx service restart 才会在运行时路由 qoder/*；catalog（选择器列表）已生效。
+   ocx provider add qoder --adapter openai-chat --base-url http://127.0.0.1:8789/v1 --api-key <plist 里的 QODER2CODEX_KEY> --allow-private-network
+   catalog 80 变 94。qoder 桥强制校验 QODER2CODEX_KEY（plist 里有、fleet.env 里没有），
+   占位 key 会 401；setup-providers.sh 已加 plist 回退取 key。
+   已 ocx service restart 让代理加载 qoder：live=14，经代理聊天实测返回 OK。
 3. openai 原生 7 个：native 模型，Codex/ChatGPT 账号直管，按设计不进 catalog。
 4. catpaw：需美团 VPN，8795 不可达，live=0。
 5. 选择器显示名不带 provider 前缀（hy4-preview），catalog slug 才带（workbuddy/hy4-preview）。

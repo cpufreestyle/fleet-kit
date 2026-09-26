@@ -49,6 +49,7 @@ if [ -n "$ARG_HOME" ]; then
   FLEET_HOME="$ARG_HOME"
 fi
 PORT_BASE="${PORT_BASE:-8787}"
+LABEL_PREFIX="${LABEL_PREFIX:-com.local}"
 
 if ! command -v ocx >/dev/null 2>&1; then
   echo "ocx not found; install it with: npm install -g @bitkyc08/opencodex" >&2
@@ -84,8 +85,17 @@ for row in "${PROVIDERS[@]}"; do
   offset="$(echo "$row" | cut -d'|' -f2)"
   keyenv="$(echo "$row" | cut -d'|' -f3)"
   port=$((PORT_BASE + offset))
-  # bridges that do not enforce a local key (e.g. qoder) tolerate a placeholder
-  key="${!keyenv:-local}"
+  key="${!keyenv:-}"
+  if [ -z "$key" ]; then
+    # live fleets keep keys in the launchd plists while fleet.env may be absent;
+    # same source tools/fleet_chat_test.py reads.
+    for pl in "$HOME/Library/LaunchAgents/${LABEL_PREFIX}.${name}2codex.plist" "$HOME/Library/LaunchAgents/${LABEL_PREFIX}.workbuddy2codex-gpt.plist"; do
+      [ -f "$pl" ] || continue
+      got="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:${keyenv}" "$pl" 2>/dev/null || true)"
+      if [ -n "$got" ]; then key="$got"; break; fi
+    done
+  fi
+  [ -z "$key" ] && key="local"   # bridges that do not enforce a key tolerate this
   run ocx provider add "$name" --adapter openai-chat --base-url "http://127.0.0.1:${port}/v1" --api-key "$key" --allow-private-network --force
   run ocx models provider "$name" on
 done
