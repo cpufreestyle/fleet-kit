@@ -65,7 +65,7 @@ BRIDGES = (
 BRIDGE_BY_NAME = dict((item[0], item) for item in BRIDGES)
 
 UI_PORT_OFFSET = 9
-PROBE_TIMEOUT = 5.0
+PROBE_TIMEOUT = 2.0
 DEFAULT_PORT_BASE = 8787
 MAX_TAIL_LINES = 200
 ACTIONS_LOCK = threading.Lock()
@@ -752,7 +752,7 @@ class FleetUIServer(ThreadingHTTPServer):
 # page
 # --------------------------------------------------------------------------- #
 
-PAGE = """<!doctype html>
+PAGE = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -920,7 +920,7 @@ function render(){
       '<td>'+probeCell(b.probe)+'</td>'+
       '<td><div class="chips">'+chips+'</div></td>'+
       '<td>'+verifyCell(b.name)+'</td>'+
-      '<td><button onclick="restart(\''+esc(b.name)+'\')">重启</button></td></tr>';}).join('');
+      '<td><button onclick="restart('+esc(b.name)+')">重启</button></td></tr>';}).join('');
   var o=s.ocx, p=document.getElementById('ocx-pill');
   if(!o.available){p.className='pill p-bad';p.textContent='ocx 未安装';}
   else if(o.healthz&&o.healthz.ok){p.className='pill p-ok';p.textContent='proxy ok '+o.healthz.ms+'ms';}
