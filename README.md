@@ -161,6 +161,51 @@ fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而�
 白名单，路径穿越会被挡掉。写操作只有 `/api/action/checkin` 与 `/api/action/restart/<name>`，
 桥名不在白名单里直接返回 unknown bridge。
 
+## 免费模型标注（官网信息 + 时段）
+
+`free-windows.json` 按各服务官网/官方定价页逐条标注每个模型的免费状态与时段
+（2026-09-26 抓取）；`tools/free_models.py` 把它与 ocx live、Codex catalog 合并输出。
+改标注只改 JSON，不用动代码。
+
+    python3 tools/free_models.py                 # 全量标注表（188 个模型）
+    python3 tools/free_models.py --free-only     # 只看免费类
+    python3 tools/free_models.py --provider qoder
+    python3 tools/free_models.py --missing       # 选择器缺口报告
+    python3 tools/free_models.py --json          # 机器可读（状态面板同源）
+    python3 tools/free_models.py --check-sources # 官网来源可达性
+
+状态面板（8796）新增「免费模型标注」区块：徽标 + 时段 + 是否在选择器，与 CLI 同源。
+
+### 官网标注结果（2026-09-26 抓取）
+
+| 服务 | 免费状态 | 时段 / 限额（官网要点） |
+|------|----------|--------------------------|
+| Trae 国内版（trae.cn） | 免费档长期 | 免费计划 ¥0：所有功能均可免费使用、2 个并发云任务 |
+| Trae 国际版（trae.ai） | 免费档长期 | Free $0：仅 Auto 模式、限量使用、每月 5000 次补全、2 并发云任务；Pro $20/月起全模型 |
+| CodeBuddy 国内版 | 限时免费个人版 | Hy4 preview 限免两周：2026-09-10 → 2026-09-23（已结束） |
+| WorkBuddy 海外版 | 限免 + Free 计划 | Hy4 preview 限免两周：2026-08-28 → 2026-09-23（已结束） |
+| 团结AI Codely | 免费额度 | 每月「月度免费点数」优先扣；Lite/Pro/Max 每 5 小时 + 每周限额，Ultra 无 5 小时窗口 |
+| 灵犀 LingXi | 登录免费 | 7 天滚动 + 5 小时 + 30 天窗口额度；加量包 30 天有效 |
+| Qoder | 试用 2 周 | 新用户 2 周 Pro 试用（全 Pro 功能），到期降 Free（Community）计划 |
+| TokenDance | 按量 + 峰谷 | DeepSeek V4 官方端点高峰 = 周一至周五 09:00–12:00、14:00–18:00；千帆/阿里云端点（仅 deepseek-v4-flash-0731）高峰 = 每天 08:00–22:00；其余空闲时段 5 折 |
+| 商汤小浣熊 | 未明示 | 官网 SPA 未公示价格，以登录后控制台为准 |
+| Gemini（Code Assist） | 订阅内含 | 免费档月度限额 + 本机 Google AI Pro 会员；当前桥 502 需重新登录 |
+| CatPaw（美团） | 不可达 | 需公司 VPN，无法核实 |
+
+### 为什么有的模型不在选择器
+
+- **tokendance**：ocx 里只 selected 了 `step-5-preview`，其余 94 个 live 模型没进 catalog。
+  要更多：`ocx models selected tokendance --set <id,id>` 然后 `ocx sync`。
+- **openai 原生 7 个**（gpt-5.5 / 5.6 / 6.x）：ocx 内置（native），由 ChatGPT 账号直接
+  管理，按设计不进反代理 catalog。
+- **catpaw**：需美团 VPN，8795 不可达 → live = 0。
+- **qoder**（2026-09-26 修复）：桥（8789）一直有 15 个模型，但从未注册进 ocx
+  （live = 0）。已执行 `ocx provider add qoder --adapter openai-chat --base-url
+  http://127.0.0.1:8789/v1 --allow-private-network`，14 个模型进入 catalog；
+  `opencodex/setup-providers.sh` 本就包含 qoder（本机当初漏注册），已加 key 兜底。
+- 选择器里模型名**不带** provider 前缀（显示 `hy4-preview` 而不是
+  `workbuddy/hy4-preview`）；catalog 的 `slug` 字段才带前缀。
+
 ## Codex 模型目录看门狗（ocx-catalog-guard）
 
 Codex 的模型选择器读的是 `model_catalog_json` 指向的那个 catalog 文件，而 opencodex 是把
@@ -212,21 +257,27 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 - tools/status_ui.sh start|stop|install-timer|uninstall-timer [--home DIR]：状态面板（默认 127.0.0.1:8796）
 - tools/status_ui.py [--port N] [--no-browser] [--once]：面板实现（stdlib 单文件；/api/status、/api/logs/<name>、/api/action/*）
 - tools/ocx-catalog-guard.sh run|install-timer|uninstall-timer|status：反代理模型 catalog 看门狗（默认 300s）
+- tools/free_models.py [--free-only] [--provider P] [--missing] [--json] [--check-sources]：免费模型标注（数据在仓库根 free-windows.json，状态面板同源）
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
 - opencodex/setup-providers.sh：重新注册 9 个 ocx provider（新机换端口后用）
 - uninstall.sh [--home DIR] [--purge]：卸载 launchd 服务和 plist；--purge 连目录一起删
 
 ## 已知问题（2026-09-26 实测，均为用户侧/外部条件）
 
-1. codely：上游网关对 chat 一律返回 400「欢迎使用Codely」onboarding 门禁。
+1. **tokendance（影响默认模型）**：API key 已失效——网关聊天端点返回
+   401「API 密钥不存在」（/v1/models 列表端点是公开的，所以模型照样列得出）。
+   表现为默认模型 `step-5-preview` 不可用。需到 tokendance.space 控制台重建 key，
+   然后 `ocx provider add tokendance --adapter openai-chat --base-url
+   https://tokendance.space/gateway/v1 --api-key <新key> --force` + `ocx sync`。
+2. codely：上游网关对 chat 一律返回 400「欢迎使用Codely」onboarding 门禁。
    /v1/models 正常、key 有效；需登录 codely.tuanjie.cn 网页端完成首次激活。
-2. gemini：403 VALI「Verify your account to continue.」——Google Code Assist
-   账号验证门禁。需完成 Google 账号验证，或用「Get cookies.txt LOCALLY」
-   导出 gemini.google.com cookie 覆盖 ~/.gemini2codex/cookies.txt。
-3. catpaw：需要美团内网/VPN，否则 catpaw.sankuai.com 不可达（Tunnel 503）。
+3. gemini：502，Google token 刷新失败（refresh failed）。需重新走
+   gemini2codex 的 Google 账号登录；历史记录见 docs/gemini2codex-runbook.md。
+4. catpaw：需要美团内网/VPN，否则 catpaw.sankuai.com 不可达（Tunnel 503）。
    连上 VPN 后执行：launchctl kickstart -k gui/$(id -u)/com.local.catpaw2codex
 
-其余 6 桥（workbuddy、workbuddy-gpt、qoder、trae、lingxi、xhx）实测可直接用于 Codex。
+2026-09-26 fleet_chat_test 实测：6 桥 PASS（workbuddy、workbuddy-gpt、qoder、trae、
+lingxi、xhx），codely 400 / gemini 502 / catpaw VPN 三项失败均为上述用户侧条件。
 
 ## 安全说明
 
@@ -245,7 +296,8 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
       README.md             本文
       bridges/              9 座桥源码 + finish.sh
       opencodex/            setup-providers.sh（ocx provider 注册）
-      tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / fleet_split.py
+      free-windows.json     免费模型标注数据（官网信息 + 时段，改这里不改代码）
+      tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / fleet_split.py / free_models.py
       docs/                 各桥 runbook + 全量实测报告
 
 ## 可选：TokenDance

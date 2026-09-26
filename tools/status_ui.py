@@ -344,6 +344,7 @@ def collect(cfg):
         bridges = [future.result() for future in futures]
         ocx = ocx_future.result()
     checkin = checkin_state(cfg["checkin_candidates"], today)
+    free = free_models()
 
     warnings = list(cfg["warnings"])
     for bridge in bridges:
@@ -367,8 +368,36 @@ def collect(cfg):
     }
     return {"generated_at": now_str(), "elapsed_ms": round((time.time() - started) * 1000),
             "config": cfg["public"], "summary": summary, "warnings": warnings,
-            "bridges": bridges, "ocx": ocx, "checkin": checkin,
+            "bridges": bridges, "ocx": ocx, "checkin": checkin, "free": free,
             "actions": snapshot_actions()}
+
+
+FREE_TTL_SECONDS = 30.0
+_FREE_LOCK = threading.Lock()
+_FREE_CACHE = {"at": 0.0, "value": None}
+
+
+def free_models():
+    """Free-model annotations from tools/free_models.py (cached, never raises)."""
+    with _FREE_LOCK:
+        cached = _FREE_CACHE["value"]
+        if cached is not None and (time.time() - _FREE_CACHE["at"]) < FREE_TTL_SECONDS:
+            return cached
+    value = {"available": False, "error": "", "counts": {}, "models": [],
+             "gaps": [], "live_by_provider": {}, "picker_by_provider": {},
+             "catalog_total": 0, "db_updated": "?"}
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "free_models.py")
+    try:
+        out = subprocess.run([sys.executable, script, "--json"],
+                             capture_output=True, timeout=60)
+        value = json.loads(out.stdout.decode("utf-8", "ignore"))
+        value["available"] = True
+    except Exception as exc:
+        value["error"] = str(exc)[:160]
+    with _FREE_LOCK:
+        _FREE_CACHE["at"] = time.time()
+        _FREE_CACHE["value"] = value
+    return value
 
 
 def snapshot_actions():
@@ -697,6 +726,13 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
     </div>
   </div>
   <div class="panel">
+    <h2>免费模型标注（官网信息，更新于 <span id="free-updated">?</span>）</h2>
+    <div class="row"><span class="meta" id="free-meta"></span></div>
+    <table><thead><tr><th>模型（选择器名）</th><th>免费</th><th>时段 / 说明</th><th>在选择器</th></tr></thead>
+    <tbody id="free-rows"></tbody></table>
+    <div class="row" style="margin-top:8px"><span class="meta" id="free-gaps"></span></div>
+  </div>
+  <div class="panel">
     <h2>操作输出</h2>
     <pre id="act-out"></pre>
   </div>
@@ -788,6 +824,35 @@ function render(){
     return '<option value="'+esc(b.name)+'">'+esc(b.name)+' · '+b.port+'</option>';}).join('');
   if(cur && s.bridges.some(function(b){return b.name===cur;})){pick.value=cur;}
   else if(!pick.value && s.bridges.length){pick.value=s.bridges[0].name;}
+  renderFree();
+}
+function freeKind(f){
+  if(f==='free'||f==='free-window'||f==='quota'||f==='trial'){return 'ok';}
+  if(f==='blocked'){return 'bad';}
+  if(f==='unknown'){return 'warn';}
+  return 'idle';
+}
+function renderFree(){
+  var f=SNAP.free;
+  var meta=document.getElementById('free-meta');
+  var rows=document.getElementById('free-rows');
+  if(!f||!f.available){
+    meta.textContent='free_models.py 不可用: '+((f&&f.error)||'missing');
+    rows.innerHTML='';return;}
+  document.getElementById('free-updated').textContent=f.db_updated||'?';
+  var live=0;for(var k in (f.live_by_provider||{})){live+=f.live_by_provider[k];}
+  var pick=0;for(var k2 in (f.picker_by_provider||{})){pick+=f.picker_by_provider[k2];}
+  var cnt=[];for(var c in (f.counts||{})){cnt.push(f.counts[c]+' '+c);}
+  meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+cnt.join(' · ');
+  var list=(f.models||[]).filter(function(m){
+    return m.in_picker||m.free==='free'||m.free==='free-window'||m.free==='quota'||m.free==='trial';});
+  rows.innerHTML=list.map(function(m){
+    return '<tr><td>'+esc(m.picker_slug||m.model)+'</td>'+
+      '<td>'+pill(freeKind(m.free),m.badge)+'</td>'+
+      '<td class="dim">'+esc(m.window)+'</td>'+
+      '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('');
+  document.getElementById('free-gaps').textContent=(f.gaps||[]).map(function(g){
+    return '['+g.provider+'] '+g.reason;}).join('   |   ');
 }
 function load(){
   fetch('/api/status').then(function(r){return r.json();}).then(function(j){

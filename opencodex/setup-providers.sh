@@ -84,7 +84,8 @@ for row in "${PROVIDERS[@]}"; do
   offset="$(echo "$row" | cut -d'|' -f2)"
   keyenv="$(echo "$row" | cut -d'|' -f3)"
   port=$((PORT_BASE + offset))
-  key="${!keyenv}"
+  # bridges that do not enforce a local key (e.g. qoder) tolerate a placeholder
+  key="${!keyenv:-local}"
   run ocx provider add "$name" --adapter openai-chat --base-url "http://127.0.0.1:${port}/v1" --api-key "$key" --allow-private-network --force
   run ocx models provider "$name" on
 done
