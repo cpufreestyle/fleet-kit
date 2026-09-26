@@ -5,10 +5,10 @@
 ## 架构
 ```
 launchd(com.local.fleet-checkin)  每日 09:00 + RunAtLoad
-   -> ~/FleetKit/runtime/tools/checkin.py --daemon
+   -> "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/checkin.py" --daemon
         解释器：workbuddy2codex venv Python（fleet.env 的 $FLEET_PYTHON）
-        状态：CODEX_CHECKIN_HOME=/Users/a1-6/FleetKit/runtime/checkin/state.json
-        日志：/Users/a1-6/FleetKit/runtime/logs/checkin.log
+        状态：CODEX_CHECKIN_HOME="/Users/a1-6/AI Shared/repo/FleetKit/runtime/checkin/state.json"
+        日志："/Users/a1-6/AI Shared/repo/FleetKit/runtime/logs/checkin.log"
 ```
 - 装机开关：`bash install.sh --with-checkin`（或 `bash deploy.sh --with-checkin` 一次到位）
 - 日常命令：`bash $FLEET_HOME/tools/checkin.sh status|run-now|install-timer|uninstall-timer`
@@ -45,10 +45,10 @@ launchd(com.local.fleet-checkin)  每日 09:00 + RunAtLoad
 ## 使用方法
 ```bash
 VENV=~/.local/node-v22.20.0-darwin-arm64/lib/node_modules/workbuddy2codex/.venv/bin/python
-$VENV ~/FleetKit/runtime/tools/checkin.py --status                  # 看今日是否已签、余额
-$VENV ~/FleetKit/runtime/tools/checkin.py --run-now                 # 手动签到（全部任务）
-$VENV ~/FleetKit/runtime/tools/checkin.py --run-now xhx --force     # 强制某任务
-tail -5 ~/FleetKit/runtime/logs/checkin.log                         # launchd 执行日志
+$VENV "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/checkin.py" --status                  # 看今日是否已签、余额
+$VENV "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/checkin.py" --run-now                 # 手动签到（全部任务）
+$VENV "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/checkin.py" --run-now xhx --force     # 强制某任务
+tail -5 "/Users/a1-6/AI Shared/repo/FleetKit/runtime/logs/checkin.log"                         # launchd 执行日志
 launchctl kickstart -k gui/$(id -u)/com.local.fleet-checkin         # 手动触发一次守护任务
 
 ```

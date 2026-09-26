@@ -201,10 +201,24 @@ cmd_status() {
   echo "codex home  : ${CODEX_HOME}"
   echo "bridge models in catalog: ${count} (heal below ${MIN_MODELS})"
   echo "log         : ${LOG_FILE}"
-  if [ -f "${LAUNCH_DIR}/${label}.plist" ]; then
-    echo "timer       : installed (every ${INTERVAL}s)"
+  # Verify the real launchd schedule, not just that a plist file exists. A plist with only
+  # RunAtLoad looks installed but fires once at login and never again, which is how the
+  # reverse-proxied models went missing after a ChatGPT restart.
+  plist="${LAUNCH_DIR}/${label}.plist"
+ if [ -f "$plist" ]; then
+    interval_kv="$(awk '/<key>StartInterval<\/key>/{f=1;next} f&&/<integer>/{gsub(/<[^>]*>/,"");sub(/^ +/,"");sub(/ +$/,"");print;exit}' "$plist")"
+    if [ -n "$interval_kv" ] && [ "$interval_kv" -gt 0 ] 2>/dev/null; then
+      echo "timer       : installed (every ${interval_kv}s)"
+    else
+      echo "timer       : BROKEN (plist has no StartInterval; re-run install-timer)"
+    fi
   else
     echo "timer       : not installed"
+  fi
+  if launchctl list "$label" >/dev/null 2>&1; then
+    echo "launchd     : loaded"
+  else
+    echo "launchd     : NOT loaded (re-run install-timer)"
   fi
   if [ -f "$LOG_FILE" ]; then
     echo "last log lines:"

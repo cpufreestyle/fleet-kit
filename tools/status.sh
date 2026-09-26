@@ -33,7 +33,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 FLEET_HOME="$ARG_HOME"
-if [ -z "$FLEET_HOME" ]; then FLEET_HOME="$HOME/FleetKit/runtime"; fi
+if [ -z "$FLEET_HOME" ]; then
+  FLEET_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
 ENVFILE="$ARG_ENV"
 if [ -z "$ENVFILE" ]; then ENVFILE="$FLEET_HOME/fleet.env"; fi
 if [ ! -f "$ENVFILE" ]; then
@@ -78,8 +80,12 @@ while IFS='|' read -r name labelsuffix offset keyenv; do
   else
     listen=no
   fi
-  count="$(curl -s -m 5 "http://127.0.0.1:$port/v1/models" 2>/dev/null | grep -o '"id"' | wc -l | tr -d ' ' || true)"
   eval "key=\$$keyenv"
+  if [ -n "$key" ]; then
+    count="$(curl -s -m 15 -H "Authorization: Bearer $key" "http://127.0.0.1:$port/v1/models" 2>/dev/null | grep -o '"id"' | wc -l | tr -d ' ' || true)"
+  else
+    count="$(curl -s -m 15 "http://127.0.0.1:$port/v1/models" 2>/dev/null | grep -o '"id"' | wc -l | tr -d ' ' || true)"
+  fi
   kmd5="$(md5short "$key")"
   printf '%-14s %-6s %-7s %-7s %-10s %-16s %s
 ' "$name" "$port" "$agent" "$listen" "models=$count" "$kmd5" "$label"
@@ -99,8 +105,8 @@ echo
 if ls "$LOG_DIR"/*-bridge.log >/dev/null 2>&1; then
   echo "logs: $LOG_DIR/<bridge>-bridge.log"
 fi
-echo "hint: a bridge with models=0 usually needs a login, then:"
-echo "      bash $FLEET_HOME/bridges/finish.sh <name>"
+echo "hint: models=0 means the bridge session is missing/expired. Re-finish with:"
+echo "      bash \"$FLEET_HOME/bridges/finish.sh\" <name>"
 echo
 
 if command -v ocx >/dev/null 2>&1; then
