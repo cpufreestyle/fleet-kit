@@ -6,6 +6,8 @@
 一键部署的 kit：9 座 OpenAI 兼容本地桥 + opencodex 集成 + 登录/验收/卸载脚本。
 
 测试基线（2026-09-26）：6/9 桥实测 PASS，3 项失败均为用户侧条件，见「已知问题」。
+真实调用基线（2026-09-26）：`tools/verify_real_calls.py` 用随机运算题核验，5/9 桥真实推理
+（workbuddy、workbuddy-gpt、qoder、trae、xhx），其余 4 桥为登录门禁/会话失效/上游关停/需 VPN，见「真实调用检测」。
 
 ## 架构
 
@@ -351,12 +353,53 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 每个服务登录后运行对应的 bridges/finish.sh <name>：重启桥 → 等待 /v1/models →
 列出模型 → 注入 Codex 模型目录 → ocx sync → 冒烟聊天一次。
 
+## 真实调用检测（verify_real_calls）
+
+「桥在监听」≠「真调上游」。`tools/verify_real_calls.py` 对每座桥发起一次**抗伪造**探测：
+一次提问同时要求模型（a）复述随机暗号前四位、（b）计算 `随机A + 随机B`。罐头/镜像桥
+无法给出正确运算（操作数每次随机），因此可靠区分「真实模型推理」与「伪装/透传 200」。
+另读上游 usage 里的 `reasoning_tokens`/`credit` 作为佐证（mock 无此字段）。
+
+    python3 tools/verify_real_calls.py            # 全舰队核验
+    python3 tools/verify_real_calls.py --only workbuddy
+    python3 tools/verify_real_calls.py --json     # 机器可读（供状态面板/汇总）
+
+推理模型需较大 `max_tokens`：探针按 256 → 2048 → 4096 逐级抬配额，避开「思维链吃光额度→空内容」。
+
+判据图例：
+
+- REAL：随机运算题答对 = 真上游推理
+- ECHO/MIRROR：复述暗号但算错 = 疑似透传，非真实推理
+- CANNED/MOCK：极速+极短+答非所问 = 疑似罐头/镜像
+- GATE：上游欢迎/登录门禁（需访问链接激活）
+- AUTH_EXPIRED：401/403，session/key 失效（重跑 bridges/finish.sh）
+- UPSTREAM_DOWN：502/503/504（代理/VPN 不通、上游关停、拒参）
+- BRIDGE_DOWN：连接失败/超时
+
+当前基线（2026-09-26 实测）：
+
+| 桥 | 端口 | 模型 | 判定 | 说明 |
+| --- | --- | --- | --- | --- |
+| workbuddy | 8787 | hy4-preview | REAL | 运算正确 reason/credit 有值 |
+| workbuddy-gpt | 8788 | gpt-6-astra | REAL | 运算正确 reason/credit 有值 |
+| qoder | 8789 | DeepSeek-V4-Pro | REAL | 运算正确 |
+| codely | 8790 | — | GATE | 上游欢迎/登录门禁（需访问链接激活） |
+| trae | 8791 | trae/Doubao-Seed-Evolving | REAL | 运算正确 |
+| lingxi | 8792 | — | AUTH_EXPIRED | session 失效，需重跑 finish |
+| xhx | 8793 | xhx/raccoon-19b265 | REAL | 运算正确 |
+| gemini | 8794 | — | UPSTREAM_DOWN | 上游 refresh/关停（502） |
+| catpaw | 8795 | — | UPSTREAM_DOWN | 隧道不通（需 VPN） |
+
+合计：REAL=5，其余 4 桥均为用户侧/外部条件。与 `fleet_chat_test.py`（存活/冒烟）互补：
+前者问「真不真」，后者问「通不通」。
+
 ## 随附工具
 
 - deploy.sh：一条命令跑完 preflight → 安装 → 等桥 → 逐桥收尾 → ocx → 签到 timer → 汇总
 - bridges/finish.sh <name> [--home DIR] [--tries N] [--skip-chat]：单桥收尾（重启+验收+同步）
 - tools/status.sh [--home DIR]：9 桥健康表（launchd/监听/模型数/key md5）+ ocx 状态 + 今日签到
 - tools/fleet_chat_test.py [--port-base N]：全舰队 /v1/models + 聊天测试（只打印 key 的 md5）
+- tools/verify_real_calls.py [--port-base N] [--only NAME] [--json]：真实调用核验（抗伪造运算题 + usage 佐证）
 - tools/checkin.sh status|run-now|install-timer|uninstall-timer [--home DIR]：每日积分签到
 - tools/status_ui.sh start|stop|install-timer|uninstall-timer [--home DIR]：状态面板（默认 127.0.0.1:8796）
 - tools/status_ui.py [--port N] [--no-browser] [--once]：面板实现（stdlib 单文件；/api/status、/api/logs/<name>、/api/action/*）
@@ -364,7 +407,7 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 - tools/free_models.py [--free-only] [--provider P] [--missing] [--json] [--check-sources]：免费模型标注（数据在仓库根 free-windows.json，状态面板同源）
 - tools/short_aliases.py [--dry-run]：选择器短名（ocx 别名，路由不受影响）
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
-- openx/setup-providers.sh：重新注册 9 桥 + tokundance + stepfun 共 11 个 ocx provider（后两者按 key 有无条件追加）+ pin 默认模型（新机换端口后用）
+- opencodex/setup-providers.sh：重新注册 9 桥
 - uninstall.sh [--home DIR] [--purge]：卸载 launchd 服务和 plist；--purge 连目录一起删
 
 ## 已知问题（2026-09-26 实测，均为用户侧/外部条件）
@@ -414,7 +457,7 @@ Plan API 后不受影响。
         bridges/              9 座桥源码 + finish.sh
         opencodex/            setup-providers.sh（ocx provider 注册）
         free-windows.json     免费模型标注数据（官网信息 + 时段，改这里不改代码）
-        tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / fleet_split.py / free_models.py / short_aliases.py
+        tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / verify_real_calls.py / fleet_split.py / free_models.py / short_aliases.py
         docs/                 各桥 runbook + stepfun/tokundance 官方 API runbook + 全量实测报告
       runtime/                运行根（install.sh --home 的默认值）
         fleet.env             桥 API key + FLEET_HOME/PORT_BASE（600，不入库）
