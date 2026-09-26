@@ -1,11 +1,18 @@
 # cline2codex Runbook — Cline 免费模型反代理
 
-日期：2026-09-26 | 状态：**逆向完成，推理路由未打通**（阻塞：Cline 无 OpenAI 兼容 chat 端点）
+日期：2026-09-26 | 状态：**已接入，第十二桥，4 个免费模型全部 REAL**
 
-## 架构（目标）
+## 架构（实测）
 ```
-Codex → ocx(:10100) → cline2codex 桥(:8799) → api.cline.bot → 上游模型
+Codex → ocx(:10100) → cline2codex 桥(:8799) → Cline hub daemon(:25463 WebSocket) → 免费模型
+                                              ↑
+                     ~/.cline/data/locks/hub/production.json（url + authToken）
 ```
+
+- 桥：`bridges/cline/cline_bridge.py`（FastAPI，offset 12 → 端口 8799）
+- LaunchAgent：`~/Library/LaunchAgents/com.local.cline2codex.plist`
+- ocx provider：`cline`（openai-chat，base `http://127.0.0.1:8799/v1`）
+- 选择器 slug：`cline/cline-free-deepseek-v4.1-flash` 等 4 个
 
 ## 逆向结论（全部有据可查）
 
@@ -188,3 +195,51 @@ payload 用 `prompt` 或 `input` 均可。
 - refresh 实现：`sdk/packages/core/src/auth/cline.ts` → `refreshClineToken()`
 - provider 定义：`code-sidecar` 内 `createCline()` / `createClineProviderModule()`
 
+
+## 接入时踩的三个坑（都会让你以为"还是不行"）
+
+### 1. `modelSelection` 的字段名是 `provider` / `model`，不是 `providerId` / `modelId`
+
+`handleSessionCreate` 的解析优先级：
+
+    sessionConfig.providerId  >  modelSelection.provider  >  metadata.provider  >  "hub"
+    sessionConfig.modelId     >  modelSelection.model     >  metadata.model     >  "hub"
+
+传 `providerId`/`modelId` **不报错**，只是被静默忽略，session 的 model 固定成
+`{provider:"hub", model:"hub"}` 占位，然后 run 时报：
+
+    Unknown or disabled provider "hub".
+
+`run.enqueue` 与 `run.start` 共用一个 handler（`run.start` == `session.send_input`），
+payload 只认 `prompt` 或 `input`。
+
+### 2. ocx provider 不要带 `defaultModel`
+
+`ocx provider add cline ...` 会自动落一个 `defaultModel: "anthropic/claude-sonnet-4-6"`
+（来自 registry 里 `cline-pass` 那条的默认模型）。留着它，请求会被路由到 openai 账号池，
+报 `OpenAI account pool has no usable account credential`——
+看上去像桥挂了，其实是默认模型指错了。删掉该字段并 `ocx restart` 即恢复。
+
+### 3. 桥不要校验本地 key
+
+`ocx` 用自己的 bearer token 做模型发现，桥若校验 `BRIDGE_KEY` 会让 discovery 拿 401，
+provider 变成 "no models available"。与 gemini / catpaw / antigravity 一致：不校验。
+
+## 模型清单（2026-09-26 实测）
+
+| slug | 结果 |
+|---|---|
+| `cline/cline-free-deepseek-v4.1-flash` | 200 REAL，1M ctx |
+| `cline/cline-free-muse-spark-1.3-contributor` | 200 REAL，多模态 |
+| `cline/z-ai-glm-5.3-flash` | 200 REAL，1.3M ctx |
+| `cline/poolside-laguna-s-2.1:free` | 200 REAL |
+| `cline-free/solar-pro4` | 上游返回 `model not found`，已剔除 |
+
+其余 free 段模型从内置 catalog 提取，见 `bridges/cline/free_models.json`。
+
+## 运维注意
+
+- hub daemon 由 Cline App 拉起；**App 没开过时桥不可用**（`/health` 的 `hub_ready` 会变 false）。
+- `~/.cline/data/locks/hub/production.json` 每次 hub 重启都会变（新 authToken），
+  桥是每次请求现读，所以无需额外处理。
+- 会话会在 `~/.cline/data/sessions/` 落盘，长期跑会攒垃圾，可定期清理。

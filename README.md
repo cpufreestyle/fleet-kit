@@ -533,17 +533,11 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
    `verify_real_calls.py` 判非 REAL，catalog_filter 随之隐藏——属设计行为，不会污染
    选择器。到 qwencloud.com 注册并创建 API key 写入 `runtime/fleet.env` 的
   `QWEN2CODEX_KEY`，然后 `bash bridges/finish.sh qwen` 即透传上游全量目录。
-8. **cline**（未接入）：逆向已完成，`api.cline.bot` 没有 OpenAI 兼容的 chat 端点
-   ——api.cline.bot 有全局 auth 中间件，非白名单路径一律 401（连不存在的路径也是同一条文案）。
-   那两个 200 的读端点是公开的（`Bearer garbage` 也 200），不证明凭据有效；
-   但凭据链确实健康：`auth/refresh` 可换票、accessToken 是合法 WorkOS OIDC JWT、
-   `workos.com/user_management/authenticate` 也 200。真正缺的是模型网关要的下游 provider key，
-   它由运行时注册表经 hub WebSocket 注入，二进制里无静态赋值。
-   Cline 自有 `cline-free/*` 模型走 `/v1/sessions/<id>/events/stream`（SSE）+ `/api/v1/session` 云端任务，
-   不是无状态 chat 接口。
-   结论：不写透传壳，等抓一次 App 真实流量再定。免费模型目录已提取到
-   `bridges/cline/free_models.json`（5 个，均计费 0），完整证据链见
-   docs/cline2codex-runbook.md。
+8. ~~cline（未接入）~~ **已接入（第十二桥，2026-09-26 21:20）**：`api.cline.bot`
+   没有可用的 OpenAI 兼容推理端点（全局 auth 中间件把非白名单路径一律挡成 401），
+   但本机 hub daemon 可以直连：`ws://127.0.0.1:25463/hub`，凭据在
+   `~/.cline/data/locks/hub/production.json`。经 hub 驱动真实推理，
+   4 个免费模型实测 200 + verify 判 REAL。详见 docs/cline2codex-runbook.md。
 
 2026-09-26 fleet_chat_test 实测（10 桥）：5 桥 PASS（workbuddy、workbuddy-gpt、
 qoder、trae、xhx）；5 项失败——codely 400 onboarding 门禁、lingxi 401 session
@@ -569,14 +563,14 @@ Plan API 后不受影响。
         uninstall.sh          卸载
         requirements.txt      Python 依赖
         README.md             本文
-        bridges/              11 座桥源码 + finish.sh；cline/ 为逆向资产（暂未接入，见已知问题 8）
+        bridges/              12 座桥源码 + finish.sh（含 cline/，第十二桥）
         opencodex/            setup-providers.sh（ocx provider 注册）
         free-windows.json     免费模型标注数据（官网信息 + 时段，改这里不改代码）
         tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / verify_real_calls.py / fleet_split.py / free_models.py / short_aliases.py / catalog_filter.py / catalog-filter.sh
         docs/                 各桥 runbook + stepfun/tokundance 官方 API runbook + 全量实测报告
       runtime/                运行根（install.sh --home 的默认值）
         fleet.env             桥 API key + FLEET_HOME/PORT_BASE（600，不入库）
-        bridges/<name>/       11 座桥运行副本（登录态、state.json 都在这里）
+        bridges/<name>/       12 座桥运行副本（登录态、state.json 都在这里）
         tools/ docs/ opencodex/   从 kit/ 复制来的运行副本
         checkin/              每日签到 timer 的状态目录
         logs/                 13 个 launchd 服务的日志

@@ -109,6 +109,7 @@ BRIDGES=(
   "catpaw|catpaw2codex|catpaw|catpaw_bridge.py|8|CATPAW2CODEX_KEY||CATPAW_PORT=@PORT@"
   "antigravity|antigravity2codex|antigravity|antigravity_bridge.py|10|ANTIGRAVITY2CODEX_KEY||ANTIGRAVITY2CODEX_PORT=@PORT@"
   "qwen|qwen2codex|qwen|qwen_bridge.py|11|QWEN2CODEX_KEY|--host 127.0.0.1 --port @PORT@|QWEN_CALL_TIMEOUT=300"
+  "cline|cline2codex|cline|cline_bridge.py|12|CLINE2CODEX_KEY|--host 127.0.0.1 --port @PORT@|CLINE_CALL_TIMEOUT=300"
 )
 
 echo "FleetKit installer v${KIT_VERSION}"

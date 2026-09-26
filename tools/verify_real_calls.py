@@ -45,6 +45,8 @@ BRIDGES = [
     ("gemini",        "gemini2codex",         7, "gemini-2.5-flash",           "GEMINI2CODEX_KEY"),
     ("catpaw",        "catpaw2codex",          8, "glm-5.2",                   "CATPAW2CODEX_KEY"),
     ("antigravity",    "antigravity2codex",     10, "claude-opus-4-8@default",    "ANTIGRAVITY2CODEX_KEY"),
+    ("qwen",           "qwen2codex",             11, "qwen3.8-flash",              "QWEN2CODEX_KEY"),
+    ("cline",          "cline2codex",           12, "cline-free/deepseek-v4.1-flash", "CLINE2CODEX_KEY"),
 ]
 
 
