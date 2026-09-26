@@ -27,6 +27,7 @@ import hmac
 import json
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -35,7 +36,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-BRIDGE_VERSION = "0.2.0"
+BRIDGE_VERSION = "0.3.0"
 
 CODELY_SERVER = os.environ.get("CODELY_SERVER") or "https://codely.tuanjie.cn"
 GATEWAY_BASE = os.environ.get("CODELY_GATEWAY") or "https://codely-litellm.tuanjie.cn/v1"
@@ -57,6 +58,36 @@ CATALOG_PREFIX = "codely/"
 #   sig   = base64url(HMAC-SHA256(key, "v1\n<path>\n<unix_ts>"))
 #   header: X-Codely-Signature: v1.<ts>.<sig>
 _SIGN_BASE_KEY = bytes.fromhex("406f00f74768ba0cb0cd30f097ec6c2bdacb89c61a38b7dd140838bbd0e98018")
+
+# 官方 CLI 逆向（bundle/gemini.js: WAt=class extends KEe）——Anthropic 兼容 generator 的
+# defaultHeaders = {"User-Agent": `codely-cli/<ver> (<platform>; <arch>)`, "x-litellm-session-id": <uuid>}。
+# 上游网关对这两个头做强校验（实测矩阵，与账号额度无关）：
+#   缺 x-litellm-session-id -> 400 {"error": "非法session"}
+#   缺官方 UA               -> 400 欢迎使用Codely 门禁
+# 两者必须一起带上才能过 400 门禁。
+_CODELY_CLI_VERSION = os.environ.get("CODELY_CLI_VERSION") or "1.0.0-rc.60"
+CLI_USER_AGENT = f"codely-cli/{_CODELY_CLI_VERSION} (darwin; arm64)"
+_session_id = uuid.uuid4().hex
+
+
+def _rotate_session() -> None:
+    """换一个新 litellm 会话 id（401 后重试时调用，对齐官方 CLI 的会话语义）。"""
+    global _session_id
+    _session_id = uuid.uuid4().hex
+
+
+def gateway_headers(key: str, path: str) -> dict:
+    """官方 CLI 等价的 LiteLLM 网关请求头。"""
+    return {
+        "Authorization": f"Bearer {key}",
+        "x-api-key": key,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": CLI_USER_AGENT,
+        "x-litellm-session-id": _session_id,
+        "anthropic-version": "2023-06-01",
+        **sign_gateway_headers(key, path),
+    }
 
 
 def sign_gateway_headers(cli_key: str, path: str) -> dict:
@@ -309,7 +340,7 @@ async def list_models(request: Request):
         gpath = f"{GATEWAY_BASE}/models"
         r = await client().get(
             f"{GATEWAY_BASE}/models",
-            headers={"Authorization": f"Bearer {key}", **sign_gateway_headers(key, "/v1/models")},
+            headers=gateway_headers(key, "/v1/models"),
         )
         if r.status_code == 200:
             return Response(content=r.content, media_type="application/json")
@@ -341,8 +372,7 @@ async def chat_completions(request: Request):
     url = f"{GATEWAY_BASE}/chat/completions"
 
     def _hdrs(k: str) -> dict:
-        return {"Authorization": f"Bearer {k}", "Content-Type": "application/json",
-                "Accept": "application/json", **sign_gateway_headers(k, "/v1/chat/completions")}
+        return gateway_headers(k, "/v1/chat/completions")
 
     headers = _hdrs(key)
 
@@ -358,6 +388,7 @@ async def chat_completions(request: Request):
         try:
             await refresh_access_token()
             key = await fetch_cli_api_key(force=True)
+            _rotate_session()
         except HTTPException:
             pass
         headers = _hdrs(key)
