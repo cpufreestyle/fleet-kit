@@ -532,7 +532,14 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
    `/v1/models` 只有静态兜底两个模型（qwen3.8-flash / qwen3.8-max），
    `verify_real_calls.py` 判非 REAL，catalog_filter 随之隐藏——属设计行为，不会污染
    选择器。到 qwencloud.com 注册并创建 API key 写入 `runtime/fleet.env` 的
-   `QWEN2CODEX_KEY`，然后 `bash bridges/finish.sh qwen` 即透传上游全量目录。
+  `QWEN2CODEX_KEY`，然后 `bash bridges/finish.sh qwen` 即透传上游全量目录。
+8. **cline**（未接入）：逆向已完成，`api.cline.bot` 没有 OpenAI 兼容的 chat 端点
+   ——写端点一律 401，而读端点（`/api/v1/models` 458 个、`recommended-models`）同为 200，
+   证明凭据有效、是路由本身不在这个网关。Cline 自有 `cline-free/*` 模型走 hub WebSocket
+   加 `/api/v1/session` 云端任务，且模型 key 由运行时注册表经 hub 注入（二进制里无静态赋值）。
+   结论：不写透传壳，等抓一次 App 真实流量再定。免费模型目录已提取到
+   `bridges/cline/free_models.json`（5 个，均计费 0），完整证据链见
+   docs/cline2codex-runbook.md。
 
 2026-09-26 fleet_chat_test 实测（10 桥）：5 桥 PASS（workbuddy、workbuddy-gpt、
 qoder、trae、xhx）；5 项失败——codely 400 onboarding 门禁、lingxi 401 session
@@ -558,7 +565,7 @@ Plan API 后不受影响。
         uninstall.sh          卸载
         requirements.txt      Python 依赖
         README.md             本文
-        bridges/              11 座桥源码 + finish.sh
+        bridges/              11 座桥源码 + finish.sh；cline/ 为逆向资产（暂未接入，见已知问题 8）
         opencodex/            setup-providers.sh（ocx provider 注册）
         free-windows.json     免费模型标注数据（官网信息 + 时段，改这里不改代码）
         tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / verify_real_calls.py / fleet_split.py / free_models.py / short_aliases.py / catalog_filter.py / catalog-filter.sh
