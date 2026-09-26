@@ -19,6 +19,7 @@ WITH_OCX=1
 SKIP_DEPS=0
 WITH_CHECKIN=0
 WITH_UI=0
+WITH_OCX_GUARD=1
 
 usage() {
   cat <<'USAGE'
@@ -32,6 +33,7 @@ Usage: install.sh [options]
   --no-opencodex    skip opencodex wiring
   --with-checkin   install the daily check-in timer (09:00 CST)
   --with-ui        install the local status panel (port PORT_BASE+9)
+  --no-ocx-guard   skip the ocx catalog guard timer (on when opencodex is wired)
   --no-start        write files and plists but do not launch bridges
   --skip-deps       do not create the virtualenv or install Python deps
   --dry-run         print the plan, change nothing
@@ -62,6 +64,7 @@ while [ "$#" -gt 0 ]; do
     --no-opencodex) WITH_OCX=0 ;;
     --with-checkin) WITH_CHECKIN=1 ;;
     --with-ui) WITH_UI=1 ;;
+    --no-ocx-guard) WITH_OCX_GUARD=0 ;;
     --no-start) DO_START=0 ;;
     --skip-deps) SKIP_DEPS=1 ;;
     --dry-run) DRY_RUN=1 ;;
@@ -394,6 +397,22 @@ if [ "$WITH_OCX" = "1" ]; then
     bash "${FLEET_HOME}/opencodex/setup-providers.sh" || true
   else
     echo "  ocx unavailable; register providers later: bash ${FLEET_HOME}/opencodex/setup-providers.sh" >&2
+  fi
+fi
+
+
+# ---------- 5b. ocx catalog guard ----------
+# Keeps the fleet bridge models in the Codex model catalog. Without it a provider switcher
+# (CC Switch) that owns model_catalog_json can strip the bridge models from the picker.
+if [ "$WITH_OCX" = "1" ] && [ "$WITH_OCX_GUARD" = "1" ]; then
+  echo "[5b/5] ocx catalog guard"
+  if [ "$DRY_RUN" = "1" ]; then
+    info "[dry-run] tools/ocx-catalog-guard.sh install-timer"
+  elif command -v ocx >/dev/null 2>&1; then
+    bash "${FLEET_HOME}/tools/ocx-catalog-guard.sh" install-timer || \
+      echo "  [warn] ocx-catalog-guard timer install failed" >&2
+  else
+    echo "  [warn] ocx not on PATH; run later: bash ${FLEET_HOME}/tools/ocx-catalog-guard.sh install-timer" >&2
   fi
 fi
 

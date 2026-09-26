@@ -142,3 +142,42 @@ lsof 才能拼出来；workbuddy 这类「桥进程还活着但 launchd 已退�
   （qoder 15 models + gemini 4 models，合计 19）、xhx points 9505
   （last_success 2026-09-25）、ocx PID 4978 running。
 
+
+## Codex 模型选择器丢了反代理模型（2026-09-26 09:00 排查）
+
+现象：重启 ChatGPT/Codex 之后，模型选择器里 `桥名/模型` 全部消失，只剩 stepfun 的
+step-5-preview。
+
+排查链路（全部本机实测）：
+- 后端正常：`curl 127.0.0.1:10100/v1/models` 返回 85 个模型，其中 72 个带 `/` 的桥模型；
+  `ocx models live` 也全在；9 座桥 8787-8795 全部 LISTEN，launchd agent_up 8/9。
+- 所以问题不在 ocx、不在桥，而在 Codex 侧读取的模型目录。
+
+根因：Codex 的模型选择器读 `model_catalog_json` 指向的 catalog 文件，而 ocx 是把桥模型
+**追加**进这个 catalog 的。这个 catalog（cc-switch-model-catalog.json）归 CC Switch 管，
+它的 profile 里只存 1 个模型；CC Switch 每次套用 profile 都会用自己那份覆盖 catalog，
+ocx 追加的 72 个模型被冲掉。重启 app 后读到的是被冲掉的版本，选择器里就没有反代理模型。
+- 证据：`config.toml.bak-before-skills-plugins-20260926-061201` 里 `model = "workbuddy/hy4-preview"`
+  且 7 个 `[model_providers.*]` 块齐全；`...-064206` 那份已只剩 `[model_providers.custom]`，
+  丢失发生在 06:12~06:42 之间（cc-switch settings.json 与 catalog 的 mtime 都是 06:40）。
+- `~/.cc-switch/cc-switch.db` 当前 codex provider（3a20aad7-…, StepFun）的
+  `settings_config.modelCatalog.models` 只有 1 条（step-3.7-flash）。
+
+修复与验证：
+- `ocx sync` → catalog 1 → 80 个模型（72 桥模型），models_cache.json 同步刷新到 80/72。
+- **`ocx ensure` 不治这个**：实测把 catalog 抹成 1 个模型后跑 `ocx ensure`，输出
+  「Codex routing NOT injected: config.toml selects the external model_provider custom」，
+  桥模型数仍是 0。只有 `ocx sync` 会同时刷 catalog 和 models 缓存。
+
+新增 `tools/ocx-catalog-guard.sh`（默认随 opencodex 接线一起装）：
+- 数 catalog 里带 `/` 的桥模型，少于 `--min-models`（默认 60）就自动 `ocx sync` 自愈。
+- launchd `com.local.ocx-catalog-guard`，StartInterval 300s + RunAtLoad，
+  日志 `~/Library/Logs/ocx-catalog-guard.log`；install.sh / deploy.sh 加 `--no-ocx-guard` 可关。
+- 本机实测：catalog 抹到 0 → `guard run` → 恢复 72，日志完整记录 heal 前后数量。
+- `uninstall.sh` 的 SUFFIXES 追加 `ocx-catalog-guard`。
+
+遗留（需用户操作）：
+- 磁盘 catalog 修好后，**已在运行的 app 仍显示旧列表**，必须重启一次 Codex/ChatGPT。
+  `ocx sync --restart-codex` 能自动重启，但会结束进行中的会话，故未擅自执行。
+- CC Switch 的 profile 只认它自己那 1 个模型。若要切完 provider 也不再触发这种情况，
+  可以把桥模型并进 CC Switch 的 profile（本次未改动它的 sqlite）。

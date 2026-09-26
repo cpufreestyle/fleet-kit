@@ -62,12 +62,13 @@ Codex 里模型以 `桥名/模型` 出现，例如 `workbuddy/hy4-preview`。
 
     install.sh [--home DIR] [--port-base N] [--with-opencodex|--no-opencodex]
                [--no-start] [--skip-deps] [--dry-run]
-               [--with-checkin] [--with-ui] [-h]
+               [--with-checkin] [--with-ui] [--no-ocx-guard] [-h]
 
 - `--home DIR`：安装根目录，默认 ~/fleet
 - `--port-base N`：起始端口，9 座桥依次占用 N .. N+8，默认 8787
 - `--with-checkin`：装每日 09:00 CST 签到 timer（当前只有 xhx 任务）
 - `--with-ui`：装本地状态面板 launchd 常驻服务，端口 N+9（默认 8796）
+- `--no-ocx-guard`：关掉反代理模型 catalog 看门狗（默认随 opencodex 一起装）
 - `--no-opencodex`：跳过 ocx provider 注册（之后可手动跑 bash ~/fleet/opencodex/setup-providers.sh）
 - `--no-start`：只写文件和 plist，不启动桥
 - `--skip-deps`：跳过 venv/依赖安装（用系统 python3）
@@ -104,6 +105,7 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
 | `--port-base N` | 起始端口，默认 8787 |
 | `--with-checkin` | 装每日 09:00 CST 签到 timer |
 | `--with-ui` | 装本地状态面板 launchd 常驻服务（端口 N+9） |
+| `--no-ocx-guard` | 跳过反代理模型 catalog 看门狗 timer（默认随 opencodex 装） |
 | `--no-opencodex` | 跳过 ocx provider 注册 |
 | `--smoke` | 每桥跑一次聊天冒烟（需要已登录） |
 | `--update` | 安装前先 git pull 更新 kit |
@@ -159,6 +161,30 @@ fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而�
 白名单，路径穿越会被挡掉。写操作只有 `/api/action/checkin` 与 `/api/action/restart/<name>`，
 桥名不在白名单里直接返回 unknown bridge。
 
+## Codex 模型目录看门狗（ocx-catalog-guard）
+
+Codex 的模型选择器读的是 `model_catalog_json` 指向的那个 catalog 文件，而 opencodex 是把
+反代理模型**追加**进去的。只要有个第三方 provider 切换器（典型是 CC Switch）重新生成这个
+catalog，追加的模型就被冲掉——表现为「重启一下 app，反代理的模型全没法选了」。
+
+`ocx ensure` 治不了：它发现 `config.toml` 的 `model_provider` 被外部占用时会直接跳过注入
+（实测 2026-09-26：把 catalog 抹成 1 个模型后跑 `ocx ensure`，反代理模型数仍是 0）。
+只有 `ocx sync` 会同时刷新 catalog 和 models 缓存。
+
+kit 因此带一个看门狗，数 catalog 里带 `/` 的桥模型，少于阈值就自动 `ocx sync`：
+
+    bash ~/fleet/tools/ocx-catalog-guard.sh status           # 桥模型数 + timer 状态
+    bash ~/fleet/tools/ocx-catalog-guard.sh run              # 立即检查并自愈
+    bash ~/fleet/tools/ocx-catalog-guard.sh install-timer
+    bash ~/fleet/tools/ocx-catalog-guard.sh uninstall-timer
+
+默认装 launchd 常驻（`StartInterval` 300s + `RunAtLoad`），随 opencodex 接线一起启用，
+`--no-ocx-guard` 可关掉。日志：`~/Library/Logs/ocx-catalog-guard.log`。
+阈值 `--min-models` 默认 60（9 桥齐全约 72，个别桥掉线不会误触发）。
+
+注意：磁盘上的 catalog 修好之后，**已经在跑的 app 仍显示旧列表**，需要重启一次
+Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中的会话）。
+
 ## 登录表
 
 | name | 登录方式 | 凭据位置 | 备注 |
@@ -185,6 +211,7 @@ fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而�
 - tools/checkin.sh status|run-now|install-timer|uninstall-timer [--home DIR]：每日积分签到
 - tools/status_ui.sh start|stop|install-timer|uninstall-timer [--home DIR]：状态面板（默认 127.0.0.1:8796）
 - tools/status_ui.py [--port N] [--no-browser] [--once]：面板实现（stdlib 单文件；/api/status、/api/logs/<name>、/api/action/*）
+- tools/ocx-catalog-guard.sh run|install-timer|uninstall-timer|status：反代理模型 catalog 看门狗（默认 300s）
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
 - opencodex/setup-providers.sh：重新注册 9 个 ocx provider（新机换端口后用）
 - uninstall.sh [--home DIR] [--purge]：卸载 launchd 服务和 plist；--purge 连目录一起删
@@ -218,7 +245,7 @@ fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而�
       README.md             本文
       bridges/              9 座桥源码 + finish.sh
       opencodex/            setup-providers.sh（ocx provider 注册）
-      tools/                status.sh / status_ui.sh / status_ui.py / checkin.sh / checkin.py / fleet_chat_test.py / fleet_split.py
+      tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / fleet_split.py
       docs/                 各桥 runbook + 全量实测报告
 
 ## 可选：TokenDance

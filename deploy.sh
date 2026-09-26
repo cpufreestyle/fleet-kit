@@ -15,6 +15,7 @@ PORT_BASE=""
 WITH_OCX=1
 WITH_CHECKIN=0
 WITH_UI=0
+WITH_OCX_GUARD=1
 SMOKE=0
 UPDATE=0
 BRIDGES="workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw"
@@ -29,6 +30,7 @@ Usage: deploy.sh [options]
   --port-base N     first bridge port; bridges use N..N+8 (default: 8787)
   --with-checkin    install the daily check-in timer (09:00 CST)
   --with-ui         install the local status panel (port PORT_BASE+9)
+  --no-ocx-guard    skip the ocx catalog guard timer (on when opencodex is wired)
   --no-opencodex    skip opencodex provider wiring
   --smoke           run a chat smoke test per bridge (needs logins)
   --update          git pull the kit first (when run from a clone)
@@ -52,6 +54,7 @@ while [ "$#" -gt 0 ]; do
     --port-base=*) PORT_BASE="$(echo "$1" | cut -d= -f2-)" ;;
     --with-checkin) WITH_CHECKIN=1 ;;
     --with-ui) WITH_UI=1 ;;
+    --no-ocx-guard) WITH_OCX_GUARD=0 ;;
     --no-opencodex) WITH_OCX=0 ;;
     --smoke) SMOKE=1 ;;
     --update) UPDATE=1 ;;
@@ -212,6 +215,11 @@ fi
 if [ "$WITH_UI" = "1" ]; then
   bash "$FLEET_HOME/tools/status_ui.sh" --home "$FLEET_HOME" install-timer
 fi
+# Keeps the bridge models in the Codex catalog; a provider switcher can strip them.
+if [ "$WITH_OCX" = "1" ] && [ "$WITH_OCX_GUARD" = "1" ]; then
+  bash "$FLEET_HOME/tools/ocx-catalog-guard.sh" install-timer || \
+    echo "[warn] ocx-catalog-guard timer install failed" >&2
+fi
 
 bash "$FLEET_HOME/tools/status.sh" --home "$FLEET_HOME" || true
 echo
@@ -228,5 +236,8 @@ if [ -n "$failed" ]; then
 fi
 if [ "$WITH_UI" = "1" ]; then
   echo "status panel: http://127.0.0.1:$((PORT_BASE + 9))/  (bash $FLEET_HOME/tools/status_ui.sh status)"
+fi
+if [ "$WITH_OCX" = "1" ] && [ "$WITH_OCX_GUARD" = "1" ]; then
+  echo "ocx catalog guard: every 300s (bash $FLEET_HOME/tools/ocx-catalog-guard.sh status)"
 fi
 echo "done."
