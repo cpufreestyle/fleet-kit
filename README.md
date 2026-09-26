@@ -534,9 +534,13 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
    选择器。到 qwencloud.com 注册并创建 API key 写入 `runtime/fleet.env` 的
   `QWEN2CODEX_KEY`，然后 `bash bridges/finish.sh qwen` 即透传上游全量目录。
 8. **cline**（未接入）：逆向已完成，`api.cline.bot` 没有 OpenAI 兼容的 chat 端点
-   ——写端点一律 401，而读端点（`/api/v1/models` 458 个、`recommended-models`）同为 200，
-   证明凭据有效、是路由本身不在这个网关。Cline 自有 `cline-free/*` 模型走 hub WebSocket
-   加 `/api/v1/session` 云端任务，且模型 key 由运行时注册表经 hub 注入（二进制里无静态赋值）。
+   ——api.cline.bot 有全局 auth 中间件，非白名单路径一律 401（连不存在的路径也是同一条文案）。
+   那两个 200 的读端点是公开的（`Bearer garbage` 也 200），不证明凭据有效；
+   但凭据链确实健康：`auth/refresh` 可换票、accessToken 是合法 WorkOS OIDC JWT、
+   `workos.com/user_management/authenticate` 也 200。真正缺的是模型网关要的下游 provider key，
+   它由运行时注册表经 hub WebSocket 注入，二进制里无静态赋值。
+   Cline 自有 `cline-free/*` 模型走 `/v1/sessions/<id>/events/stream`（SSE）+ `/api/v1/session` 云端任务，
+   不是无状态 chat 接口。
    结论：不写透传壳，等抓一次 App 真实流量再定。免费模型目录已提取到
    `bridges/cline/free_models.json`（5 个，均计费 0），完整证据链见
    docs/cline2codex-runbook.md。

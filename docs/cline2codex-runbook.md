@@ -32,11 +32,32 @@ Codex → ocx(:10100) → cline2codex 桥(:8799) → api.cline.bot → 上游模
 | `POST /api/v1/chat/completions` | **401** |
 | `POST /api/v1/language-model` | **401** |
 
-读全通、写全拒 → 不是 token 过期（过期则读也 401），而是**推理路由不在这个网关**。
+**注意：上表的 200 全都不证明凭据有效。** 同一批 URL 换成 Bearer garbage-xxx 再打：
+`/api/v1/models` 与 `recommended-models` 依然返回 200 —— 它们是公开端点，压根不校验 token。
+唯一的真判据是 `/api/v1/users/me`：拿有效 token 打它，同样 401。
+
+而凭据链本身是健康的，三条独立证据：
+
+1. `POST /api/v1/auth/refresh` 200，可反复换新票。
+2. accessToken 是合法 WorkOS OIDC JWT（RS256，kid=sso_oidc_key_pair_...，
+   iss=https://api.workos.com/user_management/client_01K3A541FN8TA3EPPHTD2325AR）。
+3. `POST https://api.workos.com/user_management/authenticate` 用同一个 refreshToken 也 200。
+
+修正后的结论：401 与凭据无效、token 过期都无关。
+api.cline.bot 有一层全局 auth 中间件，非白名单路径一律用同一条文案挡掉
+（连 `/api/v1/definitely-not-a-real-path-xyz` 也是同样的 401，
+所以 401 甚至说明不了路径是否存在）。
+而那枚 WorkOS JWT 只是给 Cline 自家后端识别「你是谁」用的；
+Cline 的模型网关（OpenRouter 代购层）要的是下游 provider key，由运行时注册表经 hub 注入。
+
 
 ### 关键证据
 
-- `code-sidecar` 二进制里 Cline 自家 `/api/v1/*` 路径**总共 20 个**，无任何 chat/messages/completions 推理端点。
+- `code-sidecar` 二进制里 Cline 自家 `/api/v1/*` 路径共 20 个（放宽到 120 字符重扫，
+  仍是同一批，只是补全了 `/api/v1/session/${...}` 这类模板后缀），
+  其中**没有任何无状态的 chat/messages/completions 推理端点**；
+  最接近的推理入口是 `/v1/sessions/${id}/events/stream` 与
+  `/v1/sessions/${id}/threads/${id}/stream`（SSE 流），但它挂在 session 生命周期上，不是 HTTP 单次调用。
 - `createCline()` 用标准 `createOpenAICompatible`（baseURL `https://api.cline.bot/api/v1`，会自动拼 `/chat/completions`），
   header 只有 `Authorization: Bearer`，无定制头。但它的 key 来自 `apiKeyResolver`——
   该 resolver 的赋值源在二进制里搜不到，由运行时注册表（`GatewayRegistry.configureProvider`）动态注入，
