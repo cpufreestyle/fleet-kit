@@ -192,6 +192,29 @@ fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而�
 | Gemini（Code Assist） | 订阅内含 | 免费档月度限额 + 本机 Google AI Pro 会员；当前桥 502 需重新登录 |
 | CatPaw（美团） | 不可达 | 需公司 VPN，无法核实 |
 
+### 选择器短名（short_aliases）
+
+选择器原名是完整 slug（`xhx/xhx-sn-sensenova-6-8-flash-lite` 36 字符，面板里看不全）。
+`tools/short_aliases.py` 用 ocx 别名把显示名压到 20 字符内（路由用的 slug 不变）：
+
+    python3 tools/short_aliases.py            # 应用 + ocx sync（幂等，可反复跑）
+    python3 tools/short_aliases.py --dry-run  # 只看映射
+
+provider 别名：workbuddy→wb、workbuddy-gpt→wbg、codely→cdl、lingxi→lx、gemini→gem、
+qoder→qdr、tokendance→tok；模型名按词典压缩（deepseek→ds、flash→fl、preview→pv、
+sensenova 直接去掉、gpt- 前缀去掉等）。效果示例：
+
+| 原名 | 短名 |
+|------|------|
+| xhx/xhx-sn-sensenova-6-8-flash-lite | xhx/sn-6-8-fl-lite |
+| trae/trae-DeepSeek-V4-Flash-Official | trae/ds-v4-fl-off |
+| workbuddy-gpt/gpt-5.6-luna | wbg/gpt-5.6-luna |
+| workbuddy/hy4-preview | wb/hy4-pv |
+
+别名存在 opencodex 代理配置里，catalog 同步 / 重启都不丢；脚本会顺手清理「键写错」
+的旧别名（连字符形式 vs 原生 id 的斜杠形式）。改词典改 `tools/short_aliases.py`
+里的 TOKEN_MAP / PROVIDER_ALIAS 即可。
+
 ### 为什么有的模型不在选择器
 
 - **tokendance**：ocx 里只 selected 了 `step-5-preview`，其余 94 个 live 模型没进 catalog。
@@ -257,6 +280,7 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 - tools/status_ui.py [--port N] [--no-browser] [--once]：面板实现（stdlib 单文件；/api/status、/api/logs/<name>、/api/action/*）
 - tools/ocx-catalog-guard.sh run|install-timer|uninstall-timer|status：反代理模型 catalog 看门狗（默认 300s）
 - tools/free_models.py [--free-only] [--provider P] [--missing] [--json] [--check-sources]：免费模型标注（数据在仓库根 free-windows.json，状态面板同源）
+- tools/short_aliases.py [--dry-run]：选择器短名（ocx 别名，路由不受影响）
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
 - opencodex/setup-providers.sh：重新注册 9 个 ocx provider（新机换端口后用）
 - uninstall.sh [--home DIR] [--purge]：卸载 launchd 服务和 plist；--purge 连目录一起删
@@ -296,7 +320,7 @@ lingxi、xhx），codely 400 / gemini 502 / catpaw VPN 三项失败均为上述�
       bridges/              9 座桥源码 + finish.sh
       opencodex/            setup-providers.sh（ocx provider 注册）
       free-windows.json     免费模型标注数据（官网信息 + 时段，改这里不改代码）
-      tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / fleet_split.py / free_models.py
+      tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / fleet_split.py / free_models.py / short_aliases.py
       docs/                 各桥 runbook + 全量实测报告
 
 ## 可选：TokenDance

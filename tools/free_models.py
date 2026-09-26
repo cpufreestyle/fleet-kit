@@ -69,7 +69,23 @@ def catalog_slugs():
     return slugs
 
 
-def match_slug(slugs, provider, model):
+def catalog_index():
+    """{slug: display_name} for the Codex picker catalog."""
+    index = {}
+    try:
+        with open(CATALOG, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return index
+    items = data if isinstance(data, list) else data.get("models", data.get("data", []))
+    for item in items:
+        slug = item.get("slug") or item.get("id") or ""
+        if slug:
+            index[slug] = item.get("display_name") or slug
+    return index
+
+
+def match_slug(index, provider, model):
     """Provider-scoped slug match.
 
     Catalog slugs look like  provider/model  (some bridges double the prefix,
@@ -78,13 +94,13 @@ def match_slug(slugs, provider, model):
     tokendance model can never claim workbuddy/deepseek-v4-flash.
     """
     exact = "%s/%s" % (provider, model)
-    if exact in slugs:
+    if exact in index:
         return exact
     prefix = provider + "/"
-    for slug in slugs:
+    for slug in index:
         if slug.startswith(prefix) and slug[len(prefix):].endswith(model):
             return slug
-    if provider == "openai" and "/" not in model and model in slugs:
+    if provider == "openai" and "/" not in model and model in index:
         return model
     return None
 
@@ -104,7 +120,8 @@ def annotate(db, provider, model):
 
 def build():
     db = load_db()
-    slugs = catalog_slugs()
+    index = catalog_index()
+    slugs = set(index)
     live = ocx_live()
     source_kind = "ocx-live"
     seen = set()
@@ -115,8 +132,10 @@ def build():
             return
         seen.add((provider, model))
         row = annotate(db, provider, model)
-        row["picker_slug"] = match_slug(slugs, provider, model)
+        row["picker_slug"] = match_slug(index, provider, model)
         row["in_picker"] = bool(row["picker_slug"])
+        # short picker label from ocx aliases (tools/short_aliases.py)
+        row["picker_name"] = (index.get(row["picker_slug"]) if row["picker_slug"] else None) or row["model"]
         row["origin"] = origin
         models.append(row)
 
@@ -175,8 +194,8 @@ def print_table(snap, free_only=False, provider=None):
           % (snap["live_source"], snap["db_updated"], snap["catalog_total"]))
     print("-" * 110)
     for row in rows:
-        name = row["picker_slug"] or ("%s   [NOT in picker]" % row["model"])
-        print("%-38s %-8s %s" % (name, row["badge"], row["window"]))
+        name = row["picker_name"] if row["in_picker"] else ("%s   [NOT in picker]" % row["model"])
+        print("%-26s %-8s %s" % (name, row["badge"], row["window"]))
     print("-" * 110)
     print("counts: " + "  ".join("%s=%d" % (BADGE.get(k, k), v)
                                 for k, v in sorted(snap["counts"].items())))

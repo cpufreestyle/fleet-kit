@@ -847,7 +847,7 @@ function renderFree(){
   var list=(f.models||[]).filter(function(m){
     return m.in_picker||m.free==='free'||m.free==='free-window'||m.free==='quota'||m.free==='trial';});
   rows.innerHTML=list.map(function(m){
-    return '<tr><td>'+esc(m.picker_slug||m.model)+'</td>'+
+    return '<tr><td>'+esc(m.picker_name||m.picker_slug||m.model)+'</td>'+
       '<td>'+pill(freeKind(m.free),m.badge)+'</td>'+
       '<td class="dim">'+esc(m.window)+'</td>'+
       '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('');

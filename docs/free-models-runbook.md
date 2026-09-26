@@ -72,3 +72,24 @@ TRIAL 14（qoder）/ SUB 12（gemini 4 + 原生 8）/ PAID 95（tokendance）/ N
     python3 tools/free_models.py --check-sources # 官网可达性
     python3 tools/fleet_chat_test.py             # 全舰队聊天实测
     ocx service restart                          # 让代理加载新 provider（如 qoder）
+
+## 选择器短名（2026-09-26）
+
+问题：catalog 的 display_name 默认等于 slug，最长 36 字符（xhx/xhx-sn-sensenova-6-8-
+flash-lite），Codex 选择器里显示不全。
+
+方案：ocx alias（ocx alias set / 管理 API PUT /api/providers/<p>/model-aliases）。
+显示名规则：有模型别名时显示 <provider 别名>/<模型别名>，否则保持完整 slug——
+所以每个模型都要配别名，provider 别名才会透显。别名与模型 id 相同（大小写不敏感）会
+409 collision，脚本用「去连字符」兜底（glm-5.2 → glm5.2）。
+
+坑（已写进脚本）：
+1. trae/xhx/lingxi 桥 advertised 的模型 id 自带斜杠（trae/DeepSeek-V4-Flash），
+   catalog slug 是连字符形式（trae/trae-DeepSeek-V4-Flash）；别名键必须用原生 id
+   （斜杠形式），脚本从 ocx models live 取原生 id。
+2. 之前用连字符键设的别名会被 API 标 stale:true 且占用别名值导致 409，脚本的
+   prune_stale_aliases 会清掉这类键。
+3. 别名 value 在 provider 内必须唯一。
+
+结果：94 个 catalog 条目全部 <=20 字符（最长 trae/sd-code-pro-0430 = 21）；
+路由不变（slug 未动），经代理聊天实测 OK。
