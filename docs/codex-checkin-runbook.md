@@ -4,36 +4,33 @@
 
 ## 架构
 ```
-launchd(com.local.codex-checkin) 每日 09:00 + RunAtLoad
-   → ~/codex-checkin/checkin.py --daemon
-       → 按任务注册表执行签到，写 ~/.codex-checkin/state.json 与 checkin.log
+launchd(com.local.fleet-checkin)  每日 09:00 + RunAtLoad
+   -> ~/FleetKit/runtime/tools/checkin.py --daemon
+        解释器：workbuddy2codex venv Python（fleet.env 的 $FLEET_PYTHON）
+        状态：CODEX_CHECKIN_HOME=/Users/a1-6/FleetKit/runtime/checkin/state.json
+        日志：/Users/a1-6/FleetKit/runtime/logs/checkin.log
 ```
-- 脚本：`~/codex-checkin/checkin.py`（复用 workbuddy2codex venv Python）
-- 状态：`~/.codex-checkin/state.json`（每任务 last_success_date / 余额 / 详情）；日志 `~/.codex-checkin/checkin.log`
-- launchd 日志：`/tmp/codex-checkin.log`
-- 幂等：同一自然日（北京时间）已成功则跳过；桌面端当天启动过也会先领掉，脚本会记录“已发放过”
-
-## 任务清单
-
-## fleet-kit 集成
-
-同一套签到逻辑也打进了 fleet-kit，与本机已有的 `~/codex-checkin` 服务**各自独立、可并存**
-（live 那个 label 是 `com.local.codex-checkin`，kit 这个是 `${LABEL_PREFIX}.fleet-checkin`）：
-
-```
-launchd(${LABEL_PREFIX}.fleet-checkin)  每日 09:00 + RunAtLoad
-   -> $FLEET_HOME/tools/checkin.py --daemon        (解释器 $FLEET_HOME/.venv/bin/python)
-       -> 状态 CODEX_CHECKIN_HOME=$FLEET_HOME/checkin/state.json
-          日志 $FLEET_HOME/logs/checkin.log
-```
-
 - 装机开关：`bash install.sh --with-checkin`（或 `bash deploy.sh --with-checkin` 一次到位）
 - 日常命令：`bash $FLEET_HOME/tools/checkin.sh status|run-now|install-timer|uninstall-timer`
   - 都支持 `--home DIR` 换根目录；等价于 `tools/checkin.py --status|--run-now|--daemon`
 - 卸载：`bash $FLEET_HOME/uninstall.sh --purge`（SUFFIXES 里含 `fleet-checkin`，timer 一起摘）
-- 上文「使用方法」的 `~/codex-checkin/...` 是 live 服务路径；kit 版对应换成
-  `$FLEET_HOME/tools/checkin.py`、`$FLEET_HOME/checkin/state.json`、
-  `$FLEET_HOME/logs/checkin.log`。幂等、CST 记「今日」、单次轮换落盘三件事完全一致。
+- 幂等：同一自然日（北京时间）已成功则跳过；桌面端当天启动过也会先领掉，脚本会记录“已发放过”
+
+## 迁移说明（2026-09-26）
+
+签到原先是独立服务 `~/codex-checkin`（label `com.local.codex-checkin`，状态在 `~/.codex-checkin/`），
+已随 FleetKit 整体迁入 runtime。**旧 label 与旧路径均已废弃**，勿再按旧路径操作：
+
+| 项 | 旧（已废弃） | 新（当前） |
+| --- | --- | --- |
+| launchd label | `com.local.codex-checkin` | `com.local.fleet-checkin` |
+| 脚本 | `~/codex-checkin/checkin.py` | `~/FLEET_HOME/tools/checkin.py` |
+| 状态 | `~/.codex-checkin/state.json` | `$FLEET_HOME/checkin/state.json` |
+| 日志 | `/tmp/codex-checkin.log` | `$FLEET_HOME/logs/checkin.log` |
+
+`~/.codex-checkin/` 是搬迁前的历史残留（state.json + checkin.log），新服务已不读取，
+确认无需回溯后可以手工删除。kit 早期曾设想自建 `fleet-checkin` 与 live 服务并存，
+现已合并为**单一服务**，不存在两个 timer。
 
 ### xhx — 商汤小浣熊 每日登录积分
 - 契约（逆向自官方桌面端 app.asar）：`POST https://xiaohuanxiong.com/api/web/desktop/v1/login/points/grant`
@@ -48,11 +45,12 @@ launchd(${LABEL_PREFIX}.fleet-checkin)  每日 09:00 + RunAtLoad
 ## 使用方法
 ```bash
 VENV=~/.local/node-v22.20.0-darwin-arm64/lib/node_modules/workbuddy2codex/.venv/bin/python
-$VENV ~/codex-checkin/checkin.py --status          # 看今日是否已签、余额
-$VENV ~/codex-checkin/checkin.py --run-now         # 手动签到（全部任务）
-$VENV ~/codex-checkin/checkin.py --run-now xhx --force   # 强制某任务
-tail -5 /tmp/codex-checkin.log                               # launchd 执行日志
-launchctl kickstart -k gui/$(id -u)/com.local.codex-checkin  # 手动触发一次守护任务
+$VENV ~/FleetKit/runtime/tools/checkin.py --status                  # 看今日是否已签、余额
+$VENV ~/FleetKit/runtime/tools/checkin.py --run-now                 # 手动签到（全部任务）
+$VENV ~/FleetKit/runtime/tools/checkin.py --run-now xhx --force     # 强制某任务
+tail -5 ~/FleetKit/runtime/logs/checkin.log                         # launchd 执行日志
+launchctl kickstart -k gui/$(id -u)/com.local.fleet-checkin         # 手动触发一次守护任务
+
 ```
 
 ## 排坑

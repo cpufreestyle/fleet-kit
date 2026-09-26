@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet-kit unattended deployment pipeline.
+# FleetKit unattended deployment pipeline.
 #
 # preflight -> install bridges -> wait for ports -> finalize each bridge
 # (finish.sh) -> opencodex providers -> optional check-in timer -> report.
@@ -22,11 +22,11 @@ BRIDGES="workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw"
 
 usage() {
   cat <<USAGE
-fleet-kit deploy
+FleetKit deploy
 
 Usage: deploy.sh [options]
 
-  --home DIR        install root (default: ~/fleet)
+  --home DIR        install root (default: ~/FleetKit/runtime)
   --port-base N     first bridge port; bridges use N..N+8 (default: 8787)
   --with-checkin    install the daily check-in timer (09:00 CST)
   --with-ui         install the local status panel (port PORT_BASE+9)
@@ -64,7 +64,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-[ -n "$FLEET_HOME" ] || FLEET_HOME="$HOME/fleet"
+[ -n "$FLEET_HOME" ] || FLEET_HOME="$HOME/FleetKit/runtime"
 [ -n "$PORT_BASE" ] || PORT_BASE=8787
 
 port_of() {
@@ -82,7 +82,7 @@ port_of() {
   esac
 }
 
-echo "fleet-kit deploy"
+echo "FleetKit deploy"
 echo "  kit   : $KIT_DIR"
 echo "  home  : $FLEET_HOME"
 echo "  ports : $PORT_BASE..$((PORT_BASE + 8))"

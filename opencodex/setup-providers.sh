@@ -33,7 +33,7 @@ done
 if [ -n "$ARG_ENV" ]; then
   ENVFILE="$ARG_ENV"
 else
-  ENVFILE="${ARG_HOME:-${HOME}/fleet}/fleet.env"
+  ENVFILE="${ARG_HOME:-${HOME}/FleetKit/runtime}/fleet.env"
 fi
 if [ ! -f "$ENVFILE" ]; then
   echo "fleet.env not found: ${ENVFILE} (run install.sh first)" >&2

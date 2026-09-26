@@ -23,7 +23,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-ARG_HOME="${ARG_HOME:-${HOME}/fleet}"
+ARG_HOME="${ARG_HOME:-${HOME}/FleetKit/runtime}"
 ENVFILE="${ARG_HOME}/fleet.env"
 if [ -f "$ENVFILE" ]; then
   set -a

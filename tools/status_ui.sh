@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet-kit status UI control: local web dashboard for the nine bridges.
+# FleetKit status UI control: local web dashboard for the nine bridges.
 #
 # The dashboard itself is tools/status_ui.py (stdlib only, no new dependency).
 # This wrapper only manages its lifecycle, in the same shape as checkin.sh.

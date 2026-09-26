@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet-kit per-bridge finalizer.
+# FleetKit per-bridge finalizer.
 #
 # Restarts one bridge, waits for it to come up, lists its models, refreshes
 # the Codex model catalog (when inject_catalog.py exists), syncs opencodex

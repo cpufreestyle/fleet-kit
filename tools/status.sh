@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet-kit status: per-bridge health table + opencodex proxy status.
+# FleetKit status: per-bridge health table + opencodex proxy status.
 #
 # Usage: status.sh [--home DIR] [--env-file PATH] [-h|--help]
 set -euo pipefail
@@ -33,7 +33,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 FLEET_HOME="$ARG_HOME"
-if [ -z "$FLEET_HOME" ]; then FLEET_HOME="$HOME/fleet"; fi
+if [ -z "$FLEET_HOME" ]; then FLEET_HOME="$HOME/FleetKit/runtime"; fi
 ENVFILE="$ARG_ENV"
 if [ -z "$ENVFILE" ]; then ENVFILE="$FLEET_HOME/fleet.env"; fi
 if [ ! -f "$ENVFILE" ]; then
@@ -56,7 +56,7 @@ md5short() {
   fi
 }
 
-echo "fleet-kit status (home $FLEET_HOME, ports $PORT_BASE..$((PORT_BASE + 8)))"
+echo "FleetKit status (home $FLEET_HOME, ports $PORT_BASE..$((PORT_BASE + 8)))"
 printf '%-14s %-6s %-7s %-7s %-10s %-16s %s
 ' BRIDGE PORT AGENT LISTEN MODELS KEY-MD5 LABEL
 printf '%.0s-' $(seq 1 96)

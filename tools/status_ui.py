@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fleet-kit status UI - a local read-mostly web dashboard for the bridge fleet.
+"""FleetKit status UI - a local read-mostly web dashboard for the bridge fleet.
 
 Stdlib only (http.server / urllib.request / plistlib / subprocess), so it adds
 nothing to requirements.txt and runs on a bare macOS python3.
@@ -556,7 +556,7 @@ def actions_restart(cfg, name):
 # --------------------------------------------------------------------------- #
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "fleet-kit-ui/1.0"
+    server_version = "FleetKit-ui/1.0"
 
     def log_message(self, fmt, *args):
         sys.stderr.write("[ui] %s\n" % (fmt % args))
@@ -642,7 +642,7 @@ PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>fleet-kit 状态面板</title>
+<title>FleetKit 状态面板</title>
 <style>
 :root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#e6e9ef;--dim:#8b93a3;
 --ok:#3fb950;--warn:#d29922;--bad:#f85149;--accent:#58a6ff;--chip:#1f2630}
@@ -693,7 +693,7 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
 </head>
 <body>
 <header>
-  <h1>fleet-kit 状态面板</h1>
+  <h1>FleetKit 状态面板</h1>
   <div class="meta" id="meta">loading...</div>
 </header>
 <main>
@@ -892,8 +892,8 @@ def render_page(cfg):
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="status_ui.py",
-        description="fleet-kit local status dashboard (stdlib only, zero new deps)")
-    parser.add_argument("--home", help="fleet root (default ~/fleet or $FLEET_HOME)")
+        description="FleetKit local status dashboard (stdlib only, zero new deps)")
+    parser.add_argument("--home", help="fleet root (default ~/FleetKit/runtime or $FLEET_HOME)")
     parser.add_argument("--env-file", help="fleet.env path (default <home>/fleet.env)")
     parser.add_argument("--host", default="127.0.0.1",
                         help="bind address (default 127.0.0.1)")
@@ -925,7 +925,7 @@ def main(argv=None):
         sys.stderr.write("cannot bind %s:%d (%s)\n" % (cfg["host"], cfg["port"], exc))
         return 1
     url = "http://%s:%d/" % (cfg["host"], cfg["port"])
-    print("fleet-kit status UI  ->  %s" % url)
+    print("FleetKit status UI  ->  %s" % url)
     print("  home      %s" % cfg["home"])
     print("  fleet.env %s" % (cfg["env_file"] + (" (found)" if cfg["env_found"] else " (MISSING)")))
     print("  bridges   %d..%d  label prefix %s" % (cfg["port_base"], cfg["port_base"] + 8, cfg["label_prefix"]))

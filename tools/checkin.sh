@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet-kit auto check-in control (daily points for subscription platforms).
+# FleetKit auto check-in control (daily points for subscription platforms).
 #
 # Wraps tools/checkin.py (task registry; currently xhx SenseTime Raccoon).
 # The WorkBuddy "Buddy 加油站" check-in is bridge-integrated (account pool,
