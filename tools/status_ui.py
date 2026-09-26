@@ -697,9 +697,19 @@ class Handler(BaseHTTPRequestHandler):
             name = route[len("/api/logs/"):]
             query = urllib.parse.parse_qs(parsed.query)
             self._send(self.server.log_payload(name, query), "application/json; charset=utf-8")
-        else:
+        elif route == "/favicon.ico":
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        elif route.startswith("/api/"):
             self._send({"ok": False, "error": "not found: %s" % route},
                        "application/json; charset=utf-8", 404)
+        else:
+            # stray URLs (IME typos, trailing punctuation) self-heal to the dashboard
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
