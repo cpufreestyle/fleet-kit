@@ -110,6 +110,21 @@ fi
 
 run ocx sync
 
+# StepFun Plan API (official paid plan; step-5-preview has a 1M context window).
+# A local proxy tool can resolve api.stepfun.com to a fake-ip non-global address,
+# so registration needs --allow-private-network or the destination policy blocks
+# model discovery.
+if [ -n "${STEPFUN_PLAN_API_KEY:-}" ]; then
+  run ocx provider add stepfun --adapter openai-chat --base-url https://api.stepfun.com/step_plan/v1 --api-key "${STEPFUN_PLAN_API_KEY}" --allow-private-network --force
+  # bare `ocx models` refreshes the discovery cache; without it
+  # `ocx models provider stepfun on` reports "no models are available".
+  run ocx models >/dev/null
+  run ocx models provider stepfun on
+  run ocx models selected stepfun --set step-5-preview,step-3.7-flash,step-3.5-flash-2603,step-3.5-flash,step-router-v1
+else
+  echo "  (STEPFUN_PLAN_API_KEY not set; skipping stepfun plan api)"
+fi
+
 # `ocx provider add --force` wipes alias/modelAliases on every provider, which
 # puts the long names back in the Codex picker. Re-register the short names
 # after all provider adds; short_aliases.py re-runs `ocx sync` itself.
@@ -126,7 +141,7 @@ fi
 # CC Switch owns that file and `ocx provider add --force` rewrites it, so re-pin the
 # default after the last sync. fleet.env can override with FLEET_DEFAULT_MODEL.
 CODEX_TOML="${HOME}/.codex/config.toml"
-DEFAULT_MODEL="${FLEET_DEFAULT_MODEL:-trae/trae-step-5-preview}"
+DEFAULT_MODEL="${FLEET_DEFAULT_MODEL:-stepfun/step-5-preview}"
 if [ -f "$CODEX_TOML" ]; then
   if [ "$DRY_RUN" = "1" ]; then
     echo "  [dry-run] pin ${DEFAULT_MODEL} as the default model in ${CODEX_TOML}"

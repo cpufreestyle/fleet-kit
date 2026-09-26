@@ -283,9 +283,12 @@ sensenova 直接去掉、gpt- 前缀去掉等）。效果示例：
 ### 默认模型
 
 Codex 启动时选中的模型由 `~/.codex/config.toml` 的 `model` 键决定（值填 catalog slug）。
-当前默认 `trae/trae-step-5-preview`（选择器显示 `trae/step-5-pv`）：trae 桥 8791，
-是 StepFun 阶跃星辰路线里唯一实测可聊的一条（tokendance 同款 `step-5-preview`
-因 key 401 不可用；CC Switch 原生中继的 `step-3.7-flash` 是另一款，不是 5）。
+当前默认 `stepfun/step-5-preview`：StepFun 阶跃星辰**官方 Plan API**
+（`https://api.stepfun.com/step_plan/v1`），不经本地桥、直连官方，上下文 1M
+（ocx 记 1000000）。此前默认走 trae 桥 8791 的 `trae/trae-step-5-preview`
+（选择器显示 `trae/step-5-pv`），该桥上游已挂（401→502）后切到官方直连；
+tokendance 同款 `step-5-preview` 也因 key 401 不可用。接入细节与两个坑见
+docs/stepfun2codex-runbook.md。
 `setup-providers.sh` 在最后一次 `ocx sync` 之后重新 pin 这个键——CC Switch 和
 `ocx provider add --force` 都会重写 config.toml，不 pin 默认模型会被打回。
 改默认：`fleet.env` 里设 `FLEET_DEFAULT_MODEL=<slug>`，或直接手改 config.toml。
@@ -361,14 +364,15 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 - tools/free_models.py [--free-only] [--provider P] [--missing] [--json] [--check-sources]：免费模型标注（数据在仓库根 free-windows.json，状态面板同源）
 - tools/short_aliases.py [--dry-run]：选择器短名（ocx 别名，路由不受影响）
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
-- opencodex/setup-providers.sh：重新注册 9 个 ocx provider + pin 默认模型（新机换端口后用）
+- openx/setup-providers.sh：重新注册 9 桥 + tokundance + stepfun 共 11 个 ocx provider（后两者按 key 有无条件追加）+ pin 默认模型（新机换端口后用）
 - uninstall.sh [--home DIR] [--purge]：卸载 launchd 服务和 plist；--purge 连目录一起删
 
 ## 已知问题（2026-09-26 实测，均为用户侧/外部条件）
 
 1. **tokendance（step-5 备选路线）**：API key 已失效——网关聊天端点返回
   401「API 密钥不存在」（/v1/models 列表端点是公开的，所以模型照样列得出）。
-  默认模型已切到 trae 的 `trae/trae-step-5-preview`（见「默认模型」一节）；
+  默认模型已切到 StepFun 官方 Plan API 的 `stepfun/step-5-preview`
+  （见「默认模型」一节）；
   key 重建后若想切回，改 `fleet.env` 的 `FLEET_DEFAULT_MODEL` 再跑一次
   `setup-providers.sh`。重建：tokendance.space 控制台重新生成 key，
   然后 `ocx provider add tokendance --adapter openai-chat --base-url
@@ -381,13 +385,19 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
    AI Studio key；详见 docs/free-models-runbook.md「Gemini 档位定性」。
 4. catpaw：需要美团内网/VPN，否则 catpaw.sankuai.com 不可达（Tunnel 503）。
    连上 VPN 后执行：launchctl kickstart -k gui/$(id -u)/com.local.catpaw2codex
+5. trae：桥 8791 上游已挂（先 401 鉴权失效，后 502「param invalid」），已不是
+  默认路线。经 CC Switch 对外表现为
+  `503 所有供应商已熔断，无可用渠道`——看到这个报错先确认默认模型是不是又
+  指回了死掉的桥；现默认为 stepfun 官方直连，实测 200。
 
 2026-09-26 fleet_chat_test 实测：6 桥 PASS（workbuddy、workbuddy-gpt、qoder、trae、
 lingxi、xhx），codely 400 / gemini 502 / catpaw VPN 三项失败均为上述用户侧条件。
+当晚 trae 桥上游开始报错（401→502，见第 5 条），step-5 路线改走 StepFun 官方
+Plan API 后不受影响。
 
 ## 安全说明
 
-- 8 个本地 key 只写在 <home>/fleet.env（权限 600），仅本机使用，不要提交 git 或外发
+- 10 个本地 key 只写在 <home>/fleet.env（权限 600，8 座桥 + tokundance + stepfun），仅本机使用，不要提交 git 或外发
 - 所有桥只监听 127.0.0.1；gemini/catpaw 两桥不校验本地 key（Authorization 只用于上游 Google/美团）
 - 测试脚本只打印 key 的 md5，不打印明文
 - 状态面板只监听 127.0.0.1；key 只显示 md5 前 8 位；日志接口走桥名白名单
@@ -405,7 +415,7 @@ lingxi、xhx），codely 400 / gemini 502 / catpaw VPN 三项失败均为上述�
         opencodex/            setup-providers.sh（ocx provider 注册）
         free-windows.json     免费模型标注数据（官网信息 + 时段，改这里不改代码）
         tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / fleet_split.py / free_models.py / short_aliases.py
-        docs/                 各桥 runbook + 全量实测报告
+        docs/                 各桥 runbook + stepfun/tokundance 官方 API runbook + 全量实测报告
       runtime/                运行根（install.sh --home 的默认值）
         fleet.env             桥 API key + FLEET_HOME/PORT_BASE（600，不入库）
         bridges/<name>/       9 座桥运行副本（登录态、state.json 都在这里）
@@ -419,6 +429,13 @@ lingxi、xhx），codely 400 / gemini 502 / catpaw VPN 三项失败均为上述�
 fleet.env 里取消注释 TOKENDANCE_API_KEY= 并填入 key，重跑
 bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/opencodex/setup-providers.sh" 即追加 tokendance provider
 （https://tokendance.space/gateway/v1，模型 step-5-preview 等）。
+
+## StepFun Plan API（默认模型上游）
+
+默认模型 `stepfun/step-5-preview` 走 StepFun 官方 Plan API（订阅制，端点
+`/step_plan/v1`），不是本地桥。`fleet.env` 里设 `STEPFUN_PLAN_API_KEY=<key>`，
+重跑 setup-providers.sh 即注册/更新 provider；没有 key 时该步骤自动跳过。
+详见 docs/stepfun2codex-runbook.md。
 
 ## 卸载
 
