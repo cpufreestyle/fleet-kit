@@ -143,6 +143,13 @@ cmd_install_timer() {
   label="${LABEL_PREFIX}.ocx-catalog-guard"
   plist="${LAUNCH_DIR}/${label}.plist"
   script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  # launchd hands the job a minimal PATH, and ocx usually lives in a user-local node
+  # bin dir that is not on it. Bake that directory in, or the guard can only ever skip.
+  path_value="${OCX_GUARD_PATH:-/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}"
+  ocx_bin="$(command -v ocx 2>/dev/null || true)"
+  if [ -n "$ocx_bin" ]; then
+    path_value="$(dirname "$ocx_bin"):${path_value}"
+  fi
   mkdir -p "$LAUNCH_DIR"
   cat >"$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -157,6 +164,13 @@ cmd_install_timer() {
     <string>${script_path}</string>
     <string>run</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${path_value}</string>
+    <key>HOME</key>
+    <string>${HOME}</string>
+  </dict>
   <key>StartInterval</key>
   <integer>${INTERVAL}</integer>
   <key>RunAtLoad</key>

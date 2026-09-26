@@ -181,3 +181,17 @@ ocx 追加的 72 个模型被冲掉。重启 app 后读到的是被冲掉的版�
   `ocx sync --restart-codex` 能自动重启，但会结束进行中的会话，故未擅自执行。
 - CC Switch 的 profile 只认它自己那 1 个模型。若要切完 provider 也不再触发这种情况，
   可以把桥模型并进 CC Switch 的 profile（本次未改动它的 sqlite）。
+
+### 看门狗第一次安装时漏掉的坑：launchd 的 PATH
+
+首版 plist 没给 `EnvironmentVariables.PATH`，launchd 用最小 PATH 起 job，而 `ocx` 在
+`~/.local/node-v22.20.0-darwin-arm64/bin`（登录 shell 的 PATH 里有，launchd 的没有），
+结果 timer 每次跑都只是 `skip: ocx not on PATH`，看门狗形同虚设。
+
+修法：`install-timer` 时用 `command -v ocx` 解析出 ocx 所在目录，连同一组系统目录写进
+plist 的 `PATH`，同时带上 `HOME`（guard 要用 `$HOME/.codex`）。复验：重新 install-timer
+→ 抹掉 catalog → `launchctl kickstart -k gui/<uid>/com.local.ocx-catalog-guard` →
+日志 `heal done: 0 bridge models, now 72`，确认 launchd 环境下真能自愈。
+
+教训：凡是 launchd job 要调用户级 CLI（node/npm 全局装的都算），plist 必须显式给 PATH，
+不能依赖登录 shell 的环境。
