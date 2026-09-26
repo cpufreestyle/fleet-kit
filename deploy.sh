@@ -18,7 +18,7 @@ WITH_UI=0
 WITH_OCX_GUARD=1
 SMOKE=0
 UPDATE=0
-BRIDGES="workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity"
+BRIDGES="workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline"
 
 usage() {
   cat <<USAGE
@@ -27,7 +27,7 @@ FleetKit deploy
 Usage: deploy.sh [options]
 
   --home DIR        install root (default: ~/FleetKit/runtime)
-  --port-base N     first bridge port; bridges use N..N+8 (default: 8787)
+  --port-base N     first bridge port; bridges use N..N+11 (default: 8787)
   --with-checkin    install the daily check-in timer (09:00 CST)
   --with-ui         install the local status panel (port PORT_BASE+9)
   --no-ocx-guard    skip the ocx catalog guard timer (on when opencodex is wired)
@@ -79,6 +79,8 @@ port_of() {
     gemini) echo $((PORT_BASE + 7)) ;;
     catpaw) echo $((PORT_BASE + 8)) ;;
     antigravity) echo $((PORT_BASE + 10)) ;;
+    qwen) echo $((PORT_BASE + 11)) ;;
+    cline) echo $((PORT_BASE + 12)) ;;
     *) echo "" ;;
   esac
 }
@@ -86,7 +88,7 @@ port_of() {
 echo "FleetKit deploy"
 echo "  kit   : $KIT_DIR"
 echo "  home  : $FLEET_HOME"
-echo "  ports : $PORT_BASE..$((PORT_BASE + 8))"
+echo "  ports : $PORT_BASE..$((PORT_BASE + 12))"
 
 # [1/6] preflight
 echo "[1/6] preflight"
@@ -102,7 +104,7 @@ for tool in python3 curl launchctl; do
 done
 BUSY=""
 i=0
-while [ "$i" -le 8 ]; do
+while [ "$i" -le 11 ]; do
   port=$((PORT_BASE + i))
   if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
     BUSY="$BUSY $port"
@@ -162,7 +164,7 @@ done
 # bridges that are up and report the rest so they can be fixed individually.
 unreachable="$pending"
 if [ -z "$unreachable" ]; then
-  echo "all 9 bridges listening on $PORT_BASE..$((PORT_BASE + 8))"
+  echo "all 11 bridges listening on $PORT_BASE..$((PORT_BASE + 11))"
 else
   up=""
   for name in $BRIDGES; do
@@ -177,7 +179,7 @@ else
     echo "check logs: bash $FLEET_HOME/tools/status.sh --home $FLEET_HOME" >&2
     exit 1
   fi
-  echo "bridges up:$up (port range $PORT_BASE..$((PORT_BASE + 8)))"
+  echo "bridges up:$up (port range $PORT_BASE..$((PORT_BASE + 11)))"
   echo "[warn] unreachable (offline / needs VPN or login):$unreachable"
   echo "       inspect logs in $LOG_DIR, then: bash $FLEET_HOME/bridges/finish.sh <name>"
 fi
@@ -231,7 +233,7 @@ for name in $BRIDGES; do
     *) up_count=$((up_count + 1)) ;;
   esac
 done
-echo "deploy summary: bridges $up_count/9 up | finalized $ok/$up_count | login needed:${failed:- none}"
+echo "deploy summary: bridges $up_count/11 up | finalized $ok/$up_count | login needed:${failed:- none}"
 if [ -n "$failed" ]; then
   echo "next: log in per README, then bash $FLEET_HOME/bridges/finish.sh <name>"
 fi

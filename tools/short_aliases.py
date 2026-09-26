@@ -34,6 +34,7 @@ PROVIDER_ALIAS = {
     "lingxi": "lx", "gemini": "gem", "qoder": "qdr", "tokendance": "tok",
     "catpaw": "cpw",
     "antigravity": "agy",
+    "qwen": "qwn", "cline": "cln",
 }
 # token replacements applied to the lowercased model id after the bridge-side
 # provider prefix is stripped; "" drops the token entirely.

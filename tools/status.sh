@@ -100,6 +100,8 @@ xhx|xhx2codex|6|XHX2CODEX_KEY
 gemini|gemini2codex|7|GEMINI2CODEX_KEY
 catpaw|catpaw2codex|8|CATPAW2CODEX_KEY
 antigravity|antigravity2codex|10|ANTIGRAVITY2CODEX_KEY
+qwen|qwen2codex|11|QWEN2CODEX_KEY
+cline|cline2codex|12|CLINE2CODEX_KEY
 ROWS
 
 echo

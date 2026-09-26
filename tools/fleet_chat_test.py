@@ -45,6 +45,8 @@ BRIDGE_NAMES = [
     ('gemini',        7, 'gemini-3-pro-preview'),
     ('catpaw',        8, 'glm-5.2'),
     ('antigravity',  10, 'claude-opus-4-8@default'),
+    ('qwen',         11, 'qwen3.8-flash'),
+    ('cline',        12, 'cline-free/deepseek-v4.1-flash'),
 ]
 
 

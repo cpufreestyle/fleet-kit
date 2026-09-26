@@ -63,6 +63,7 @@ BRIDGES = (
     ("catpaw", "catpaw2codex", 8, "CATPAW2CODEX_KEY"),
     ("antigravity", "antigravity2codex", 10, "ANTIGRAVITY2CODEX_KEY"),
     ("qwen", "qwen2codex", 11, "QWEN2CODEX_KEY"),
+    ("cline", "cline2codex", 12, "CLINE2CODEX_KEY"),
 )
 BRIDGE_BY_NAME = dict((item[0], item) for item in BRIDGES)
 
