@@ -11,6 +11,12 @@ panel could not verify as REAL (see verify_real_calls.py verdicts). A provider w
 bridge - tokendance, stepfun, the native openai rows - is never touched, because there
 is nothing to verify it against.
 
+It also hides junk rows - TTS/voice, embeddings, rerank, OCR, speech-to-text,
+image/video generation, web-search tools, subagents and a placeholder row - that only
+add noise to the picker. Junk hiding is decided from the slug alone, so it runs first
+and unconditionally: a dead status panel or an all-dead fleet must not stop the picker
+from shedding rows that are never a usable chat model.
+
 Removing is only half the job. A bridge that comes back (renewed token, VPN on,
 upstream fixed) would otherwise stay missing from the picker forever, because nothing
 re-adds it: the ocx-catalog-guard timer only re-syncs when the bridge model count drops
@@ -29,6 +35,7 @@ Options:
   --only P[,P...]    only consider these providers for removal
   --no-backup        skip the timestamped backup
   --no-restore       do not run ocx sync to bring back a verified-REAL provider
+  --no-hide-junk     keep non-chat junk rows (TTS/OCR/embedding/video/web tools)
   --timeout SEC      status panel and subprocess timeout (default 20)
   --dry-run          report only, change nothing
 
@@ -38,6 +45,7 @@ Exit codes: 0 ok (or nothing to do), 2 bad usage, 3 status panel unreachable,
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -47,6 +55,40 @@ import urllib.request
 BACKUP_TEMPLATE = ".bak-%Y%m%d-%H%M%S"
 STATE_FILE = ".catalog-filter-restore-state.json"
 STATE_COOLDOWN = 3600
+
+# Rows that are never a usable chat model when picked in Codex. The substrings are
+# only ones unique to the junk class, so real rows survive: "seedream" hides image
+# generation while seed-2.0-code stays, "ocr" hides glm-ocr while qwen3-vl-plus stays,
+# and the -i2v/-r2v/-t2v video tags never appear in a text model slug.
+JUNK_SUBSTRINGS = (
+    "-i2v", "-r2v", "-t2v",                              # image / video generation
+    "tts", "speech", "seedream", "happyhorse", "-song",  # voice, music, video
+    "embedding", "rerank",                              # retrieval utilities
+    "ocr", "-asr",                                      # OCR, speech-to-text
+    "web-search", "web-reader", "bocha",                # web-search tools
+    "computer_use_subagent",                            # browser subagent
+    "-official",                                        # "-Official" dual listings
+    "cogevol", "spark-x2.5",                            # research/PPT agents, tiny spark models
+)
+# Substrings are only ones unique to the junk class, so real rows survive: "seedream"
+# hides image generation while seed-2.0-code stays, "ocr" hides glm-ocr while
+# qwen3-vl-plus stays, and -i2v/-r2v/-t2v never appear in a text model slug.
+JUNK_SLUGS = {
+    "qoder/model",   # placeholder row ocx advertises, never a real model
+}
+# A trailing -MMDD date marks a snapshot that merely duplicates a live sibling
+# (deepseek-v4-flash-0731 beside deepseek-v4-flash), so it is safe to hide; no real
+# model slug ends in four digits after a dash. Slugs match case-insensitively, so
+# precompute the lowercased set and the dated-suffix regex once.
+_JUNK_SLUGS_LOWER = frozenset(s.lower() for s in JUNK_SLUGS)
+_DATED_RE = re.compile(r"-\d{4}$")
+
+
+def is_junk(slug):
+    """True when a catalog slug is a non-chat utility or placeholder row."""
+    low = slug.lower()
+    return (low in _JUNK_SLUGS_LOWER
+            or any(token in low for token in JUNK_SUBSTRINGS))
 
 
 def fail(message, code):
@@ -105,6 +147,29 @@ def provider_of(model):
     return slug.split("/", 1)[0]
 
 
+def drop_junk(models):
+    """Return (keepers, dropped) after hiding junk rows, dropped keyed by provider."""
+    # A dated snapshot (trailing -MMDD) is only redundant when its plain sibling is
+    # also advertised, so lone dated-named models like qwen3-30b-a3b-instruct-2507 stay.
+    advertised = {(m.get("slug") or m.get("id") or m.get("model") or "").lower()
+                  for m in models if isinstance(m, dict)}
+
+    def is_dated_snapshot(low):
+        base = _DATED_RE.sub("", low)
+        return base != low and base in advertised
+
+    keepers, dropped = [], {}
+    for model in models:
+        slug = model.get("slug") or model.get("id") or model.get("model") or ""
+        low = slug.lower()
+        provider = slug.split("/", 1)[0] if "/" in slug else "<native>"
+        if is_junk(slug) or is_dated_snapshot(low):
+            dropped.setdefault(provider, []).append(slug)
+        else:
+            keepers.append(model)
+    return keepers, dropped
+
+
 def state_path(codex_home):
     return os.path.join(codex_home, STATE_FILE)
 
@@ -127,9 +192,66 @@ def write_state(codex_home, state):
     os.replace(tmp, state_path(codex_home))
 
 
+def write_catalog(path, data, keepers, summary, no_backup):
+    """Back up, atomically replace the catalog with keepers, then verify.
+
+    Re-serialising must round-trip byte for byte, or the write would reformat a file
+    that both Codex and CC Switch read. Returns True on success; on any failure sets
+    summary["error"] and returns False without leaving a partial file.
+    """
+    with open(path, encoding="utf-8") as fh:
+        original = fh.read()
+    try:
+        proof = json.dumps(load_catalog(path), indent=2, ensure_ascii=False) + "\n"
+    except Exception as exc:
+        summary["error"] = "cannot prove round-trip (%s)" % exc
+        return False
+    if proof != original:
+        summary["error"] = "round-trip mismatch, refusing to rewrite %s" % path
+        return False
+
+    if not no_backup:
+        backup = path + time.strftime(BACKUP_TEMPLATE)
+        if os.path.exists(backup):
+            backup = "%s-%d" % (backup, os.getpid())
+        with open(path, "rb") as src, open(backup, "wb") as dst:
+            dst.write(src.read())
+        summary["backup"] = backup
+
+    data["models"] = keepers
+    payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    directory = os.path.dirname(path) or "."
+    handle, tmp = tempfile.mkstemp(prefix=".catalog-filter-", dir=directory)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+    # The picker is worthless if the file ends up broken, so prove that after writing.
+    try:
+        after = load_catalog(path)
+    except Exception as exc:
+        print("catalog-filter: WRITE LEFT AN UNREADABLE FILE: %s" % exc,
+              file=sys.stderr)
+        summary["error"] = "write left an unreadable file: %s" % exc
+        return False
+    if len(after.get("models") or []) != len(keepers):
+        print("catalog-filter: WRITE LEFT THE WRONG MODEL COUNT", file=sys.stderr)
+        summary["error"] = "write left the wrong model count"
+        return False
+    summary["verified_after_write"] = True
+    return True
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="hide catalog models whose bridge is not verified REAL",
+        description="hide catalog models whose bridge is not verified REAL and junk rows",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--status-url", default=os.environ.get(
         "FLEET_STATUS_URL", "http://127.0.0.1:8796/api/status"))
@@ -143,6 +265,8 @@ def main(argv=None):
     parser.add_argument("--no-restore", action="store_true")
     parser.add_argument("--restore-cooldown", type=int, default=STATE_COOLDOWN)
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument("--no-hide-junk", action="store_true",
+                        help="keep non-chat junk rows (TTS/OCR/embedding/video/web tools)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -163,30 +287,60 @@ def main(argv=None):
     if not isinstance(models, list):
         return fail("catalog has no models list: %s" % path, 5)
 
+    original_count = len(models)
+    summary = {
+        "catalog": path,
+        "status_url": args.status_url,
+        "verified_at": None,
+        "bridges": [],
+        "real": [],
+        "keep": sorted(keep),
+        "models_before": original_count,
+    }
+
+    # Hide junk rows first, before any bridge check: this cleanup is decided from the
+    # slug alone and must not depend on the status panel or a verified-REAL fleet.
+    junk_dropped = {}
+    if not args.no_hide_junk:
+        models, junk_dropped = drop_junk(models)
+    summary["junk_removed"] = sum(len(v) for v in junk_dropped.values())
+    summary["junk_removed_by_provider"] = {k: len(v)
+                                           for k, v in sorted(junk_dropped.items())}
+    summary["junk_removed_slugs"] = junk_dropped
+
+    def finish(keepers, code):
+        """Report counts, write unless a dry run, and return the run code."""
+        summary["models_after"] = len(keepers)
+        summary["removed"] = original_count - len(keepers)
+        if args.dry_run:
+            summary["dry_run"] = True
+        elif len(keepers) != original_count:
+            if not write_catalog(path, data, keepers, summary, args.no_backup):
+                return 5
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        return code
+
     try:
         status = fetch_status(args.status_url, args.timeout)
     except Exception as exc:
-        return fail("status panel unreachable (%s): %s" % (args.status_url, exc), 3)
+        # Junk cleanup is independent of the panel, so persist it even with the panel
+        # down; only signal failure when there was nothing to remove either way.
+        summary["status_error"] = "status panel unreachable: %s" % exc
+        summary["bridge_filter"] = "skipped"
+        return finish(models, 0 if summary["junk_removed"] else 3)
 
     bridges = {b.get("name") for b in (status.get("bridges") or [])
                if isinstance(b, dict) and b.get("name")}
     verify = status.get("verify") or {}
     real = {r for r in (verify.get("real") or []) if isinstance(r, str)}
-
-    summary = {
-        "catalog": path,
-        "status_url": args.status_url,
-        "verified_at": verify.get("generated_at"),
-        "bridges": sorted(bridges),
-        "real": sorted(real),
-        "keep": sorted(keep),
-        "models_before": len(models),
-    }
+    summary["verified_at"] = verify.get("generated_at")
+    summary["bridges"] = sorted(bridges)
+    summary["real"] = sorted(real)
 
     if not real:
-        summary["error"] = "no bridge verified REAL; refusing to filter"
-        print(json.dumps(summary, indent=2, ensure_ascii=False))
-        return fail("no bridge verified REAL, would drop every bridged model", 4)
+        # Same as above: keep the junk cleanup, but do not touch bridge rows.
+        summary["error"] = "no bridge verified REAL; refusing to filter bridges"
+        return finish(models, 0 if summary["junk_removed"] else 4)
 
     present = {p for p in (provider_of(m) for m in models) if p}
     # A REAL provider with no rows left is how a recovered bridge stays invisible.
@@ -194,8 +348,6 @@ def main(argv=None):
     if suspects and not args.dry_run and not args.no_restore:
         # ocx sync rewrites whatever catalog config.toml names, so restoring while
         # filtering some other file would corrupt the wrong one.
-        # ocx sync rewrites whatever config.toml names, never --catalog, so restoring
-        # while filtering some other file would rewrite a catalog we are not editing.
         default_path = catalog_path(args.codex_home, None)
         owns_catalog = (args.catalog is None
                         or (default_path is not None
@@ -220,9 +372,16 @@ def main(argv=None):
                 try:
                     data = load_catalog(path)
                     models = data.get("models") or []
-                    summary["models_before"] = len(models)
+                    # ocx sync re-advertises every model, junk included, so the junk
+                    # filter has to run again on the reloaded catalog.
+                    if not args.no_hide_junk:
+                        models, junk_dropped = drop_junk(models)
+                        summary["junk_removed"] = sum(
+                            len(v) for v in junk_dropped.values())
+                        summary["junk_removed_slugs"] = junk_dropped
                     summary["restored"] = sorted(
-                        ((real & bridges) & {provider_of(m) for m in models}) - present)
+                        ((real & bridges)
+                         & {provider_of(m) for m in models}) - present)
                 except Exception as exc:
                     return fail("catalog unreadable after ocx sync: %s" % exc, 5)
 
@@ -242,65 +401,9 @@ def main(argv=None):
         else:
             keepers.append(model)
 
-    summary["removed"] = len(models) - len(keepers)
     summary["removed_by_provider"] = {k: len(v) for k, v in sorted(dropped.items())}
     summary["removed_slugs"] = {k: v for k, v in sorted(dropped.items())}
-    summary["models_after"] = len(keepers)
-    data["models"] = keepers
-
-
-    if args.dry_run or not dropped:
-        if args.dry_run:
-            summary["dry_run"] = True
-        print(json.dumps(summary, indent=2, ensure_ascii=False))
-        return 0
-
-    # Re-serialising must round-trip byte for byte, or the write would reformat a file
-    # that both Codex and CC Switch read.
-    with open(path, encoding="utf-8") as fh:
-        original = fh.read()
-    try:
-        proof = json.dumps(load_catalog(path), indent=2, ensure_ascii=False) + "\n"
-    except Exception as exc:
-        return fail("cannot prove round-trip (%s)" % exc, 5)
-    if proof != original:
-        return fail("round-trip mismatch, refusing to rewrite %s" % path, 5)
-
-    if not args.no_backup:
-        backup = path + time.strftime(BACKUP_TEMPLATE)
-        if os.path.exists(backup):
-            backup = "%s-%d" % (backup, os.getpid())
-        with open(path, "rb") as src, open(backup, "wb") as dst:
-            dst.write(src.read())
-        summary["backup"] = backup
-
-    payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-    directory = os.path.dirname(path) or "."
-    handle, tmp = tempfile.mkstemp(prefix=".catalog-filter-", dir=directory)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as fh:
-            fh.write(payload)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-    # The picker is worthless if the file ends up broken, so prove that after writing.
-    try:
-        after = load_catalog(path)
-    except Exception as exc:
-        print("catalog-filter: WRITE LEFT AN UNREADABLE FILE: %s" % exc,
-              file=sys.stderr)
-        return 5
-    if len(after.get("models") or []) != len(keepers):
-        print("catalog-filter: WRITE LEFT THE WRONG MODEL COUNT", file=sys.stderr)
-        return 5
-    summary["verified_after_write"] = True
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
-    return 0
+    return finish(keepers, 0)
 
 
 if __name__ == "__main__":

@@ -367,8 +367,16 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
     python3 "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/catalog_filter.py"
     bash    "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/catalog-filter.sh" status|run|install-timer|uninstall-timer
 
+同一脚本还顺手清掉「永远不会是聊天模型」的噪声行——只凭 slug 判定、不依赖面板状态：
+TTS/语音、embedding/rerank、OCR/ASR、图像/视频生成（-i2v/-r2v/-t2v、seedream、happyhorse）、
+web-search/web-reader 工具、computer_use_subagent、`-Official` 双列、占位行 `qoder/model`，以及与
+在线同胞重复的 `-MMDD` 日期快照（deepseek-v4-flash-0731 旁边有 deepseek-v4-flash 才删，孤立的
+qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PPT agent）与 spark-x2.5-1.7b/4b
+（过小的 spark 模型）也归入噪声，选择器 154 → 149；`--no-hide-junk` 可整体关掉这层清理。
+
 规则：
 - 只删「有桥且非 REAL」的斜杠模型；tokendance / stepfun / 原生模型永不动。
+- 垃圾行清理先于桥判定执行（只看 slug），面板挂了也照删；`--no-hide-junk` 关闭。
 - 权威源是 `http://127.0.0.1:8796/api/status` 的 `verify.real`（不是 `bridges[].probe.ok`）。
 - 写前做 byte 级 round-trip 校验，不符即拒绝落库（exit 5）；面板不可达（3）或 real 为空（4）一概不删，防止误清空。
 - REAL 但 catalog 缺失的桥会 `ocx sync` 补回（带 1h cooldown，避免和 guard 打架）。
@@ -376,7 +384,7 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 
 用 `catalog-filter.sh install-timer` 装 launchd 常驻（`com.local.catalog-filter`，`StartInterval` 300s + `RunAtLoad`），日志：`~/Library/Logs/catalog-filter.log`。
 
-与 `ocx-catalog-guard` 互补：guard 在桥模型数 < 60 时 `ocx sync` 加回，filter 再剔除非 REAL。当前 5 个 REAL 桥 + tokendance/stepfun 约 171 个斜杠模型，远高于 guard 阈值，两者不互踩。
+与 `ocx-catalog-guard` 互补：guard 在桥模型数 < 60 时 `ocx sync` 加回，filter 再剔除非 REAL。当前 REAL 桥：workbuddy、workbuddy-gpt、qoder、codely、trae、lingxi、xhx；连同 tokendance/stepfun 与原生行，清理后选择器 149 行，远高于 guard 阈值，两者不互踩。
 
 改完磁盘 catalog 后**需重启 Codex/ChatGPT** 才会刷新选择器。
 
@@ -450,7 +458,7 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 - tools/status_ui.sh start|stop|install-timer|uninstall-timer [--home DIR]：状态面板（默认 127.0.0.1:8796）
 - tools/status_ui.py [--port N] [--no-browser] [--once]：面板实现（stdlib 单文件；/api/status、/api/logs/<name>、/api/action/*（含 verify-real-calls））
 - tools/ocx-catalog-guard.sh run|install-timer|uninstall-timer|status：反代理模型 catalog 看门狗（默认 300s）
-- tools/catalog-filter.sh run|install-timer|uninstall-timer|status：按 verify.real 隐藏不可用桥模型（默认 300s，与 ocx-catalog-guard 互补）
+- tools/catalog-filter.sh run|install-timer|uninstall-timer|status：按 verify.real 隐藏不可用桥模型＋按 slug 清理噪声行（默认 300s，与 ocx-catalog-guard 互补）
 - tools/free_models.py [--free-only] [--provider P] [--missing] [--json] [--check-sources]：免费模型标注（数据在仓库根 free-windows.json，状态面板同源）
 - tools/short_aliases.py [--dry-run]：选择器短名（ocx 别名，路由不受影响）
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
