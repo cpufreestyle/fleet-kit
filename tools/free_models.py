@@ -47,8 +47,14 @@ def ocx_live():
     rows = []
     for item in items:
         provider = item.get("provider") or "?"
-        model = str(item.get("id") or "")
-        model = model.split("/")[-1] if "/" in model else model
+        # live "id" sometimes carries a bridge prefix (trae/X, cline-free/X)
+        # while the picker slug hyphenates it (cline-free-X). The namespaced
+        # spelling matches the picker; fall back to the raw id otherwise.
+        model = str(item.get("namespaced") or "")
+        if "/" in model:
+            model = model.split("/", 1)[1]
+        else:
+            model = str(item.get("id") or "")
         if model:
             rows.append((provider, model))
     return rows

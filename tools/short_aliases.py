@@ -39,9 +39,9 @@ PROVIDER_ALIAS = {
 # token replacements applied to the lowercased model id after the bridge-side
 # provider prefix is stripped; "" drops the token entirely.
 TOKEN_MAP = [
-    ("sensenova", ""), ("deepseek", "ds"), ("minimax", "mm"), ("doubao", "db"),
+    ("sensenova", ""), ("cline-free-", "free-"), ("deepseek", "ds"), ("minimax", "mm"), ("doubao", "db"),
     ("computer_use_subagent", "cu"), ("preview", "pv"), ("official", "off"),
-    ("flash", "fl"), ("turbo", "tb"), ("raccoon", "rcn"),
+    ("flash", "fl"), ("turbo", "tb"), ("raccoon", "rcn"), (":free", ""),
     ("ultraspeed", "us"), ("thinking", "thk"), ("embedding", "emb"),
     ("voiceclone", "vc"), ("voicedesign", "vd"), ("web-search", "web"),
     ("gpt-", ""), ("kimi", "km"), ("gemini", "gem"),
