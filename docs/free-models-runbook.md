@@ -93,3 +93,19 @@ flash-lite），Codex 选择器里显示不全。
 
 结果：94 个 catalog 条目全部 <=20 字符（最长 trae/sd-code-pro-0430 = 21）；
 路由不变（slug 未动），经代理聊天实测 OK。
+
+## Gemini 档位定性（2026-09-26 官网确认）
+
+问：gemini 模型是免费的还是套餐里的？
+
+答：两者都不算——我们桥用的是 Gemini Code Assist 个人消费者档，它本身就是免费档：
+个人 Google 账号登录即有额度（官方 Gemini CLI 文档：60 次/分、1000 次/天），不按
+token 计费；Google AI Pro/Ultra 订阅只是把这个免费档的限额抬高，不占订阅内独立额度。
+
+但官方弃用页（2026-09-02 更新）明确：2026-06-18 起 individuals / Google AI Pro /
+Google AI Ultra 档全面停止服务（含 Gemini CLI，Login with Google 入口关闭），消费者
+账号需迁移 Antigravity；仅 Code Assist Standard/Enterprise（GCP 付费订阅）不受影响。
+本机桥 502 refresh failed 的根本原因即此——不是 token 过期，是登录链路被关。
+
+出路：迁 Antigravity（本机已装 /Applications/Antigravity.app，可仿舰队模式建桥），
+或改用 Google AI Studio API key（ocx registry 有 google 条目，AI Studio 有免费额度）。

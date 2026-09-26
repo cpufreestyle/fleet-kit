@@ -294,8 +294,10 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
    https://tokendance.space/gateway/v1 --api-key <新key> --force` + `ocx sync`。
 2. codely：上游网关对 chat 一律返回 400「欢迎使用Codely」onboarding 门禁。
    /v1/models 正常、key 有效；需登录 codely.tuanjie.cn 网页端完成首次激活。
-3. gemini：502，Google token 刷新失败（refresh failed）。需重新走
-   gemini2codex 的 Google 账号登录；历史记录见 docs/gemini2codex-runbook.md。
+3. gemini：502，且不是 token 过期——Google 已于 2026-06-18 关停 Code Assist
+   individuals/AI Pro/Ultra 档（含 Gemini CLI 登录），该档本就是个人账号免费档
+   （60 次/分、1000 次/天，AI Pro 只抬限额不单独计费）。需迁移 Antigravity 或改
+   AI Studio key；详见 docs/free-models-runbook.md「Gemini 档位定性」。
 4. catpaw：需要美团内网/VPN，否则 catpaw.sankuai.com 不可达（Tunnel 503）。
    连上 VPN 后执行：launchctl kickstart -k gui/$(id -u)/com.local.catpaw2codex
 

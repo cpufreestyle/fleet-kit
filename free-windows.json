@@ -19,7 +19,9 @@
       "free": "free-window",
       "window": "限时免费个人版（官网长期活动）；Hy4 preview 限免两周：2026-09-10 00:00 → 2026-09-23 23:59:59（已结束）",
       "facts": "官网定价页：推出「限时免费个人版、限时免费企业旗舰版、企业专享版」；Hy4 preview「邀您免费体验，限免两周」（国内 2026-09-10 起、海外 2026-08-28 起，均至 2026-09-23 23:59:59）；DeepSeek-v4.1-flash 独家联合首发享限时折扣（2026-09-10 → 09-23）。",
-      "sources": ["https://www.codebuddy.cn/pricing"],
+      "sources": [
+        "https://www.codebuddy.cn/pricing"
+      ],
       "verified": true
     },
     "workbuddy-gpt": {
@@ -28,7 +30,9 @@
       "free": "free-window",
       "window": "Hy4 preview 限免两周：2026-08-28 00:00 → 2026-09-23 23:59:59（已结束）；之后仍有 intlFree 免费计划",
       "facts": "官网定价页：Free 计划 $0（含 intlFree 入口）+ Pro 订阅；Hy4 preview「邀您免费体验！Agent 与复杂任务执行能力全面跃升，限免两周」，海外 2026-08-28 00:00 开始，至 2026-09-23 23:59:59 结束；DeepSeek-v4.1-flash 独家联合首发限时折扣（2026-09-10 → 09-23）。",
-      "sources": ["https://www.workbuddy.ai/pricing"],
+      "sources": [
+        "https://www.workbuddy.ai/pricing"
+      ],
       "verified": true
     },
     "trae": {
@@ -37,7 +41,10 @@
       "free": "free",
       "window": "长期免费档（限量使用），无固定截止；国内版免费计划所有功能可用、2 个并发云任务",
       "facts": "国内版（trae.cn）免费计划：¥0，「所有功能均可免费使用」「支持 2 个云端任务同时执行」。国际版（trae.ai）Free $0：仅 Auto 模式、Limited usage、每月 5000 次自动补全、2 个并发云任务；Pro $20/月起（$20 用量/月、全模型、无限补全、10 并发云任务）；Pro+ $60、Ultra $200。",
-      "sources": ["https://www.trae.cn/pricing", "https://www.trae.ai/pricing"],
+      "sources": [
+        "https://www.trae.cn/pricing",
+        "https://www.trae.ai/pricing"
+      ],
       "verified": true
     },
     "codely": {
@@ -46,7 +53,10 @@
       "free": "quota",
       "window": "每月「月度免费点数」自动发放（扣减时优先扣免费点数）；Lite/Pro/Max 另有每 5 小时 + 每周额度限制，Ultra 无 5 小时窗口仅受周/月额度约束",
       "facts": "官网/控制台：个人版 Lite/Pro/Max 与团队版（标准/高级/旗舰/尊享）订阅，积分（Credits）计量；账户有「月度免费点数」「充值点数」两类余额，扣减时优先扣月度免费点数；积分上限说明见 codely-docs.tuanjie.cn/subscription-pricing-details；套餐 10月12日前限时优惠（如 Lite 月付 19.6 元 vs 划线 98 元）。",
-      "sources": ["https://codely.tuanjie.cn/", "https://codely-docs.tuanjie.cn/subscription-pricing-details"],
+      "sources": [
+        "https://codely.tuanjie.cn/",
+        "https://codely-docs.tuanjie.cn/subscription-pricing-details"
+      ],
       "verified": true
     },
     "lingxi": {
@@ -55,7 +65,9 @@
       "free": "quota",
       "window": "登录后即可免费使用；额度（灵力）按 7 天滚动 + 5 小时窗口 + 30 天窗口计量；加量包 30 天有效",
       "facts": "官网：「登录后即可免费使用」「下载桌面端免费使用完整功能」；额度体系：每 7 天滚动额度 + 每 5 小时窗口 + 30 天额度；订阅 ¥x/月起解锁更多模型与额度；加量包统一价 ¥/100 灵力、30 天有效、限时优惠。",
-      "sources": ["https://lingxi.regaing.com/"],
+      "sources": [
+        "https://lingxi.regaing.com/"
+      ],
       "verified": true
     },
     "qoder": {
@@ -64,7 +76,10 @@
       "free": "trial",
       "window": "新用户免费 2 周 Pro 试用（全 Pro 功能）；到期可选择订阅，或不操作自动降级 Free（Community）计划",
       "facts": "官网 FAQ：新用户可获 2 周免费 Pro 试用，享全部 Pro 功能；试用结束后可升级付费套餐，或不操作自动降级为 Free 计划；Qoder 以 credits 计量，各档套餐含一定 credits；定价页另有 Community（Free）版。",
-      "sources": ["https://qoder.com/pricing", "https://qoder.com/"],
+      "sources": [
+        "https://qoder.com/pricing",
+        "https://qoder.com/"
+      ],
       "verified": true
     },
     "xhx": {
@@ -73,17 +88,23 @@
       "free": "unknown",
       "window": "官网未公示免费/收费与时段（站点为 SPA，定价内容未在公开页面抓取到）",
       "facts": "官网仅产品介绍页，未抓到价格/免费说明；实际以登录后控制台额度为准。",
-      "sources": ["https://www.xiaohuanxiong.com/"],
+      "sources": [
+        "https://www.xiaohuanxiong.com/"
+      ],
       "verified": false
     },
     "gemini": {
-      "vendor": "Google Gemini Code Assist",
+      "vendor": "Google Gemini Code Assist（个人消费者档）",
       "site": "https://codeassist.google.com/",
-      "free": "subscription",
-      "window": "Code Assist 免费档有月度限额；本机账号为 Google AI Pro 会员（订阅内含更高额度）；当前桥 502（token 刷新失败）需重新登录",
-      "facts": "经 Code Assist API（cloudcode-pa.googleapis.com）使用 Gemini 模型；免费档按官方月度限额，Google AI Pro/Ultra 订阅含更高额度；2026-09-26 实测桥 502：refresh failed，需要重新完成 Google 账号登录。",
-      "sources": ["https://codeassist.google.com/"],
-      "verified": false
+      "free": "blocked",
+      "window": "曾是免费档：个人 Google 账号自带额度（官方 Gemini CLI 文档：60 次/分、1000 次/天），Google AI Pro/Ultra 只抬高该免费档限额、不单独计费。但 Google 已宣布 2026-06-18 起 individuals / AI Pro / AI Ultra 档全面停止服务（含 Gemini CLI 的 Login with Google），需迁移 Antigravity；本机桥 502 refresh failed 即此因",
+      "facts": "官方弃用页（developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals，2026-09-02 更新）：Starting June 18, 2026, Gemini Code Assist IDE extensions stopped serving requests for the Gemini Code Assist for individuals, Google AI Pro, and Google AI Ultra tiers. This also applies to usage of Gemini CLI - Login with Google 已关闭，消费者账号需迁移 Antigravity；FAQ 明确 Code Assist Standard/Enterprise（GCP 付费订阅）不受影响。结论：这批模型不是按量付费也不占 AI Pro 独立额度，本就是个人账号免费档，且该档已被 Google 关停。",
+      "sources": [
+        "https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals",
+        "https://google-gemini.github.io/gemini-cli/",
+        "https://docs.cloud.google.com/gemini/docs/codeassist/overview"
+      ],
+      "verified": true
     },
     "tokendance": {
       "vendor": "TokenDance 词元跳动",
@@ -91,7 +112,10 @@
       "free": "paid",
       "window": "按量计费（额度制）；平台另有免费模型（需登录控制台查看清单）；DeepSeek V4 系列峰谷定价：DeepSeek 官方端点高峰=周一至周五 09:00–12:00、14:00–18:00；百度千帆/阿里云端点（仅 deepseek-v4-flash-0731）高峰=每天 08:00–22:00；其余时间为空闲时段，价格为高峰 5 折",
       "facts": "官网 changelog（2026-08-24）：DeepSeek V4 部分端点启用峰谷定价，空闲时段价格为高峰时段 50%，自动切换；实名公告提到平台「含免费模型」（清单需登录查看）；⚠️ 2026-09-26 实测 ocx 内 tokendance API key 已失效：上游返回 401「API 密钥不存在」，需到 tokendance.space 控制台重建 key。",
-      "sources": ["https://tokendance.space/", "https://tokendance.space/models"],
+      "sources": [
+        "https://tokendance.space/",
+        "https://tokendance.space/models"
+      ],
       "verified": true
     },
     "catpaw": {
@@ -100,7 +124,9 @@
       "free": "blocked",
       "window": "需美团公司 VPN（sankuai 内网域），当前不可达，无法核实",
       "facts": "公网 catpaw.meituan.com 需 passport 认证；内网 catpaw.sankuai.com 需 VPN；未连接时 8795 桥无响应。",
-      "sources": ["https://catpaw.sankuai.com/"],
+      "sources": [
+        "https://catpaw.sankuai.com/"
+      ],
       "verified": false
     },
     "openai": {
@@ -109,7 +135,9 @@
       "free": "subscription",
       "window": "随 ChatGPT 订阅；账号池当前提示需重新认证（ocx status: codex reauthentication required）",
       "facts": "ocx 内置 provider（native 模型），不经本地桥；额度随 ChatGPT 订阅。",
-      "sources": ["https://chatgpt.com/"],
+      "sources": [
+        "https://chatgpt.com/"
+      ],
       "verified": false
     }
   },
@@ -138,18 +166,63 @@
       "source": "https://tokendance.space/",
       "verified": true
     },
-    "tokendance/deepseek-v4-flash": {"free": "paid", "window": "峰谷定价：空闲时段 5 折；高峰=周一至周五 09:00–12:00、14:00–18:00（DeepSeek 官方端点）", "source": "https://tokendance.space/", "verified": true},
-    "tokendance/deepseek-v4-flash-0731": {"free": "paid", "window": "峰谷定价：空闲时段 5 折；高峰=周一至周五 09:00–12:00、14:00–18:00；千帆/阿里云端点高峰=每天 08:00–22:00", "source": "https://tokendance.space/", "verified": true},
-    "tokendance/deepseek-v4-pro": {"free": "paid", "window": "峰谷定价：空闲时段 5 折；高峰=周一至周五 09:00–12:00、14:00–18:00（DeepSeek 官方端点）", "source": "https://tokendance.space/", "verified": true},
-    "tokendance/deepseek-v4-pro-0813": {"free": "paid", "window": "峰谷定价：空闲时段 5 折；高峰=周一至周五 09:00–12:00、14:00–18:00（DeepSeek 官方端点）", "source": "https://tokendance.space/", "verified": true},
-    "tokendance/deepseek-v4.1-flash": {"free": "paid", "window": "峰谷定价适用于 DeepSeek V4 系列端点，空闲时段 5 折", "source": "https://tokendance.space/", "verified": true},
-    "tokendance/deepseek-v4-flash-vision-exp": {"free": "paid", "window": "峰谷定价：空闲时段 5 折；高峰=周一至周五 09:00–12:00、14:00–18:00（DeepSeek 官方端点）", "source": "https://tokendance.space/", "verified": true}
+    "tokendance/deepseek-v4-flash": {
+      "free": "paid",
+      "window": "峰谷定价：空闲时段 5 折；高峰=周一至周五 09:00–12:00、14:00–18:00（DeepSeek 官方端点）",
+      "source": "https://tokendance.space/",
+      "verified": true
+    },
+    "tokendance/deepseek-v4-flash-0731": {
+      "free": "paid",
+      "window": "峰谷定价：空闲时段 5 折；高峰=周一至周五 09:00–12:00、14:00–18:00；千帆/阿里云端点高峰=每天 08:00–22:00",
+      "source": "https://tokendance.space/",
+      "verified": true
+    },
+    "tokendance/deepseek-v4-pro": {
+      "free": "paid",
+      "window": "峰谷定价：空闲时段 5 折；高峰=周一至周五 09:00–12:00、14:00–18:00（DeepSeek 官方端点）",
+      "source": "https://tokendance.space/",
+      "verified": true
+    },
+    "tokendance/deepseek-v4-pro-0813": {
+      "free": "paid",
+      "window": "峰谷定价：空闲时段 5 折；高峰=周一至周五 09:00–12:00、14:00–18:00（DeepSeek 官方端点）",
+      "source": "https://tokendance.space/",
+      "verified": true
+    },
+    "tokendance/deepseek-v4.1-flash": {
+      "free": "paid",
+      "window": "峰谷定价适用于 DeepSeek V4 系列端点，空闲时段 5 折",
+      "source": "https://tokendance.space/",
+      "verified": true
+    },
+    "tokendance/deepseek-v4-flash-vision-exp": {
+      "free": "paid",
+      "window": "峰谷定价：空闲时段 5 折；高峰=周一至周五 09:00–12:00、14:00–18:00（DeepSeek 官方端点）",
+      "source": "https://tokendance.space/",
+      "verified": true
+    }
   },
   "gaps": [
-    {"provider": "tokendance", "reason": "ocx 中该 provider 仅 selected 了 step-5-preview 一个模型，其余 94 个 live 模型不在 catalog；需要更多：ocx models selected tokendance --set <id,id> 然后 ocx sync"},
-    {"provider": "openai", "reason": "ocx 原生模型（native），由 Codex/ChatGPT 账号直接管理，按设计不进反代理 catalog"},
-    {"provider": "catpaw", "reason": "美团 CatPaw 需公司 VPN（sankuai 内网），8795 当前不可达，live=0；连上 VPN 后执行 bridges/finish.sh catpaw + ocx sync"},
-    {"provider": "qoder", "reason": "2026-09-26 已修复：此前 qoder 桥（8789）有 15 个模型但从未注册进 ocx（live=0）；现已 ocx provider add qoder --adapter openai-chat --base-url http://127.0.0.1:8789/v1 --allow-private-network，14 个模型已进入 catalog"},
-    {"provider": "gemini", "reason": "Gemini 桥在跑但 token 刷新失败（502），模型能列出但不能聊天；需重新登录 Google 账号"}
+    {
+      "provider": "tokendance",
+      "reason": "ocx 中该 provider 仅 selected 了 step-5-preview 一个模型，其余 94 个 live 模型不在 catalog；需要更多：ocx models selected tokendance --set <id,id> 然后 ocx sync"
+    },
+    {
+      "provider": "openai",
+      "reason": "ocx 原生模型（native），由 Codex/ChatGPT 账号直接管理，按设计不进反代理 catalog"
+    },
+    {
+      "provider": "catpaw",
+      "reason": "美团 CatPaw 需公司 VPN（sankuai 内网），8795 当前不可达，live=0；连上 VPN 后执行 bridges/finish.sh catpaw + ocx sync"
+    },
+    {
+      "provider": "qoder",
+      "reason": "2026-09-26 已修复：此前 qoder 桥（8789）有 15 个模型但从未注册进 ocx（live=0）；现已 ocx provider add qoder --adapter openai-chat --base-url http://127.0.0.1:8789/v1 --allow-private-network，14 个模型已进入 catalog"
+    },
+    {
+      "provider": "gemini",
+      "reason": "Gemini 桥在跑但 token 刷新失败（502），模型能列出但不能聊天；需重新登录 Google 账号"
+    }
   ]
 }
