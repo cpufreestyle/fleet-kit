@@ -359,6 +359,27 @@ kit 因此带一个看门狗，数 catalog 里带 `/` 的桥模型，少于阈�
 注意：磁盘上的 catalog 修好之后，**已经在跑的 app 仍显示旧列表**，需要重启一次
 Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中的会话）。
 
+## 不可用 provider 自动隐藏（catalog-filter）
+
+`ocx-catalog-guard` 保证反代理模型「别消失」；但如果某个桥当前核验不是 REAL（端口通、能聊，真实调用核验没过），它仍会躺在选择器里，选中就报错。`catalog_filter.py` 补上另一半：按面板 `verify.real` 结果，把「有桥且非 REAL」的斜杠模型从 catalog 摘掉。
+
+    python3 "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/catalog_filter.py" --dry-run
+    python3 "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/catalog_filter.py"
+    bash    "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/catalog-filter.sh" status|run|install-timer|uninstall-timer
+
+规则：
+- 只删「有桥且非 REAL」的斜杠模型；tokendance / stepfun / 原生模型永不动。
+- 权威源是 `http://127.0.0.1:8796/api/status` 的 `verify.real`（不是 `bridges[].probe.ok`）。
+- 写前做 byte 级 round-trip 校验，不符即拒绝落库（exit 5）；面板不可达（3）或 real 为空（4）一概不删，防止误清空。
+- REAL 但 catalog 缺失的桥会 `ocx sync` 补回（带 1h cooldown，避免和 guard 打架）。
+- `--keep P[,P]` 临时保留某 provider；`--only P[,P]` 只处理指定 provider。
+
+用 `catalog-filter.sh install-timer` 装 launchd 常驻（`com.local.catalog-filter`，`StartInterval` 300s + `RunAtLoad`），日志：`~/Library/Logs/catalog-filter.log`。
+
+与 `ocx-catalog-guard` 互补：guard 在桥模型数 < 60 时 `ocx sync` 加回，filter 再剔除非 REAL。当前 5 个 REAL 桥 + tokendance/stepfun 约 171 个斜杠模型，远高于 guard 阈值，两者不互踩。
+
+改完磁盘 catalog 后**需重启 Codex/ChatGPT** 才会刷新选择器。
+
 ## 登录表
 
 | name | 登录方式 | 凭据位置 | 备注 |
@@ -429,6 +450,7 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 - tools/status_ui.sh start|stop|install-timer|uninstall-timer [--home DIR]：状态面板（默认 127.0.0.1:8796）
 - tools/status_ui.py [--port N] [--no-browser] [--once]：面板实现（stdlib 单文件；/api/status、/api/logs/<name>、/api/action/*（含 verify-real-calls））
 - tools/ocx-catalog-guard.sh run|install-timer|uninstall-timer|status：反代理模型 catalog 看门狗（默认 300s）
+- tools/catalog-filter.sh run|install-timer|uninstall-timer|status：按 verify.real 隐藏不可用桥模型（默认 300s，与 ocx-catalog-guard 互补）
 - tools/free_models.py [--free-only] [--provider P] [--missing] [--json] [--check-sources]：免费模型标注（数据在仓库根 free-windows.json，状态面板同源）
 - tools/short_aliases.py [--dry-run]：选择器短名（ocx 别名，路由不受影响）
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
@@ -493,7 +515,7 @@ Plan API 后不受影响。
         bridges/              9 座桥源码 + finish.sh
         opencodex/            setup-providers.sh（ocx provider 注册）
         free-windows.json     免费模型标注数据（官网信息 + 时段，改这里不改代码）
-        tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / verify_real_calls.py / fleet_split.py / free_models.py / short_aliases.py
+        tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / verify_real_calls.py / fleet_split.py / free_models.py / short_aliases.py / catalog_filter.py / catalog-filter.sh
         docs/                 各桥 runbook + stepfun/tokundance 官方 API runbook + 全量实测报告
       runtime/                运行根（install.sh --home 的默认值）
         fleet.env             桥 API key + FLEET_HOME/PORT_BASE（600，不入库）
