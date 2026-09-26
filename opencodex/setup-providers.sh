@@ -122,5 +122,41 @@ else
   echo "  [warn] $KIT/tools/short_aliases.py missing; picker names stay long" >&2
 fi
 
+# `model = ...` in ~/.codex/config.toml decides which model the Codex picker opens on.
+# CC Switch owns that file and `ocx provider add --force` rewrites it, so re-pin the
+# default after the last sync. fleet.env can override with FLEET_DEFAULT_MODEL.
+CODEX_TOML="${HOME}/.codex/config.toml"
+DEFAULT_MODEL="${FLEET_DEFAULT_MODEL:-trae/trae-step-5-preview}"
+if [ -f "$CODEX_TOML" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "  [dry-run] pin ${DEFAULT_MODEL} as the default model in ${CODEX_TOML}"
+  else
+    python3 - "$CODEX_TOML" "$DEFAULT_MODEL" <<'PIN' || echo "  [warn] default model pin failed" >&2
+import sys
+
+path, model = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as fh:
+    lines = fh.readlines()
+out, pinned = [], False
+for line in lines:
+    if line.startswith("model = ") or line.startswith("model="):
+        out.append('model = "%s"\n' % model)
+        pinned = True
+    else:
+        out.append(line)
+if not pinned:
+    for i, line in enumerate(out):
+        if line.startswith("model_provider"):
+            out.insert(i + 1, 'model = "%s"\n' % model)
+            break
+with open(path, "w", encoding="utf-8") as fh:
+    fh.writelines(out)
+print("  pinned default model: %s" % model)
+PIN
+  fi
+else
+  echo "  [warn] ${CODEX_TOML} not found; default model not pinned" >&2
+fi
+
 run ocx service restart
 echo "done. inspect with: ocx models live"

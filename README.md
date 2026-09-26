@@ -280,6 +280,16 @@ sensenova 直接去掉、gpt- 前缀去掉等）。效果示例：
 > 之前自动重跑一次 `tools/short_aliases.py` 补回短名。手工加/改 provider 后也要同样
 > 补跑，否则选择器名称会退回完整 slug。
 
+### 默认模型
+
+Codex 启动时选中的模型由 `~/.codex/config.toml` 的 `model` 键决定（值填 catalog slug）。
+当前默认 `trae/trae-step-5-preview`（选择器显示 `trae/step-5-pv`）：trae 桥 8791，
+是 StepFun 阶跃星辰路线里唯一实测可聊的一条（tokendance 同款 `step-5-preview`
+因 key 401 不可用；CC Switch 原生中继的 `step-3.7-flash` 是另一款，不是 5）。
+`setup-providers.sh` 在最后一次 `ocx sync` 之后重新 pin 这个键——CC Switch 和
+`ocx provider add --force` 都会重写 config.toml，不 pin 默认模型会被打回。
+改默认：`fleet.env` 里设 `FLEET_DEFAULT_MODEL=<slug>`，或直接手改 config.toml。
+
 ### 为什么有的模型不在选择器
 
 - **tokendance**：ocx 里只 selected 了 `step-5-preview`，其余 94 个 live 模型没进 catalog。
@@ -351,16 +361,18 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 - tools/free_models.py [--free-only] [--provider P] [--missing] [--json] [--check-sources]：免费模型标注（数据在仓库根 free-windows.json，状态面板同源）
 - tools/short_aliases.py [--dry-run]：选择器短名（ocx 别名，路由不受影响）
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
-- opencodex/setup-providers.sh：重新注册 9 个 ocx provider（新机换端口后用）
+- opencodex/setup-providers.sh：重新注册 9 个 ocx provider + pin 默认模型（新机换端口后用）
 - uninstall.sh [--home DIR] [--purge]：卸载 launchd 服务和 plist；--purge 连目录一起删
 
 ## 已知问题（2026-09-26 实测，均为用户侧/外部条件）
 
-1. **tokendance（影响默认模型）**：API key 已失效——网关聊天端点返回
-   401「API 密钥不存在」（/v1/models 列表端点是公开的，所以模型照样列得出）。
-   表现为默认模型 `step-5-preview` 不可用。需到 tokendance.space 控制台重建 key，
-   然后 `ocx provider add tokendance --adapter openai-chat --base-url
-   https://tokendance.space/gateway/v1 --api-key <新key> --force` + `ocx sync`。
+1. **tokendance（step-5 备选路线）**：API key 已失效——网关聊天端点返回
+  401「API 密钥不存在」（/v1/models 列表端点是公开的，所以模型照样列得出）。
+  默认模型已切到 trae 的 `trae/trae-step-5-preview`（见「默认模型」一节）；
+  key 重建后若想切回，改 `fleet.env` 的 `FLEET_DEFAULT_MODEL` 再跑一次
+  `setup-providers.sh`。重建：tokendance.space 控制台重新生成 key，
+  然后 `ocx provider add tokendance --adapter openai-chat --base-url
+  https://tokendance.space/gateway/v1 --api-key <新key> --force` + `ocx sync`。
 2. codely：上游网关对 chat 一律返回 400「欢迎使用Codely」onboarding 门禁。
    /v1/models 正常、key 有效；需登录 codely.tuanjie.cn 网页端完成首次激活。
 3. gemini：502，且不是 token 过期——Google 已于 2026-06-18 关停 Code Assist
