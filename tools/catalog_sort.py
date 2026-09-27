@@ -35,6 +35,14 @@ DEFAULT_ORDER = os.environ.get(
     "FLEET_MODEL_ORDER",
     "workbuddy,workbuddy-gpt,trae,stepfun,xhx,lingxi,cline")
 
+# hy4 is the model the user asks to see first, even when the bridge behind
+# it is momentarily unreachable. Everything else still obeys tiering.
+HY4_SLUGS = ("workbuddy/hy4-preview", "workbuddy-gpt/hy4-preview")
+
+
+def is_hy4(slug):
+    return slug in HY4_SLUGS
+
 def interleave_reps(models, order):
     """Float one representative per provider to the front, in --order.
 
@@ -211,7 +219,7 @@ def main():
         pos = order.index(prov) if prov in order else len(order)
         proven = 0 if slug in proven_candidates(verified.get(prov), prov) else 1
         # workbuddy hy4 is the model the user asks to see first
-        hy4 = 0 if slug in ("workbuddy/hy4-preview", "workbuddy-gpt/hy4-preview") else 1
+        hy4 = 0 if is_hy4(slug) else 1
         return (tier, hy4, proven, pos, slug)
 
     NATIVE_PRIORITY = 105
@@ -253,15 +261,19 @@ def main():
     }
 
     # The picker sorts on priority, so prove reachable rows really sort first.
+    slug_of = lambda m: m.get("slug") or m.get("id") or ""
+    # hy4 rows stay out of both sets: they are pinned above their own tier on
+    # purpose, so counting them would fail every sort while gpt is down.
     good_idx = [i for i, m in enumerate(kept)
-                if provider_of(m.get("slug") or m.get("id") or "") in good]
+                if provider_of(slug_of(m)) in good and not is_hy4(slug_of(m))]
     bad_idx = [i for i, m in enumerate(kept)
-               if provider_of(m.get("slug") or m.get("id") or "") in bad]
+               if provider_of(slug_of(m)) in bad and not is_hy4(slug_of(m))]
     good_pri = [m["priority"] for m in kept
-                if provider_of(m.get("slug") or m.get("id") or "") in good
-                and provider_of(m.get("slug") or m.get("id") or "") is not None]
+                if provider_of(slug_of(m)) in good
+                and provider_of(slug_of(m)) is not None
+                and not is_hy4(slug_of(m))]
     bad_pri = [m["priority"] for m in kept
-               if provider_of(m.get("slug") or m.get("id") or "") in bad]
+               if provider_of(slug_of(m)) in bad and not is_hy4(slug_of(m))]
     by_priority = sorted(kept, key=lambda m: m["priority"])
     summary["priority_rewritten"] = True
     summary["order_ok"] = bool(
