@@ -56,6 +56,31 @@ def provider_of(slug):
     return slug.split("/", 1)[0] if "/" in slug else None
 
 
+def proven_candidates(verified_model, provider):
+    """Slugs matching the model the prober verified.
+
+    The prober reports what a bridge hands back, and that namespacing differs
+    from the catalog in three ways:
+      * a bridge repeats its own prefix (trae/trae/Doubao-X vs trae/Doubao-X)
+      * a vendor prefix becomes a dash (cohere/north-mini:free vs
+        cohere-north-mini:free)
+      * a local bridge reports the bare id (glm-5.2)
+    """
+    if not verified_model:
+        return frozenset()
+    out = {verified_model}
+    if "/" in verified_model:
+        vendor, rest = verified_model.split("/", 1)
+        out.update({rest, vendor + "-" + rest,
+                    provider + "-" + rest, provider + "/" + rest})
+        # the catalog re-namespaces as <provider>/<vendor>-<rest>
+        out.add(provider + "/" + vendor + "-" + rest)
+    else:
+        # a local bridge reports the bare id; catalog is <provider>/<id>
+        out.add(provider + "/" + verified_model)
+    return frozenset(out)
+
+
 def write_json(path, data):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -159,7 +184,7 @@ def main():
         else:
             tier = 1
         pos = order.index(prov) if prov in order else len(order)
-        proven = 0 if verified.get(prov) == slug else 1
+        proven = 0 if slug in proven_candidates(verified.get(prov), prov) else 1
         return (tier, proven, pos, slug)
 
     NATIVE_PRIORITY = 105
@@ -178,8 +203,7 @@ def main():
         prov = provider_of(slug)
         tier = 0 if prov in good else (2 if prov in bad else 1)
         pos = order.index(prov) if prov in order else len(order)
-        bare = slug.split("/", 1)[1] if "/" in slug else slug
-        proven = 0 if verified.get(prov) in (slug, bare) else 1
+        proven = 0 if slug in proven_candidates(verified.get(prov), prov) else 1
         model["priority"] = priority_for(slug, tier, pos) + proven
         if args.drop_unreachable and prov in bad:
             dropped.setdefault(prov, []).append(slug)
