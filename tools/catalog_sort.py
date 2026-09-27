@@ -19,6 +19,10 @@ accident.
 Usage:
   catalog_sort.py            reorder the catalog in place
   catalog_sort.py --dry-run  report the new order, change nothing
+
+The picker also sorts on each entry's "priority" field, so reordering the
+list alone is not enough: this tool rewrites priority as well. Native
+Codex rows keep their 105 marker; fleet rows get 0..N by reachability rank.
 """
 import argparse
 import json
@@ -102,10 +106,23 @@ def main():
         pos = order.index(prov) if prov in order else len(order)
         return (tier, pos, slug)
 
+    NATIVE_PRIORITY = 105
+
+    def priority_for(slug, tier, pos):
+        prov = provider_of(slug)
+        if prov is None:
+            return NATIVE_PRIORITY
+        return min(tier, 4) * 100 + pos
+
     kept, dropped = [], {}
+    original = [{k: (dict(v) if isinstance(v, dict) else v)
+                 for k, v in m.items()} for m in models]
     for model in sorted(models, key=rank):
         slug = model.get("slug") or model.get("id") or ""
         prov = provider_of(slug)
+        tier = 0 if prov in good else (2 if prov in bad else 1)
+        pos = order.index(prov) if prov in order else len(order)
+        model["priority"] = priority_for(slug, tier, pos)
         if args.drop_unreachable and prov in bad:
             dropped.setdefault(prov, []).append(slug)
         else:
@@ -123,13 +140,41 @@ def main():
         "first20": [m.get("slug") or m.get("id") for m in kept[:20]],
     }
 
+    # The picker sorts on priority, so prove reachable rows really sort first.
+    good_idx = [i for i, m in enumerate(kept)
+                if provider_of(m.get("slug") or m.get("id") or "") in good]
+    bad_idx = [i for i, m in enumerate(kept)
+               if provider_of(m.get("slug") or m.get("id") or "") in bad]
+    good_pri = [m["priority"] for m in kept
+                if provider_of(m.get("slug") or m.get("id") or "") in good
+                and provider_of(m.get("slug") or m.get("id") or "") is not None]
+    bad_pri = [m["priority"] for m in kept
+               if provider_of(m.get("slug") or m.get("id") or "") in bad]
+    by_priority = sorted(kept, key=lambda m: m["priority"])
+    summary["priority_rewritten"] = True
+    summary["order_ok"] = bool(
+        not good_idx or not bad_idx or max(good_idx) < min(bad_idx))
+    summary["priority_ok"] = bool(
+        not good_pri or not bad_pri or max(good_pri) < min(bad_pri))
+    summary["first_by_priority"] = [
+        m.get("slug") or m.get("id") for m in by_priority[:8]]
+
     before_slugs = [m.get("slug") for m in models]
     after_slugs = [m.get("slug") for m in kept]
-    changed = before_slugs != after_slugs
+    before_prio = [m.get("priority") for m in models]
+    after_prio = [m.get("priority") for m in kept]
+    before_slugs = [m.get("slug") for m in original]
+    before_prio = [m.get("priority") for m in original]
+    changed = before_slugs != after_slugs or before_prio != after_prio
     if args.dry_run:
         summary["dry_run"] = True
     elif not changed and not dropped:
         summary["note"] = "already in order"
+    elif not summary["order_ok"] or not summary["priority_ok"]:
+        print(json.dumps(summary, ensure_ascii=False, indent=1))
+        print("refusing: reachable rows do not sort ahead of unreachable ones",
+              file=sys.stderr)
+        return 5
     else:
         if not args.no_backup:
             bak = path + time.strftime(".bak-%Y%m%d-%H%M%S")
