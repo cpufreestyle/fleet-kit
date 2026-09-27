@@ -73,6 +73,8 @@ def main():
     ap.add_argument("--catalog", default=None)
     ap.add_argument("--order", default=DEFAULT_ORDER)
     ap.add_argument("--drop-unreachable", action="store_true")
+    ap.add_argument("--strict-coverage", action="store_true",
+                    help="fail instead of warn when the snapshot misses providers")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-backup", action="store_true")
     args = ap.parse_args()
@@ -85,6 +87,13 @@ def main():
     if os.path.exists(reach_file):
         with open(reach_file, encoding="utf-8") as fh:
             reach = json.load(fh)
+    # A snapshot with no measurable verdict would silently promote every
+    # provider back to "unknown", i.e. back to alphabetical noise. Refuse
+    # rather than destroy a working ordering on a truncated probe run.
+    if reach and not reach.get("reachable") and not reach.get("unreachable"):
+        print("reach snapshot has no verdicts; refusing to reorder",
+              file=sys.stderr)
+        return 2
     good = set(reach.get("reachable") or [])
     bad = set(reach.get("unreachable") or [])
     verified = reach.get("verified_models") or {}
@@ -94,6 +103,22 @@ def main():
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
     models = data.get("models") or []
+    # A truncated probe run (killed mid-sweep) leaves most bridges unmeasured,
+    # and those silently become "unknown" and sink below known-good rows.
+    # Require the snapshot to cover the providers actually in the catalog.
+    catalog_providers = {provider_of(m.get("slug") or m.get("id") or "")
+                         for m in (data.get("models") or [])}
+    catalog_providers.discard(None)
+    covered = good | bad
+    missing = sorted(catalog_providers - covered)
+    if missing:
+        summary_note = ("snapshot covers %d/%d catalog providers; missing: %s"
+                        % (len(covered & catalog_providers),
+                           len(catalog_providers), ", ".join(missing)))
+        if args.strict_coverage:
+            print("fleet-sort: " + summary_note, file=sys.stderr)
+            return 4
+        print("fleet-sort: WARNING " + summary_note, file=sys.stderr)
 
     def rank(model):
         slug = model.get("slug") or model.get("id") or ""
