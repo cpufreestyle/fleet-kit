@@ -19,6 +19,7 @@ import argparse
 import datetime
 import json
 import os
+import sys
 import re
 import subprocess
 import sys
@@ -56,6 +57,11 @@ KEY_ENV = {
 NONCE = "E2E_OK"
 SKIP_RE = ("image", "tts", "embed", "ocr", "vision", "vl")
 
+# Every bridge and the ocx gateway listen on 127.0.0.1, but urllib picks up
+# the macOS system proxy, so a local call went out to the tunnel and back:
+# fine in a terminal, and a silent hang under launchd. Never proxy 127.0.0.1.
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def load_env(path):
     env = {}
@@ -73,7 +79,7 @@ def load_env(path):
 def list_models(port, headers):
     url = "http://127.0.0.1:%d/v1/models" % port
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=8) as resp:
+    with OPENER.open(req, timeout=8) as resp:
         data = json.loads(resp.read().decode())
     return [m.get("id") for m in data.get("data", []) if m.get("id")]
 
@@ -88,7 +94,7 @@ def try_call(port, headers, model, timeout=20.0, budget=60):
     }).encode()
     req = urllib.request.Request(url, data=body, headers=headers,
                                 method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with OPENER.open(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode())
     choices = data.get("choices") or []
     content = (choices[0].get("message") or {}).get("content") or ""
@@ -134,7 +140,7 @@ def probe_gateway(name, model_prefix, timeout=20.0, tries=3):
     data = None
     for _list_attempt in range(3):
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers),
+            with OPENER.open(urllib.request.Request(url, headers=headers),
                                         timeout=8) as resp:
                 data = json.loads(resp.read().decode())
             break
@@ -162,7 +168,7 @@ def probe_gateway(name, model_prefix, timeout=20.0, tries=3):
                     headers={**headers, "Content-Type": "application/json"},
                     method="POST")
                 try:
-                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    with OPENER.open(req, timeout=timeout) as resp:
                         d2 = json.loads(resp.read().decode())
                     content = (d2.get("choices") or [{}])[0].get(
                         "message", {}).get("content", "")
@@ -233,18 +239,25 @@ def probe(name, port, key, tries=3, timeout=20.0):  # -> (ok, why, model)
     return False, last or "no chat model to try", None
 
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
 def plist_port(name):
-    home = os.path.expanduser("~")
-    for suffix in ("", "-gpt", "2codex"):
-        path = os.path.join(home, "Library", "LaunchAgents",
-                            "com.local.%s%s.plist" % (name, suffix))
-        if not os.path.exists(path):
-            continue
-        text = open(path, encoding="utf-8").read()
-        m = re.search(r"--port[=\s]+(\d{4,5})", text)
-        if m:
-            return int(m.group(1))
-    return None
+    """Port a bridge actually listens on.
+
+    macOS keeps reading the launchd plist it always read; Windows and Linux
+    read the wrapper install.sh wrote. Neither backend has ~/Library, so this
+    goes through fleet_platform.service_ports(), which also falls back to
+    PORT_BASE + offset when no service is installed yet.
+    """
+    try:
+        from fleet_platform import service_port
+    except Exception:
+        return None
+    try:
+        return service_port(name)
+    except Exception:
+        return None
 
 
 def write_json(path, snap):
