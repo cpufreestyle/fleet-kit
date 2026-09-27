@@ -85,8 +85,37 @@ def main():
 
     reach = {}
     if os.path.exists(reach_file):
-        with open(reach_file, encoding="utf-8") as fh:
-            reach = json.load(fh)
+        try:
+            with open(reach_file, encoding="utf-8") as fh:
+                reach = json.load(fh)
+        except (OSError, ValueError) as exc:
+            print("fleet-sort: reach snapshot unreadable: %s" % exc,
+                  file=sys.stderr)
+            return 2
+    else:
+        print("fleet-sort: no reach snapshot at %s; refusing to reorder"
+              % reach_file, file=sys.stderr)
+        return 2
+    if not isinstance(reach, dict):
+        print("fleet-sort: reach snapshot is %s, expected an object"
+              % type(reach).__name__, file=sys.stderr)
+        return 2
+
+    # A snapshot that simply is not there is not a verdict: it would sink
+    # every provider to "unknown" and reshuffle the whole picker.
+    if reach and os.path.exists(reach_file) and not (reach.get("reachable")
+                                                    or reach.get("unreachable")):
+        print("fleet-sort: reach snapshot has no verdicts; refusing to reorder",
+              file=sys.stderr)
+        return 2
+    for field, kind in (("reachable", list), ("unreachable", list),
+                        ("verified_models", dict)):
+        value = reach.get(field)
+        if value is not None and not isinstance(value, kind):
+            print("fleet-sort: reach field %r is %s, expected %s"
+                  % (field, type(value).__name__, kind.__name__),
+                  file=sys.stderr)
+            return 2
     # A snapshot with no measurable verdict would silently promote every
     # provider back to "unknown", i.e. back to alphabetical noise. Refuse
     # rather than destroy a working ordering on a truncated probe run.
