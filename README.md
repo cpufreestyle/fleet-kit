@@ -378,14 +378,17 @@ kit 因此带一个看门狗，数 catalog 里带 `/` 的桥模型，少于阈�
 
 注意：磁盘上的 catalog 修好之后，**已经在跑的 app 仍显示旧列表**，需要重启一次
 Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中的会话）。
+**默认只裁剪不可达模型。** FleetKit 约定「选择器里只留能连通的」：裸跑
+`catalog-filter.sh` / `catalog_filter.py` 会按面板 `verify.real` 把不可达 provider
+的模型摘掉。只要报告不动手，显式加 `--report-only`：
 
-**默认只报告，不动 catalog。** FleetKit 约定「不隐藏任何模型」：裸跑 `catalog-filter.sh` / `catalog_filter.py` 只会打印将要删除的行，catalog 一个都不删。要真的裁剪，必须显式 opt-in：
+    bash tools/catalog-filter.sh --report-only
+    python3 tools/catalog_filter.py --report-only
 
-    bash tools/catalog-filter.sh --hide          # 或 CATALOG_FILTER_HIDE=1
+定时器同样生效：`install-timer` 装好后每 300s 跑一次裁剪，日志在
+`~/Library/Logs/catalog-filter.log`。
 
-定时器同样受此约束：`install-timer` 装好后每 300s 也只做报告，除非启动环境里设了 `CATALOG_FILTER_HIDE=1`。
-
-## 不可用 provider 自动隐藏（catalog-filter，默认关闭）
+## 不可用 provider 自动隐藏（catalog-filter）
 
 `ocx-catalog-guard` 保证反代理模型「别消失」；但如果某个桥当前核验不是 REAL（端口通、能聊，真实调用核验没过），它仍会躺在选择器里，选中就报错。`catalog_filter.py` 补上另一半：按面板 `verify.real` 结果，把「有桥且非 REAL」的斜杠模型从 catalog 摘掉。
 
@@ -607,3 +610,30 @@ bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/opencodex/setup-providers.sh" 
     bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/uninstall.sh" --purge    # 连 "/Users/a1-6/AI Shared/repo/FleetKit/runtime" 目录一起删
 
 注意：uninstall.sh 不动 ocx 的 provider 配置；如需清除，用 ocx 自带命令管理。
+
+## 可达模型排在最前（catalog_sort.py）
+
+Codex 选择器按 catalog 里的文件顺序渲染，所以一个死桥会把可用模型挤出首屏。
+`catalog_sort.py` 按实测可达性重排：**可达 provider 在最前**（顺序取 `--order`），
+其后是未测量过的，最后才是实测不可达的。
+
+    python3 tools/catalog_sort.py --dry-run      # 只看新顺序
+    python3 tools/catalog_sort.py                # 写入
+    python3 tools/catalog_sort.py --drop-unreachable   # 直接删掉不可达的
+
+可达性来自快照文件，默认 `$CODEX_HOME/fleet-reach.json`
+（`--reach` 或 `FLEET_REACH_FILE` 可覆盖），形状：
+
+    {"reachable": ["workbuddy", ...],
+     "unreachable": ["qoder", ...],
+     "measured_at": "2026-09-27T17:00:00+08:00"}
+
+快照里没有的 provider 视为「未知」，排在可达之后、不可达之前，
+所以新接入的 provider 不会被误伤。默认顺序可用 `FLEET_MODEL_ORDER` 覆盖。
+
+改完记得 `ocx sync-cache` 把 `~/.codex/models_cache.json` 对齐
+（Codex App 读的是那一份），否则 App 仍显示旧列表。
+
+kit 内带一份当前实测快照 `tools/fleet-reach.json`，可直接复用：
+
+    python3 tools/catalog_sort.py --reach tools/fleet-reach.json

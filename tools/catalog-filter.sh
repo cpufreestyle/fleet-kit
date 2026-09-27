@@ -26,9 +26,7 @@
 #   --interval SEC     timer interval in seconds (default: 300)
 #   --log FILE         log file (default: ~/Library/Logs/catalog-filter.log)
 #   --dry-run          report what would be dropped, change nothing
-#   --hide             allow the catalog to be rewritten (report-only by default:
-#                       FleetKit never hides models unless you opt in, so a bare
-#                       run only reports. Set CATALOG_FILTER_HIDE=1 or pass --hide.
+#   --report-only      report what would be dropped, change nothing
 #   -h | --help
 set -euo pipefail
 
@@ -38,6 +36,7 @@ STATUS_URL="${FLEET_STATUS_URL:-http://127.0.0.1:8796/api/status}"
 KEEP_PROVIDERS=""
 HIDE_NATIVE=0
 HIDE_ENABLED=0
+REPORT_ONLY=0
 PROXY_BASE="${FLEET_PROXY_BASE:-http://127.0.0.1:10100}"
 LOG_FILE="${CATALOG_FILTER_LOG:-${HOME}/Library/Logs/catalog-filter.log}"
 LAUNCH_DIR="${FLEET_LAUNCH_DIR:-${HOME}/Library/LaunchAgents}"
@@ -103,7 +102,7 @@ cmd_run() {
   local args=(--codex-home "$CODEX_HOME_DIR" --status-url "$STATUS_URL")
   [ -n "$KEEP_PROVIDERS" ] && args+=(--keep "$KEEP_PROVIDERS")
   [ "$DRY_RUN" = "1" ] && args+=(--dry-run)
-  [ "$HIDE_ENABLED" = "1" ] && args+=(--hide)
+  [ "$REPORT_ONLY" = "1" ] && args+=(--report-only)
   [ "$HIDE_NATIVE" = "1" ] && args+=(--hide-native-when-pool-down --proxy-base "$PROXY_BASE")
 
   local rc=0
@@ -264,8 +263,9 @@ while [ "$#" -gt 0 ]; do
     --log) shift; LOG_FILE="${1:?--log needs a value}" ;;
     --log=*) LOG_FILE="${1#*=}" ;;
     --dry-run) DRY_RUN=1 ;;
+    --report-only) REPORT_ONLY=1; DRY_RUN=1 ;;
     --hide-native-when-pool-down) HIDE_NATIVE=1 ;;
-    --hide) HIDE_ENABLED=1 ;;
+    --report-only) REPORT_ONLY=1 ;;
     --proxy-base) shift; PROXY_BASE="${1:?--proxy-base needs a value}" ;;
     --proxy-base=*) PROXY_BASE="${1#*=}" ;;
     -h|--help) usage; exit 0 ;;

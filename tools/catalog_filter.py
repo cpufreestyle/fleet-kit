@@ -38,6 +38,7 @@ Options:
   --no-hide-junk     keep non-chat junk rows (TTS/OCR/embedding/video/web tools)
   --timeout SEC      status panel and subprocess timeout (default 20)
   --dry-run          report only, change nothing
+  --report-only      same as --dry-run, kept for the shell wrapper
 
 Exit codes: 0 ok (or nothing to do), 2 bad usage, 3 status panel unreachable,
 4 nothing verified as REAL (refuses to filter everything), 5 catalog problem.
@@ -318,14 +319,14 @@ def main(argv=None):
         "FLEET_PROXY_BASE", "http://127.0.0.1:10100"),
         help="local proxy base used for the native-pool probe")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--hide", action="store_true",
-                        help="actually remove rows; default is report-only")
+    parser.add_argument("--report-only", action="store_true",
+                        help="report what would be dropped, change nothing")
     args = parser.parse_args(argv)
 
-    # FleetKit convention: never hide models unless explicitly opted in.
-    # A plain run reports what it would drop and exits; pass --hide
-    # (or CATALOG_FILTER_HIDE=1) to allow the catalog to be rewritten.
-    if not args.hide and os.environ.get("CATALOG_FILTER_HIDE", "") not in ("1", "true"):
+    # FleetKit convention: the picker shows only models that really connect.
+    # A plain run rewrites the catalog to drop unreachable providers; pass
+    # --report-only to just print what would be dropped.
+    if args.report_only:
         args.dry_run = True
         args.no_restore = True
     keep = {p.strip() for p in args.keep.split(",") if p.strip()}

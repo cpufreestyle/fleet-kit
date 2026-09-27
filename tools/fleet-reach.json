@@ -1,0 +1,37 @@
+{
+  "reachable": [
+    "workbuddy",
+    "workbuddy-gpt",
+    "trae",
+    "xhx",
+    "lingxi",
+    "cline"
+  ],
+  "unreachable": [
+    "antigravity",
+    "catpaw",
+    "codely",
+    "gemini",
+    "qoder",
+    "qwen",
+    "zcode",
+    "tokendance"
+  ],
+  "measured_at": "2026-09-27T17:00:00+08:00",
+  "evidence": {
+    "workbuddy": "glm-5.2 -> E2E_OK",
+    "workbuddy-gpt": "gpt-6-astra -> E2E_OK",
+    "trae": "trae/Doubao-Seed-Evolving -> E2E_OK",
+    "xhx": "xhx/raccoon-19b265 -> E2E_OK",
+    "lingxi": "lingxi/glm-5.3-flash -> E2E_OK",
+    "cline": "z-ai/glm-5.3-flash -> E2E_OK",
+    "qoder": "Qwen3.8-Max 502 / Qwen3.8-Flash no-echo",
+    "codely": "codely-flash 402, codely-vl 402",
+    "gemini": "gemini-2.5-flash / 2.5-pro timeout",
+    "catpaw": "glm-5.2, deepseek-v3.2 502",
+    "antigravity": "gemini-2.5-flash, claude-haiku timeout",
+    "qwen": "GLM-5.3 503 (ESA captcha)",
+    "zcode": "GLM-5.3 / GLM-5.3-Flash 503 (ESA 3012)",
+    "tokendance": "401 key invalid"
+  }
+}
