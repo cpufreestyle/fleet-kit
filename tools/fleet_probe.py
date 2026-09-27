@@ -92,7 +92,17 @@ def try_call(port, headers, model, timeout=20.0):
         data = json.loads(resp.read().decode())
     choices = data.get("choices") or []
     content = (choices[0].get("message") or {}).get("content") or ""
-    return NONCE in content, content[:60]
+    # Echoing the nonce is the strongest signal, but a model that answers with
+    # a real reply and simply does not follow "reply exactly" (qoder Qwen3.8-
+    # Flash greets instead) is still reachable. What must not count as a pass:
+    # an empty body, a canned error surfaced as text, or a stub.
+    text = content.strip()
+    if NONCE in text:
+        return True, text[:60]
+    if len(text) >= 8 and not text.lower().startswith(("error", "sorry, i can",
+                                                     "i cannot", "\"error\"")):
+        return True, text[:60]
+    return False, text[:60]
 
 
 SKIP_EXACT = ("cline-free/",)
