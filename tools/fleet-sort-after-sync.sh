@@ -24,6 +24,9 @@ REAL_OCX="${FLEET_REAL_OCX:-/Users/a1-6/.local/node-v22.20.0-darwin-arm64/lib/no
 OCX_BIN="${FLEET_OCX_BIN:-/Users/a1-6/.local/node-v22.20.0-darwin-arm64/bin/ocx}"
 OCX_ALIAS="${FLEET_OCX_ALIAS:-/Users/a1-6/.local/node-v22.20.0-darwin-arm64/bin/opencodex}"
 REACH="${FLEET_REACH_FILE:-$KIT/tools/fleet-reach.json}"
+PROBE="${FLEET_PROBE:-$KIT/tools/fleet_probe.py}"
+REACH_MAX_AGE="${FLEET_REACH_MAX_AGE:-86400}"
+ENV_FILE="${FLEET_ENV_FILE:-$KIT/../runtime/fleet.env}"
 PYTHON="${FLEET_PYTHON:-$KIT/../runtime/.venv/bin/python}"
 SELF="$(cd "$(dirname "$SRC")" && pwd)/$(basename "$SRC")"
 
@@ -89,7 +92,33 @@ case "$sub" in
     sync|sync-cache) needs_sort=1 ;;
 esac
 
+# seconds since the reachability snapshot was written; big when missing
+reach_age() {
+    [ -f "$REACH" ] || { echo 999999; return; }
+    local now mt
+    now=$(date +%s)
+    mt=$(stat -f %m "$REACH" 2>/dev/null || echo 0)
+    echo $(( now - mt ))
+}
+
+# refresh the snapshot when it is older than REACH_MAX_AGE
+refresh_reach() {
+    [ -x "$PYTHON" ] && [ -f "$PROBE" ] || return 1
+    local age
+    age=$(reach_age)
+    [ "$age" -le "$REACH_MAX_AGE" ] && return 0
+    echo "fleet-sort: snapshot is ${age}s old, re-probing in background" >&2
+    # launchd, not a detached job: this sandbox reaps background children
+    local plist="${FLEET_LAUNCH_DIR:-$HOME/Library/LaunchAgents}/com.local.fleet-probe.plist"
+    if [ -f "$plist" ]; then
+        launchctl kickstart "gui/$(id -u)/com.local.fleet-probe" >/dev/null 2>&1 || true
+        return 0
+    fi
+    echo "fleet-sort: no probe timer installed; run tools/fleet-probe-install.sh" >&2
+}
+
 if [ "$needs_sort" = "1" ] && [ "$rc" = "0" ]; then
+    refresh_reach
     if [ -x "$PYTHON" ] && [ -f "$REACH" ]; then
         if "$PYTHON" "$KIT/tools/catalog_sort.py" --reach "$REACH" >/dev/null 2>&1; then
             echo "fleet-sort: reachable-first order re-applied" >&2

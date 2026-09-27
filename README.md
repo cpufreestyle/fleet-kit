@@ -668,3 +668,28 @@ wrapper 先按原样执行真实 ocx，只有子命令是 `sync` / `sync-cache` 
 
 真实 ocx 路径可用 `FLEET_REAL_OCX` 覆盖，Python 用 `FLEET_PYTHON`，
 快照用 `FLEET_REACH_FILE`。
+
+## 可达性自动刷新（fleet_probe.py + launchd 定时器）
+
+排序依赖一份可达性快照。手写的快照会过期：桥恢复上线或挂掉之后，
+排序就不再反映真实情况。`tools/fleet_probe.py` 用真实调用重新测量每个桥，
+只有返回预期 nonce 才算可达——只听端口、只列 /v1/models、或返回 canned
+200 都不算，因为选择器是用户实际感知到的东西。
+
+    bash tools/fleet-probe-install.sh install   # 装 launchd 定时器（默认 30 分钟）
+    bash tools/fleet-probe-install.sh status    # 查看定时器与当前快照
+    bash tools/fleet-probe-install.sh run       # 前台立即测一次
+    bash tools/fleet-probe-install.sh uninstall
+
+ocx sync 时 wrapper 发现快照超过 FLEET_REACH_MAX_AGE（默认 86400 秒）
+只会去 kick 这个定时器，不会自己跑完整探测——一次全量探测要给每个桥发真实
+请求、耗时几分钟，绝不能卡住 ocx sync。
+
+### 采样策略
+
+每个桥最多试 --tries 个模型（默认 6），跳过名字里带 image/tts/embed/ocr/
+vision/vl 的。某个模型撞到限流不算桥不可用，会继续试下一个——这个坑是
+实测踩到的：cline 前两个模型都是 429 cap，但第三个 z-ai/glm-5.3-flash
+正常返回，只试前两个就会把活着的桥误判为不可达。
+
+快照写到 ~/.codex/fleet-reach.json（catalog_sort.py 实际读取的那份）。
