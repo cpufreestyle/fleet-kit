@@ -210,7 +210,9 @@ def main():
             tier = 1
         pos = order.index(prov) if prov in order else len(order)
         proven = 0 if slug in proven_candidates(verified.get(prov), prov) else 1
-        return (tier, proven, pos, slug)
+        # workbuddy hy4 is the model the user asks to see first
+        hy4 = 0 if slug in ("workbuddy/hy4-preview", "workbuddy-gpt/hy4-preview") else 1
+        return (tier, hy4, proven, pos, slug)
 
     NATIVE_PRIORITY = 105
 

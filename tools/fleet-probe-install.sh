@@ -18,6 +18,7 @@ PYTHON="${FLEET_PYTHON:-$KIT/../runtime/.venv/bin/python}"
 PROBE="$KIT/tools/fleet_probe.py"
 REACH="${FLEET_REACH_FILE:-$HOME/.codex/fleet-reach.json}"
 ENV_FILE="${FLEET_ENV_FILE:-$KIT/../runtime/fleet.env}"
+ENV_FILE="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"  # absolute: launchd dislikes ..
 LOG="${FLEET_PROBE_LOG:-$HOME/Library/Logs/fleet-probe.log}"
 INTERVAL="${FLEET_PROBE_INTERVAL:-1800}"
 
@@ -33,7 +34,7 @@ write_plist() {
         echo "    <string>$PROBE</string>"
         echo "    <string>--out</string><string>$REACH</string>"
         echo "    <string>--tries</string><string>6</string>"
-        echo "    <string>--call-timeout</string><string>8</string>"
+        echo "    <string>--call-timeout</string><string>45</string>"
         echo "    <string>--sort-after</string>"
         echo "</array>"
         echo "<key>EnvironmentVariables</key><dict>"

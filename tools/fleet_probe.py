@@ -108,41 +108,63 @@ def try_call(port, headers, model, timeout=20.0):
 SKIP_EXACT = ("cline-free/",)
 
 
-def probe_gateway(name, model_prefix, timeout=20.0):
-    """Probe a provider that ocx forwards straight to its vendor."""
+def probe_gateway(name, model_prefix, timeout=20.0, tries=3):
+    """Probe a provider that ocx forwards straight to its vendor.
+
+    Retries and the same lenient content check as probe(): a vendor model
+    that answers a real reply while ignoring "reply exactly" is still
+    reachable, and a single attempt would flap the ordering.
+    """
     url = "http://127.0.0.1:%d/v1/models" % GATEWAY_PORT
     headers = {"Authorization": "Bearer PROXY_MANAGED"}
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=headers),
-                                    timeout=8) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as exc:
-        return False, "gateway list failed: %s" % str(exc)[:50], None
+    data = None
+    for _list_attempt in range(3):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers),
+                                        timeout=8) as resp:
+                data = json.loads(resp.read().decode())
+            break
+        except Exception:
+            continue
+    if data is None:
+        return False, "gateway list failed", None
     ids = [m.get("id") for m in data.get("data", [])
             if (m.get("id") or "").startswith(model_prefix + "/")]
     if not ids:
         return False, "no %s models in gateway" % model_prefix, None
-    body = json.dumps({
-        "model": ids[0],
-        "max_tokens": 60,
-        "messages": [{"role": "user",
-                     "content": "Reply exactly: " + NONCE}],
-    }).encode()
-    req = urllib.request.Request(
-        "http://127.0.0.1:%d/v1/chat/completions" % GATEWAY_PORT,
-        data=body, headers={**headers, "Content-Type": "application/json"},
-        method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            d2 = json.loads(resp.read().decode())
-        content = (d2.get("choices") or [{}])[0].get("message", {}).get("content", "")
-        if NONCE in content:
-            return True, "%s -> %s" % (ids[0], content[:40]), ids[0]
-        return False, "%s: no echo" % ids[0], None
-    except urllib.error.HTTPError as exc:
-        return False, "%s: HTTP %s" % (ids[0], exc.code), None
-    except Exception as exc:
-        return False, "%s: %s" % (ids[0], str(exc)[:40]), None
+    last = ""
+    for model in ids[:tries]:
+        for attempt in range(3):
+            body = json.dumps({
+                "model": model,
+                "max_tokens": 60,
+                "messages": [{"role": "user",
+                             "content": "Reply exactly: " + NONCE}],
+            }).encode()
+            req = urllib.request.Request(
+                "http://127.0.0.1:%d/v1/chat/completions" % GATEWAY_PORT,
+                data=body,
+                headers={**headers, "Content-Type": "application/json"},
+                method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    d2 = json.loads(resp.read().decode())
+                content = (d2.get("choices") or [{}])[0].get("message", {}).get(
+                    "content", "")
+                text = content.strip()
+                if NONCE in text:
+                    return True, "%s -> %s" % (model, text[:40]), model
+                if len(text) >= 8 and not text.lower().startswith(
+                        ("error", "sorry, i can", "i cannot", "\"error\"")):
+                    return True, "%s -> %s" % (model, text[:40]), model
+                last = "%s: no echo (attempt %d)" % (model, attempt + 1)
+            except urllib.error.HTTPError as exc:
+                return False, "%s: HTTP %s" % (model, exc.code), None
+            except Exception as exc:
+                last = "%s: %s" % (model, str(exc)[:40])
+                break
+    return False, last or "no %s models answered" % model_prefix, None
+
 
 def probe(name, port, key, tries=3, timeout=20.0):  # -> (ok, why, model)
     headers = {"Authorization": "Bearer " + key} if key else {}
@@ -160,16 +182,20 @@ def probe(name, port, key, tries=3, timeout=20.0):  # -> (ok, why, model)
     if not candidates:
         return False, "only image/tts models", None
     last = ""
+    attempts = 3
     for model in candidates:
-        try:
-            ok, content = try_call(port, headers, model, timeout)
-            if ok:
-                return True, "%s -> %s" % (model, content), model
-            last = "%s: no echo" % model
-        except urllib.error.HTTPError as exc:
-            last = "%s: HTTP %s" % (model, exc.code)
-        except Exception as exc:
-            last = "%s: %s" % (model, str(exc)[:40])
+        for _attempt in range(attempts):
+            try:
+                ok, content = try_call(port, headers, model, timeout)
+                if ok:
+                    return True, "%s -> %s" % (model, content), model
+                last = "%s: no echo (attempt %d)" % (model, _attempt + 1)
+            except urllib.error.HTTPError as exc:
+                last = "%s: HTTP %s" % (model, exc.code)
+                break
+            except Exception as exc:
+                last = "%s: %s" % (model, str(exc)[:40])
+                break
     return False, last or "no chat model to try", None
 
 
@@ -213,7 +239,8 @@ def main():
     ap.add_argument("--stdout", action="store_true")
     ap.add_argument("--sort-after", action="store_true",
                     help="re-sort the catalog once the snapshot is written")
-    ap.add_argument("--call-timeout", type=float, default=20.0)
+    ap.add_argument("--call-timeout", type=float, default=45.0,
+                    help="per-attempt timeout; slow models must not look dead")
     ap.add_argument("--tries", type=int, default=6)
     args = ap.parse_args()
 
