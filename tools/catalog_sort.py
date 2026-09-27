@@ -35,6 +35,31 @@ DEFAULT_ORDER = os.environ.get(
     "FLEET_MODEL_ORDER",
     "workbuddy,workbuddy-gpt,trae,stepfun,xhx,lingxi,cline")
 
+def interleave_reps(models, order):
+    """Float one representative per provider to the front, in --order.
+
+    Sorting by tier alone lets one big provider swallow the whole first
+    screen: workbuddy alone has a dozen rows, so every other reachable
+    provider got pushed past position 30. Leading with one row per
+    provider keeps the reachable set visible at the top, then each
+    provider keeps its block in order.
+    """
+    reps, rest = [], []
+    taken = set()
+    for prov in order:
+        for model in models:
+            slug = model.get("slug") or model.get("id") or ""
+            if provider_of(slug) == prov and slug not in taken:
+                reps.append(model)
+                taken.add(slug)
+                break
+    for model in models:
+        slug = model.get("slug") or model.get("id") or ""
+        if slug not in taken:
+            rest.append(model)
+            taken.add(slug)
+    return reps + rest
+
 
 def catalog_path():
     home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
@@ -198,13 +223,16 @@ def main():
     kept, dropped = [], {}
     original = [{k: (dict(v) if isinstance(v, dict) else v)
                  for k, v in m.items()} for m in models]
-    for model in sorted(models, key=rank):
+    # one representative per provider first, then each provider keeps
+    # its block: otherwise the biggest provider eats the first screen
+    ordered = interleave_reps(sorted(models, key=rank), order)
+    for _rank_i, model in enumerate(ordered):
         slug = model.get("slug") or model.get("id") or ""
         prov = provider_of(slug)
         tier = 0 if prov in good else (2 if prov in bad else 1)
         pos = order.index(prov) if prov in order else len(order)
         proven = 0 if slug in proven_candidates(verified.get(prov), prov) else 1
-        model["priority"] = priority_for(slug, tier, pos) + proven
+        model["priority"] = _rank_i * 1000 + priority_for(slug, tier, pos) + proven
         if args.drop_unreachable and prov in bad:
             dropped.setdefault(prov, []).append(slug)
         else:
@@ -243,7 +271,6 @@ def main():
 
     before_slugs = [m.get("slug") for m in models]
     after_slugs = [m.get("slug") for m in kept]
-    before_prio = [m.get("priority") for m in models]
     after_prio = [m.get("priority") for m in kept]
     before_slugs = [m.get("slug") for m in original]
     before_prio = [m.get("priority") for m in original]
