@@ -78,11 +78,11 @@ def list_models(port, headers):
     return [m.get("id") for m in data.get("data", []) if m.get("id")]
 
 
-def try_call(port, headers, model, timeout=20.0):
+def try_call(port, headers, model, timeout=20.0, budget=60):
     url = "http://127.0.0.1:%d/v1/chat/completions" % port
     body = json.dumps({
         "model": model,
-        "max_tokens": 60,
+        "max_tokens": budget,
         "messages": [{"role": "user",
                      "content": "Reply exactly: " + NONCE}],
     }).encode()
@@ -92,6 +92,7 @@ def try_call(port, headers, model, timeout=20.0):
         data = json.loads(resp.read().decode())
     choices = data.get("choices") or []
     content = (choices[0].get("message") or {}).get("content") or ""
+    usage = data.get("usage") or {}
     # Echoing the nonce is the strongest signal, but a model that answers with
     # a real reply and simply does not follow "reply exactly" (qoder Qwen3.8-
     # Flash greets instead) is still reachable. What must not count as a pass:
@@ -102,10 +103,23 @@ def try_call(port, headers, model, timeout=20.0):
     if len(text) >= 8 and not text.lower().startswith(("error", "sorry, i can",
                                                      "i cannot", "\"error\"")):
         return True, text[:60]
+    if not text:
+        # finish_reason=length with an empty reply means the model spent the
+        # whole budget on reasoning; the caller retries with a bigger one.
+        details = (usage.get("completion_tokens_details") or {})
+        reasoning = details.get("reasoning_tokens") or 0
+        spent = usage.get("completion_tokens") or 0
+        if (choices[0].get("finish_reason") == "length"
+                and max(reasoning, spent) >= budget * 0.9):
+            return None, text[:60]
     return False, text[:60]
 
 
 SKIP_EXACT = ("cline-free/",)
+# hy4 and friends reason before they speak, so a 60-token budget ends
+# with content=null and finish_reason=length: a dead-looking pass that
+# would sink a working model. Escalate the budget before judging it.
+BUDGETS = (60, 1024)
 
 
 def probe_gateway(name, model_prefix, timeout=20.0, tries=3):
@@ -134,35 +148,48 @@ def probe_gateway(name, model_prefix, timeout=20.0, tries=3):
         return False, "no %s models in gateway" % model_prefix, None
     last = ""
     for model in ids[:tries]:
-        for attempt in range(3):
-            body = json.dumps({
-                "model": model,
-                "max_tokens": 60,
-                "messages": [{"role": "user",
-                             "content": "Reply exactly: " + NONCE}],
-            }).encode()
-            req = urllib.request.Request(
-                "http://127.0.0.1:%d/v1/chat/completions" % GATEWAY_PORT,
-                data=body,
-                headers={**headers, "Content-Type": "application/json"},
-                method="POST")
-            try:
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    d2 = json.loads(resp.read().decode())
-                content = (d2.get("choices") or [{}])[0].get("message", {}).get(
-                    "content", "")
-                text = content.strip()
-                if NONCE in text:
-                    return True, "%s -> %s" % (model, text[:40]), model
-                if len(text) >= 8 and not text.lower().startswith(
-                        ("error", "sorry, i can", "i cannot", "\"error\"")):
-                    return True, "%s -> %s" % (model, text[:40]), model
-                last = "%s: no echo (attempt %d)" % (model, attempt + 1)
-            except urllib.error.HTTPError as exc:
-                return False, "%s: HTTP %s" % (model, exc.code), None
-            except Exception as exc:
-                last = "%s: %s" % (model, str(exc)[:40])
-                break
+        for budget in BUDGETS:
+            for attempt in range(3 if budget == BUDGETS[0] else 1):
+                body = json.dumps({
+                    "model": model,
+                    "max_tokens": budget,
+                    "messages": [{"role": "user",
+                                 "content": "Reply exactly: " + NONCE}],
+                }).encode()
+                req = urllib.request.Request(
+                    "http://127.0.0.1:%d/v1/chat/completions" % GATEWAY_PORT,
+                    data=body,
+                    headers={**headers, "Content-Type": "application/json"},
+                    method="POST")
+                try:
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        d2 = json.loads(resp.read().decode())
+                    content = (d2.get("choices") or [{}])[0].get(
+                        "message", {}).get("content", "")
+                    text = content.strip()
+                    usage = d2.get("usage") or {}
+                    details = (usage.get("completion_tokens_details") or {})
+                    spent = usage.get("completion_tokens") or 0
+                    reasoning = details.get("reasoning_tokens") or 0
+                    if NONCE in text:
+                        return True, "%s -> %s" % (model, text[:40]), model
+                    if len(text) >= 8 and not text.lower().startswith(
+                            ("error", "sorry, i can", "i cannot", "\"error\"")):
+                        return True, "%s -> %s" % (model, text[:40]), model
+                    empty_thinking = (
+                        not text
+                        and (d2.get("choices") or [{}])[0].get(
+                            "finish_reason") == "length"
+                        and max(reasoning, spent) >= budget * 0.9)
+                    if empty_thinking:
+                        last = "%s: empty at %d tokens" % (model, budget)
+                        break
+                    last = "%s: no echo (attempt %d)" % (model, attempt + 1)
+                except urllib.error.HTTPError as exc:
+                    return False, "%s: HTTP %s" % (model, exc.code), None
+                except Exception as exc:
+                    last = "%s: %s" % (model, str(exc)[:40])
+                    break
     return False, last or "no %s models answered" % model_prefix, None
 
 
@@ -184,18 +211,25 @@ def probe(name, port, key, tries=3, timeout=20.0):  # -> (ok, why, model)
     last = ""
     attempts = 3
     for model in candidates:
-        for _attempt in range(attempts):
-            try:
-                ok, content = try_call(port, headers, model, timeout)
-                if ok:
-                    return True, "%s -> %s" % (model, content), model
-                last = "%s: no echo (attempt %d)" % (model, _attempt + 1)
-            except urllib.error.HTTPError as exc:
-                last = "%s: HTTP %s" % (model, exc.code)
-                break
-            except Exception as exc:
-                last = "%s: %s" % (model, str(exc)[:40])
-                break
+        for budget in BUDGETS:
+            for _attempt in range(attempts if budget == BUDGETS[0] else 1):
+                try:
+                    ok, content = try_call(port, headers, model, timeout,
+                                           budget=budget)
+                    if ok:
+                        return True, "%s -> %s" % (model, content), model
+                    if ok is None:
+                        # reasoning consumed the budget and said nothing: try
+                        # the next budget before calling this model dead
+                        last = "%s: empty at %d tokens" % (model, budget)
+                        break
+                    last = "%s: no echo (attempt %d)" % (model, _attempt + 1)
+                except urllib.error.HTTPError as exc:
+                    last = "%s: HTTP %s" % (model, exc.code)
+                    break
+                except Exception as exc:
+                    last = "%s: %s" % (model, str(exc)[:40])
+                    break
     return False, last or "no chat model to try", None
 
 
