@@ -644,8 +644,9 @@ kit 内带一份当前实测快照 `tools/fleet-reach.json`，可直接复用：
 `catalog_sort.py` 排好的顺序会被整个冲掉。ocx 没有提供 hook，所以
 FleetKit 用一个 wrapper 把真实 ocx 包起来：
 
-    ~/.local/node-v22.20.0-darwin-arm64/bin/ocx
-      -> <kit>/tools/fleet-sort-after-sync.sh   （软链）
+    ~/.local/node-v22.20.0-darwin-arm64/bin/ocx        -> wrapper
+    ~/.local/node-v22.20.0-darwin-arm64/bin/opencodex  -> wrapper
+      （均在 <kit>/tools/fleet-sort-after-sync.sh）
 
 wrapper 先按原样执行真实 ocx，只有子命令是 `sync` / `sync-cache` 且
 退出码为 0 时，才补跑一次 `catalog_sort.py` 再 `ocx sync-cache`。

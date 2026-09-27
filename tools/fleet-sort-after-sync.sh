@@ -22,6 +22,7 @@ fi
 KIT="$(cd "$(dirname "$SRC")/.." && pwd)"
 REAL_OCX="${FLEET_REAL_OCX:-/Users/a1-6/.local/node-v22.20.0-darwin-arm64/lib/node_modules/@bitkyc08/opencodex/bin/ocx.mjs}"
 OCX_BIN="${FLEET_OCX_BIN:-/Users/a1-6/.local/node-v22.20.0-darwin-arm64/bin/ocx}"
+OCX_ALIAS="${FLEET_OCX_ALIAS:-/Users/a1-6/.local/node-v22.20.0-darwin-arm64/bin/opencodex}"
 REACH="${FLEET_REACH_FILE:-$KIT/tools/fleet-reach.json}"
 PYTHON="${FLEET_PYTHON:-$KIT/../runtime/.venv/bin/python}"
 SELF="$(cd "$(dirname "$SRC")" && pwd)/$(basename "$SRC")"
@@ -34,23 +35,26 @@ run_real() {
     fi
 }
 
-install_wrapper() {
-    if [ -L "$OCX_BIN" ] || [ ! -e "$OCX_BIN" ]; then
-        ln -sfn "$SELF" "$OCX_BIN.new" && mv -f "$OCX_BIN.new" "$OCX_BIN"
-        echo "fleet-sort: installed -> $OCX_BIN -> $SELF"
+link_one() {
+    # $1 = bin path to (re)point at this wrapper; only symlinks are touched
+    local bin="$1"
+    if [ -L "$bin" ] || [ ! -e "$bin" ]; then
+        ln -sfn "$SELF" "$bin.new" && mv -f "$bin.new" "$bin"
+        echo "  $bin -> $SELF"
         return 0
     fi
-    echo "fleet-sort: $OCX_BIN is a real file, refusing to replace" >&2
+    echo "  $bin is a real file, skipped" >&2
     return 1
 }
 
-uninstall_wrapper() {
-    if [ -L "$OCX_BIN" ] && [ "$(readlink "$OCX_BIN")" = "$SELF" ]; then
-        ln -sfn "$REAL_OCX" "$OCX_BIN.new" && mv -f "$OCX_BIN.new" "$OCX_BIN"
-        echo "fleet-sort: removed, $OCX_BIN -> $REAL_OCX"
+unlink_one() {
+    local bin="$1"
+    if [ -L "$bin" ] && [ "$(readlink "$bin")" = "$SELF" ]; then
+        ln -sfn "$REAL_OCX" "$bin.new" && mv -f "$bin.new" "$bin"
+        echo "  $bin -> $REAL_OCX"
         return 0
     fi
-    echo "fleet-sort: $OCX_BIN is not our wrapper; nothing to do" >&2
+    echo "  $bin is not our wrapper, skipped" >&2
     return 1
 }
 
@@ -61,8 +65,20 @@ fi
 
 sub="${1:-}"
 case "$sub" in
-    --install)   install_wrapper;   exit $? ;;
-    --uninstall) uninstall_wrapper; exit $? ;;
+    --install)
+        echo "fleet-sort: installing wrapper"
+        rc=0
+        link_one "$OCX_BIN" || rc=1
+        link_one "$OCX_ALIAS" || rc=1
+        exit $rc
+        ;;
+    --uninstall)
+        echo "fleet-sort: removing wrapper"
+        rc=0
+        unlink_one "$OCX_BIN" || rc=1
+        unlink_one "$OCX_ALIAS" || rc=1
+        exit $rc
+        ;;
 esac
 
 run_real "$@"
