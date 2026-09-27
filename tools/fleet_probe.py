@@ -20,8 +20,11 @@ import datetime
 import json
 import os
 import re
+import subprocess
+import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 PORTS = {
     "workbuddy": 8787, "workbuddy-gpt": 8788, "qoder": 8789,
@@ -198,6 +201,8 @@ def main():
     ap.add_argument("--only", default="",
                     help="comma-separated bridge names to probe")
     ap.add_argument("--stdout", action="store_true")
+    ap.add_argument("--sort-after", action="store_true",
+                    help="re-sort the catalog once the snapshot is written")
     ap.add_argument("--call-timeout", type=float, default=20.0)
     ap.add_argument("--tries", type=int, default=6)
     args = ap.parse_args()
@@ -259,6 +264,22 @@ def main():
             print("merge skipped:", exc)
     write_json(args.out, snap)
     print("wrote", args.out)
+    if args.kit_reach:
+        write_json(args.kit_reach, snap)
+        print("wrote", args.kit_reach)
+    # A probe that only refreshes the snapshot leaves the picker stale until
+    # the next ocx sync, so fold the reorder into the same run.
+    if args.sort_after:
+        sorter = Path(__file__).resolve().parent / "catalog_sort.py"
+        if sorter.exists():
+            try:
+                subprocess.run([sys.executable, str(sorter),
+                                "--reach", args.out],
+                               capture_output=True, text=True,
+                               timeout=120)
+                print("catalog re-sorted")
+            except Exception as exc:
+                print("re-sort failed:", exc)
     if args.kit_reach:
         write_json(args.kit_reach, snap)
         print("wrote", args.kit_reach)

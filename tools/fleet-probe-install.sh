@@ -34,6 +34,7 @@ write_plist() {
         echo "    <string>--out</string><string>$REACH</string>"
         echo "    <string>--tries</string><string>6</string>"
         echo "    <string>--call-timeout</string><string>8</string>"
+        echo "    <string>--sort-after</string>"
         echo "</array>"
         echo "<key>EnvironmentVariables</key><dict>"
         echo "    <key>FLEET_ENV_FILE</key><string>$ENV_FILE</string>"
