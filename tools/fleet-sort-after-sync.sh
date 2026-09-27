@@ -23,10 +23,12 @@ KIT="$(cd "$(dirname "$SRC")/.." && pwd)"
 REAL_OCX="${FLEET_REAL_OCX:-/Users/a1-6/.local/node-v22.20.0-darwin-arm64/lib/node_modules/@bitkyc08/opencodex/bin/ocx.mjs}"
 OCX_BIN="${FLEET_OCX_BIN:-/Users/a1-6/.local/node-v22.20.0-darwin-arm64/bin/ocx}"
 OCX_ALIAS="${FLEET_OCX_ALIAS:-/Users/a1-6/.local/node-v22.20.0-darwin-arm64/bin/opencodex}"
-REACH="${FLEET_REACH_FILE:-$KIT/tools/fleet-reach.json}"
+REACH="${FLEET_REACH_FILE:-$HOME/.codex/fleet-reach.json}"
 PROBE="${FLEET_PROBE:-$KIT/tools/fleet_probe.py}"
 REACH_MAX_AGE="${FLEET_REACH_MAX_AGE:-86400}"
 ENV_FILE="${FLEET_ENV_FILE:-$KIT/../runtime/fleet.env}"
+# absolute like the probe plist: launchd and relative '..' do not mix
+ENV_FILE="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
 PYTHON="${FLEET_PYTHON:-$KIT/../runtime/.venv/bin/python}"
 SELF="$(cd "$(dirname "$SRC")" && pwd)/$(basename "$SRC")"
 
