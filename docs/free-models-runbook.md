@@ -111,3 +111,30 @@ Google AI Ultra 档全面停止服务（含 Gemini CLI，Login with Google 入�
 
 出路：迁 Antigravity（本机已装 /Applications/Antigravity.app，可仿舰队模式建桥），
 或改用 Google AI Studio API key（ocx registry 有 google 条目，AI Studio 有免费额度）。
+
+## OpenAI 原生模型的账号档位差异（2026-09-27 实测）
+
+`openai` provider 走 `chatgpt.com/backend-api/codex`（ChatGPT 账号 OAuth 转发）。
+同一个账号下，模型可用性分三档：
+
+| 模型 | /v1/chat/completions | 结论 |
+|------|---------------------|------|
+| `gpt-6-luna` | 200 pong | 可用 |
+| `gpt-5.6-terra` | 200 pong | 可用 |
+| `gpt-5.6-luna` | 200 pong | 可用 |
+| `gpt-6-sol` | 400 `The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account.` | 账号档位不够 |
+| `gpt-6-astra` | 400 同上 | 账号档位不够 |
+| `gpt-5.6-sol` | 400 同上 | 账号档位不够 |
+| `gpt-5.5` | 404 `does not exist or you do not have access to it.` | 已下线/无权限 |
+
+注意这跟 `Codex` 内部报的是同一条文案：不是桥的问题，是 ChatGPT 账号
+（Plus / Pro / Team 档位）没开这些模型。
+
+处理：`ocx models disable <id> --native` 把这几个从选择器摘掉，
+否则选了下单就是 400。已禁用的 4 个：gpt-6-sol / gpt-6-astra /
+gpt-5.6-sol / gpt-5.5。剩下的 gpt-6-luna / gpt-5.6-terra / gpt-5.6-luna
+实测通过。
+
+不要用 `catalog-filter.sh --hide` 去盖这件事：它的判据是
+`real_calls.json` 的桥 verdict，只认反向代理桥，不认原生模型，
+跑一次会把 cline/gemini/antigravity/catpaw 一起扫掉（216 -> 136）。

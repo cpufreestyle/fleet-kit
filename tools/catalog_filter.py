@@ -318,8 +318,16 @@ def main(argv=None):
         "FLEET_PROXY_BASE", "http://127.0.0.1:10100"),
         help="local proxy base used for the native-pool probe")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--hide", action="store_true",
+                        help="actually remove rows; default is report-only")
     args = parser.parse_args(argv)
 
+    # FleetKit convention: never hide models unless explicitly opted in.
+    # A plain run reports what it would drop and exits; pass --hide
+    # (or CATALOG_FILTER_HIDE=1) to allow the catalog to be rewritten.
+    if not args.hide and os.environ.get("CATALOG_FILTER_HIDE", "") not in ("1", "true"):
+        args.dry_run = True
+        args.no_restore = True
     keep = {p.strip() for p in args.keep.split(",") if p.strip()}
     only = {p.strip() for p in args.only.split(",") if p.strip()}
 

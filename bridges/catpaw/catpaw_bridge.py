@@ -176,6 +176,22 @@ def fetch_models(at):
     return None
 
 def list_models():
+    # 面板探活用：优先返回已缓存模型（DB/内存/静态），绝不因外网慢而超时。
+    # 上游同步放后台线程做，不阻塞 /v1/models 响应。
+    cached = None
+    if ST['models']:
+        cached = [str(m.get('modelTypeName')) for m in ST['models'] if m.get('modelTypeName')]
+    else:
+        try:
+            stt = read_state()
+            if stt.get('models'):
+                ST['models'] = stt['models']
+                cached = [str(m.get('modelTypeName')) for m in ST['models'] if m.get('modelTypeName')]
+        except Exception:
+            pass
+    if cached:
+        threading.Thread(target=_bg_refresh, daemon=True).start()
+        return cached
     try:
         at = get_token()
         if time.time() - ST['models_ts'] > 600 or not ST['models']:
@@ -185,6 +201,16 @@ def list_models():
     if ST['models']:
         return [str(m.get('modelTypeName')) for m in ST['models'] if m.get('modelTypeName')]
     return [n for n, _ in STATIC_MODELS]
+
+
+def _bg_refresh():
+    # 后台刷新 token + 上游模型目录，失败只记日志。
+    try:
+        at = get_token()
+        if time.time() - ST['models_ts'] > 600:
+            fetch_models(at)
+    except Exception as e:
+        log('bg refresh err', e)
 
 def oai_chunk(model, cid, delta=None, finish=None):
     return {'id': cid, 'object': 'chat.completion.chunk', 'created': int(time.time()), 'model': model, 'choices': [{'index': 0, 'delta': delta or {}, 'finish_reason': finish}]}

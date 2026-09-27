@@ -162,6 +162,18 @@
         "https://chatgpt.com/"
       ],
       "verified": false
+    },
+    "zcode": {
+      "vendor": "智谱 Z.AI Coding（ZCode 客户端 Start Plan / Weekend Build）",
+      "site": "https://zcode.z.ai/",
+      "free": "free",
+      "window": "ZCode Weekend Build / Start Plan：GLM-5.3-Flash 300,000,000 tokens 一次性（plan_id zcode-v3-start-plan-0924-wk-2，2026-09-27 到期）；Start Plan 日常档 GLM-5.3 3M tokens/天 + GLM-5.3-Flash 5M tokens/天",
+      "facts": "billing/current 实测 entitlement capabilities=[model:glm-5.3-flash] grant_units=300000000 status=active；client/configs 的 startPlanPreview entitlements 为 GLM-5.3(3M/天) 与 GLM-5.3-Flash(5M/天)；offPeak.allowed_models=[GLM-5.3, GLM-5.3-Flash]。上游 zcode-plan/anthropic 每次调用都要过阿里云 captcha（sceneId 11xygtvd / region cn / prefix no8xfe），param 一次性，由 captcha-relay(:8910) 换取。",
+      "sources": [
+        "https://zcode.z.ai/",
+        "https://open.bigmodel.cn/"
+      ],
+      "verified": true
     }
   },
   "models": {
@@ -295,6 +307,16 @@
       "free": "quota",
       "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
       "source": "https://antigravity.google/",
+      "verified": true
+    },
+    "zcode/GLM-5.3-Flash": {
+      "free": "free",
+      "window": "Weekend Build 300M tokens 一次性（2026-09-27 到期）；Start Plan 日常 5M/天",
+      "verified": true
+    },
+    "zcode/GLM-5.3": {
+      "free": "free",
+      "window": "Start Plan 3M tokens/天；Weekend Build 未授权（capabilities 仅 glm-5.3-flash）",
       "verified": true
     }
   },

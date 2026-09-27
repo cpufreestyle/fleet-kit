@@ -32,7 +32,7 @@ API = "http://127.0.0.1:10100"
 PROVIDER_ALIAS = {
     "workbuddy": "wb", "workbuddy-gpt": "wbg", "codely": "cdl",
     "lingxi": "lx", "gemini": "gem", "qoder": "qdr", "tokendance": "tok",
-    "catpaw": "cpw",
+    "catpaw": "cpw", "zcode": "zc",
     "antigravity": "agy",
     "qwen": "qwn", "cline": "cln",
 }

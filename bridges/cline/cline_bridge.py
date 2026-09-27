@@ -39,12 +39,25 @@ BRIDGE_VERSION = "0.1.0"
 HUB_DISCOVERY = Path.home() / ".cline" / "data" / "locks" / "hub" / "production.json"
 HUB_AUTH_PREFIX = "cline-hub-auth."
 
-# 上游免费模型。cline-free/solar-pro4 实测返回 model not found，已剔除。
+# 上游免费模型：
+# - cline-free/* 与 z-ai/glm-5.3-flash、poolside/laguna-s-2.1:free：装机即验证（PONG）
+# - 下面 9 个 :free：2026-09-26 逐个随机加法验证 REAL（答对、cost=0）
+# - cline-free/solar-pro4 实测返回 model not found，已剔除。
 FREE_MODELS = [
     "cline-free/deepseek-v4.1-flash",
     "cline-free/muse-spark-1.3-contributor",
     "z-ai/glm-5.3-flash",
+    "stealth/pixel-canary",
     "poolside/laguna-s-2.1:free",
+    "cohere/north-mini-code:free",
+    "dots-studio/dots-3-note-preview:free",
+    "inclusionai/ling-3.0-flash-fin:free",
+    "inclusionai/ling-3.0-flash-sante:free",
+    "liquid/lfm-2.5-2.6b:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3.5-lightning:free",
 ]
 CATALOG_PREFIX = "cline/"
 
@@ -154,6 +167,10 @@ class HubClient:
 
     async def run(self, prompt, model):
         # NOTE: field names are provider/model, NOT providerId/modelId.
+        # hub 要求 model 形如 provider/model；裸 :free 短名（如 deepseek-v4-flash:free）
+        # 会报 invalid model format，必须补 provider 前缀（如 cline/deepseek-v4-flash:free）。
+        if "/" not in model:
+            model = "cline/" + model
         created = await self._command("session.create", {
             "workspaceRoot": "/tmp",
             "cwd": "/tmp",
@@ -315,4 +332,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

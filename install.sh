@@ -110,12 +110,13 @@ BRIDGES=(
   "antigravity|antigravity2codex|antigravity|antigravity_bridge.py|10|ANTIGRAVITY2CODEX_KEY||ANTIGRAVITY2CODEX_PORT=@PORT@"
   "qwen|qwen2codex|qwen|qwen_bridge.py|11|QWEN2CODEX_KEY|--host 127.0.0.1 --port @PORT@|QWEN_CALL_TIMEOUT=300"
   "cline|cline2codex|cline|cline_bridge.py|12|CLINE2CODEX_KEY|--host 127.0.0.1 --port @PORT@|CLINE_CALL_TIMEOUT=300"
+  "zcode|zcode2codex|zcode|zcode_bridge.py|13|ZCODE2CODEX_KEY|--host 127.0.0.1 --port @PORT@|ZCODE_CALL_TIMEOUT=300"
 )
 
 echo "FleetKit installer v${KIT_VERSION}"
 info "kit        : ${KIT_DIR}"
 info "fleet home : ${FLEET_HOME}"
-info "ports      : ${PORT_BASE} .. $((PORT_BASE + 12))"
+info "ports      : ${PORT_BASE} .. $((PORT_BASE + 13))"
 info "launch dir : ${LAUNCH_DIR}"
 info "log dir    : ${LOG_DIR}"
 if [ "$DRY_RUN" = "1" ]; then info "mode       : DRY RUN (nothing is written)"; fi
@@ -270,6 +271,8 @@ GEMINI2CODEX_KEY="$(pick_key GEMINI2CODEX_KEY)"
 CATPAW2CODEX_KEY="$(pick_key CATPAW2CODEX_KEY)"
 ANTIGRAVITY2CODEX_KEY="$(pick_key ANTIGRAVITY2CODEX_KEY)"
 QWEN2CODEX_KEY="$(pick_key QWEN2CODEX_KEY)"
+CLINE2CODEX_KEY="$(pick_key CLINE2CODEX_KEY)"
+ZCODE2CODEX_KEY="$(pick_key ZCODE2CODEX_KEY)"
 
 # Antigravity google oauth client pair is never committed to git (push protection
 # rejects it) and every install ships it in its own binary, so read it from there.
@@ -331,6 +334,8 @@ GEMINI2CODEX_KEY="${GEMINI2CODEX_KEY}"
 CATPAW2CODEX_KEY="${CATPAW2CODEX_KEY}"
 ANTIGRAVITY2CODEX_KEY="${ANTIGRAVITY2CODEX_KEY}"
 QWEN2CODEX_KEY="${QWEN2CODEX_KEY}"
+CLINE2CODEX_KEY="${CLINE2CODEX_KEY}"
+ZCODE2CODEX_KEY="${ZCODE2CODEX_KEY}"
 ANTIGRAVITY_OAUTH_CLIENT_ID="${ANTIGRAVITY_OAUTH_CLIENT_ID}"
 ANTIGRAVITY_OAUTH_CLIENT_SECRET="${ANTIGRAVITY_OAUTH_CLIENT_SECRET}"
 # Optional extra id:secret pairs tried after the primary (Antigravity rotates these).

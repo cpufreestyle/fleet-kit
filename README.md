@@ -195,9 +195,15 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
     <home>/checkin/state.json     # 每任务：今日是否成功、余额、上次时间
     <home>/logs/checkin.log       # timer 运行日志
 
-当前注册的任务只有 `xhx`（商汤小浣熊每日登录积分，凭据 ~/.box-agent/config/auth.json）。
-workbuddy 的签到是 workbuddy2codex 桥内的账号池模块（account_pool.py /
-workbuddy_checkin.py），跟着桥自己的节奏跑，不归 checkin.sh 管。
+当前注册两个任务：
+
+| 任务 | 说明 |
+|------|------|
+| `xhx` | 商汤小浣熊每日登录积分；凭据来自 `~/.box-agent/config/auth.json` |
+| `workbuddy` | WorkBuddy Buddy 加油站。账号领取由桥内 `workbuddy_checkin.py` 在桥启动/每日运行时自动完成；本任务校验桥健康并在签到状态中汇总 |
+
+WorkBuddy 的 dashboard 领取接口保持 cookie 鉴权，独立 timer 不复制凭据、不绕过
+鉴权；它只确认账号池桥在线，领取仍由桥内幂等 worker 负责。
 
 ## 本地状态面板（status_ui）
 
@@ -373,7 +379,13 @@ kit 因此带一个看门狗，数 catalog 里带 `/` 的桥模型，少于阈�
 注意：磁盘上的 catalog 修好之后，**已经在跑的 app 仍显示旧列表**，需要重启一次
 Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中的会话）。
 
-## 不可用 provider 自动隐藏（catalog-filter）
+**默认只报告，不动 catalog。** FleetKit 约定「不隐藏任何模型」：裸跑 `catalog-filter.sh` / `catalog_filter.py` 只会打印将要删除的行，catalog 一个都不删。要真的裁剪，必须显式 opt-in：
+
+    bash tools/catalog-filter.sh --hide          # 或 CATALOG_FILTER_HIDE=1
+
+定时器同样受此约束：`install-timer` 装好后每 300s 也只做报告，除非启动环境里设了 `CATALOG_FILTER_HIDE=1`。
+
+## 不可用 provider 自动隐藏（catalog-filter，默认关闭）
 
 `ocx-catalog-guard` 保证反代理模型「别消失」；但如果某个桥当前核验不是 REAL（端口通、能聊，真实调用核验没过），它仍会躺在选择器里，选中就报错。`catalog_filter.py` 补上另一半：按面板 `verify.real` 结果，把「有桥且非 REAL」的斜杠模型从 catalog 摘掉。
 

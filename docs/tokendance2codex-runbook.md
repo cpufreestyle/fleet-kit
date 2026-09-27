@@ -37,7 +37,7 @@ curl -s http://127.0.0.1:10100/v1/models | grep step-5
 step-5-preview（1M ctx，支持 openai:chat-completions / anthropic:messages）、step-3.7-flash、glm-5.3、minimax-m3、deepseek-v4-pro、kimi-k3、qwen3.8-max、hy4-preview、longcat-2.0 等。完整清单：`ocx models live --provider tokendance`。
 
 ## 2026-09-26 01:20 更新：模型选项已加入，key 仍失效
-- 用户给了 key 01M053GJE05H2S3K8Y9JH8329S（md5 7302f2aa…）。上游 /v1/chat/completions 返回 401「API 密钥不存在」（00:55、01:20 两次复测一致；/v1/models 公开无鉴权，不能用来判断 key）。
+- 用户给了 key <TOKENDANCE_KEY>（md5 7302f2aa…）。上游 /v1/chat/completions 返回 401「API 密钥不存在」（00:55、01:20 两次复测一致；/v1/models 公开无鉴权，不能用来判断 key）。
 - 已把 step-5-preview 选入模型选项：
   - ocx models selected tokendance --set step-5-preview → selected=['step-5-preview']，catalogRefresh committed
   - ocx sync → 72 models 注入 ~/.codex/cc-switch-model-catalog.json（含 tokendance/step-5-preview）

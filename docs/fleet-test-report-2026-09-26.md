@@ -36,7 +36,7 @@
   ocx service restart
 
 ## 用户侧待办（4 项）
-- tokendance：tokendance.space/keys 重建 key（旧 key 01M053GJE05H2S3K8Y9JH8329S 仍 401「API 密钥不存在」，00:55 与 01:20 两次复测一致），然后 ocx provider add tokendance ... --api-key 新key + ocx service restart
+- tokendance：tokendance.space/keys 重建 key（旧 key <TOKENDANCE_KEY> 仍 401「API 密钥不存在」，00:55 与 01:20 两次复测一致），然后 ocx provider add tokendance ... --api-key 新key + ocx service restart
 - codely：网页端登录激活
 - gemini：完成 Google 账号验证或提供 cookie
 - catpaw：连美团 VPN

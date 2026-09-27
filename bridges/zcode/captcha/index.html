@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZCode captcha relay</title>
+<script>window.AliyunCaptchaConfig={region:'cn',prefix:'no8xfe'};</script>
+<script src="https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js"></script>
+<style>
+body{font-family:-apple-system,PingFang SC,sans-serif;padding:28px;max-width:720px}
+h3{margin:0 0 6px}
+p{color:#666;font-size:13px;line-height:1.6}
+#cap{min-height:44px}
+#zcode-aliyun-captcha-button{display:none}
+#out{margin-top:18px;padding:12px;background:#f5f5f5;border-radius:8px;font-size:12px;white-space:pre-wrap;word-break:break-all}
+</style>
+</head>
+<body>
+<h3>ZCode 反代理 · captcha 换取</h3>
+<p>完成下方滑块后，验证票据会自动写入桥接器的 captcha 缓存；页面提示已保存即可关闭。<br>captcha 过期或上游返回 3007 时，重新打开本页完成一次即可。</p>
+<!-- 与 ZCode.app 内部结构对齐：container / element / button 三个挂载点 -->
+<div id="zcode-aliyun-captcha-container" aria-hidden="true" style="display:none"></div>
+<div id="cap"></div>
+<button id="zcode-aliyun-captcha-button" type="button">verify</button>
+<pre id="out">status: idle</pre>
+<script>
+var out=document.getElementById('out');
+function log(s){out.textContent='status: '+s;}
+window.__capParam=null;
+function save(p){
+  return fetch('/save',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'p='+encodeURIComponent(p||'')})
+    .then(function(r){return r.text();}).then(function(t){log('saved('+t+') len='+(p||'').length);document.title='CAP-OK';})
+    .catch(function(e){log('save-failed '+e.message+' (param len='+(p||'').length+')');});
+}
+try{
+  var inst=window.initAliyunCaptcha({
+    SceneId:'11xygtvd',
+    mode:'popup',
+    language:'cn',
+    showErrorTip:true,
+    element:'#cap',
+    button:'#zcode-aliyun-captcha-button',
+    getInstance:function(i){
+      window.__capInst=i;
+      log('instance-ready traceless='+(typeof (i&&i.startTracelessVerification)));
+    },
+    success:function(param){
+      window.__capParam=param;
+      log('success len='+(param&&param.length)+', saving...');
+      save(param);
+    },
+    fail:function(err){log('fail '+(err&&err.message?err.message:JSON.stringify(err)));},
+    onError:function(err){log('error '+(err&&err.message?err.message:JSON.stringify(err)));}
+  });
+  log('sdk-initialized');
+  // ZCode 客户端走 auto 模式：先 startTracelessVerification()，8s 无响应再点按钮弹滑块。
+  setTimeout(function(){
+    try{
+      if(window.__capInst && typeof window.__capInst.startTracelessVerification==='function'){
+        window.__capInst.startTracelessVerification();
+        log('traceless-started');
+      }else{
+        document.getElementById('zcode-aliyun-captcha-button').click();
+        log('button-clicked');
+      }
+    }catch(e){ log('start-threw '+e.message); }
+  }, 2200);
+}catch(e){log('init-threw '+e.message);}
+</script>
+</body>
+</html>

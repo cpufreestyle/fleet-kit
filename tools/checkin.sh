@@ -63,7 +63,11 @@ fi
 
 PY="${FLEET_PYTHON:-}"
 if [ -z "$PY" ] || [ ! -x "$PY" ]; then
-  PY="$(command -v python3 || true)"
+  if [ -x "$FLEET_HOME/.venv/bin/python" ]; then
+    PY="$FLEET_HOME/.venv/bin/python"
+  else
+    PY="$(command -v python3 || true)"
+  fi
 fi
 if [ -z "$PY" ]; then
   echo "python3 not found in PATH" >&2

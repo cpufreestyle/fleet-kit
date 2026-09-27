@@ -35,6 +35,8 @@ HOME = Path(os.environ.get("CODEX_CHECKIN_HOME") or (Path.home() / ".codex-check
 STATE_FILE = HOME / "state.json"
 LOG_FILE = HOME / "checkin.log"
 CST = timezone(timedelta(hours=8))  # 国内平台按北京时间记“今日”
+WORKBUDDY_HEALTH_URL = os.environ.get("WORKBUDDY_HEALTH_URL") or "http://127.0.0.1:8788/health"
+WORKBUDDY_KEY = os.environ.get("CODEBUDDY2OPENAI_KEY", "")
 
 
 def log(msg: str) -> None:
@@ -149,10 +151,29 @@ async def task_xhx(client: httpx.AsyncClient) -> dict:
             "reward_points": bal.get("reward_points")}
 
 
+# ---------------- WorkBuddy（Buddy 加油站）自动签到健康确认 ----------------
+
+async def task_workbuddy(client: httpx.AsyncClient) -> dict:
+    """Confirm the bridge is up; its startup worker owns idempotent auto-claim.
+
+    The WorkBuddy dashboard claim API is intentionally cookie-protected. Its
+    bridge already runs a best-effort account-pool auto-claim on startup, so
+    this task records whether that service is reachable instead of duplicating
+    credentials or bypassing dashboard authentication.
+    """
+    headers = {"Authorization": f"Bearer {WORKBUDDY_KEY}"} if WORKBUDDY_KEY else {}
+    r = await client.get(WORKBUDDY_HEALTH_URL, headers=headers)
+    if r.status_code != 200:
+        return {"ok": False, "detail": f"bridge health http {r.status_code}: {r.text[:120]}"}
+    return {"ok": True, "detail": "WorkBuddy 自动签到服务在线（bridge 启动时领取）",
+            "available_points": None}
+
+
 # ---------------- 任务注册表（新平台按此格式扩展） ----------------
 
 TASKS = {
     "xhx": {"desc": "商汤小浣熊 每日登录积分", "fn": task_xhx},
+    "workbuddy": {"desc": "WorkBuddy Buddy 加油站", "fn": task_workbuddy},
 }
 
 
