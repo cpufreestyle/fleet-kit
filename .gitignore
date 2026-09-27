@@ -5,6 +5,8 @@ LaunchAgents/
 *.plist
 auths*/
 cookies.txt
+captcha.txt
+captcha_pool/
 *.log
 
 # python
