@@ -693,3 +693,16 @@ vision/vl 的。某个模型撞到限流不算桥不可用，会继续试下一�
 正常返回，只试前两个就会把活着的桥误判为不可达。
 
 快照写到 ~/.codex/fleet-reach.json（catalog_sort.py 实际读取的那份）。
+
+### 新电脑部署
+
+`install.sh` 已自动装好这一套（`--no-reach` 可关掉）：
+
+    bash install.sh            # [5c/6] fleet reachability probe
+    bash install.sh --dry-run  # 只预览不落盘
+
+顺序：装定时器 -> 立即探一次 -> 给 ocx 包 wrapper。手动补装：
+
+    bash tools/fleet-probe-install.sh install
+    bash tools/fleet-probe-install.sh run
+    bash tools/fleet-sort-after-sync.sh --install

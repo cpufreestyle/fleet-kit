@@ -22,6 +22,7 @@ SKIP_DEPS=0
 WITH_CHECKIN=0
 WITH_UI=0
 WITH_OCX_GUARD=1
+WITH_REACH=1
 
 usage() {
   cat <<'USAGE'
@@ -67,6 +68,7 @@ while [ "$#" -gt 0 ]; do
     --with-checkin) WITH_CHECKIN=1 ;;
     --with-ui) WITH_UI=1 ;;
     --no-ocx-guard) WITH_OCX_GUARD=0 ;;
+    --no-reach) WITH_REACH=0 ;;
     --no-start) DO_START=0 ;;
     --skip-deps) SKIP_DEPS=1 ;;
     --dry-run) DRY_RUN=1 ;;
@@ -544,6 +546,7 @@ fi
 # (CC Switch) that owns model_catalog_json can strip the bridge models from the picker.
 if [ "$WITH_OCX" = "1" ] && [ "$WITH_OCX_GUARD" = "1" ]; then
   echo "[5b/5] ocx catalog guard"
+  echo "[5b/6] ocx catalog guard"
   if [ "$DRY_RUN" = "1" ]; then
     info "[dry-run] tools/ocx-catalog-guard.sh install-timer"
   elif command -v ocx >/dev/null 2>&1; then
@@ -551,6 +554,31 @@ if [ "$WITH_OCX" = "1" ] && [ "$WITH_OCX_GUARD" = "1" ]; then
       echo "  [warn] ocx-catalog-guard timer install failed" >&2
   else
     echo "  [warn] ocx not on PATH; run later: bash ${FLEET_HOME}/tools/ocx-catalog-guard.sh install-timer" >&2
+  fi
+fi
+
+
+# ---------- 5c. reachability probe + reachable-first ordering ----------
+# Probes every bridge with a real chat call, then re-sorts the catalog so the
+# providers that actually answered sit at the top of the picker. Without it the
+# ordering is a one-shot snapshot that goes stale as bridges come and go.
+if [ "$WITH_OCX" = "1" ] && [ "$WITH_REACH" = "1" ]; then
+  echo "[5c/6] fleet reachability probe"
+  if [ "$DRY_RUN" = "1" ]; then
+    info "[dry-run] tools/fleet-probe-install.sh install"
+  elif bash "${FLEET_HOME}/tools/fleet-probe-install.sh" install; then
+    bash "${FLEET_HOME}/tools/fleet-probe-install.sh" run || \
+      echo "  [warn] first reachability probe failed; ordering unchanged" >&2
+  else
+    echo "  [warn] reachability probe timer install failed; run later:" >&2
+    echo "         bash ${FLEET_HOME}/tools/fleet-probe-install.sh install" >&2
+  fi
+
+  # The wrapper keeps ocx sync from wiping the ordering.
+  if [ "$DRY_RUN" = "1" ]; then
+    info "[dry-run] tools/fleet-sort-after-sync.sh --install"
+  elif ! bash "${FLEET_HOME}/tools/fleet-sort-after-sync.sh" --install; then
+    echo "  [warn] ocx sort wrapper install failed; ordering may be reset by ocx sync" >&2
   fi
 fi
 
