@@ -122,7 +122,10 @@ if [ "$needs_sort" = "1" ] && [ "$rc" = "0" ]; then
     if [ -x "$PYTHON" ] && [ -f "$REACH" ]; then
         if "$PYTHON" "$KIT/tools/catalog_sort.py" --reach "$REACH" >/dev/null 2>&1; then
             echo "fleet-sort: reachable-first order re-applied" >&2
+            # sort writes only the catalog, so refresh the cache first
             run_real sync-cache >/dev/null 2>&1 || true
+            "$PYTHON" "$KIT/tools/catalog_sort.py" --reach "$REACH" >/dev/null 2>&1 \
+                || echo "fleet-sort: re-sort after cache failed" >&2
         else
             echo "fleet-sort: re-sort FAILED, order may be stale" >&2
         fi

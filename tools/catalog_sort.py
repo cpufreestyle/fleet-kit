@@ -87,6 +87,7 @@ def main():
             reach = json.load(fh)
     good = set(reach.get("reachable") or [])
     bad = set(reach.get("unreachable") or [])
+    verified = reach.get("verified_models") or {}
     order = [p.strip() for p in args.order.split(",") if p.strip()]
 
     path = args.catalog or catalog_path()
@@ -104,7 +105,8 @@ def main():
         else:
             tier = 1
         pos = order.index(prov) if prov in order else len(order)
-        return (tier, pos, slug)
+        proven = 0 if verified.get(prov) == slug else 1
+        return (tier, proven, pos, slug)
 
     NATIVE_PRIORITY = 105
 
@@ -122,7 +124,9 @@ def main():
         prov = provider_of(slug)
         tier = 0 if prov in good else (2 if prov in bad else 1)
         pos = order.index(prov) if prov in order else len(order)
-        model["priority"] = priority_for(slug, tier, pos)
+        bare = slug.split("/", 1)[1] if "/" in slug else slug
+        proven = 0 if verified.get(prov) in (slug, bare) else 1
+        model["priority"] = priority_for(slug, tier, pos) + proven
         if args.drop_unreachable and prov in bad:
             dropped.setdefault(prov, []).append(slug)
         else:
@@ -166,6 +170,19 @@ def main():
     before_slugs = [m.get("slug") for m in original]
     before_prio = [m.get("priority") for m in original]
     changed = before_slugs != after_slugs or before_prio != after_prio
+    # the picker reads models_cache.json too, so a stale cache counts as a change
+    cache = os.path.join(os.path.dirname(path), "models_cache.json")
+    if cache != path and os.path.exists(cache):
+        try:
+            cmods = json.load(open(cache, encoding="utf-8")).get("models") or []
+            cprio = [m.get("priority") for m in cmods]
+            cslugs = [m.get("slug") for m in cmods]
+            idx = {m.get("slug"): m for m in kept}
+            want = [idx.get(s, {}).get("priority") for s in cslugs]
+            if cprio != want:
+                changed = True
+        except Exception:
+            pass
     if args.dry_run:
         summary["dry_run"] = True
     elif not changed and not dropped:
@@ -182,6 +199,22 @@ def main():
             summary["backup"] = bak
         data["models"] = kept
         summary["written"] = write_json(path, data)
+        # Codex reads models_cache.json, not just the catalog config points at
+        cache = os.path.join(os.path.dirname(path), "models_cache.json")
+        if os.path.exists(cache) and cache != path:
+            try:
+                cdata = json.load(open(cache, encoding="utf-8"))
+                cmodels = cdata.get("models") or []
+                if cmodels:
+                    idx = {m.get("slug"): m for m in kept}
+                    cdata["models"] = [idx.get(x.get("slug"), x) for x in
+                                        sorted(cmodels, key=lambda y: idx.get(
+                                            y.get("slug"), {}).get(
+                                            "priority", 10**9))]
+                    write_json(cache, cdata)
+                    summary["cache_written"] = len(cdata["models"])
+            except Exception as exc:
+                summary["cache_error"] = str(exc)[:80]
 
     print(json.dumps(summary, ensure_ascii=False, indent=1))
     return 0
