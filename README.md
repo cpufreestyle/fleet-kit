@@ -637,3 +637,33 @@ Codex 选择器按 catalog 里的文件顺序渲染，所以一个死桥会把�
 kit 内带一份当前实测快照 `tools/fleet-reach.json`，可直接复用：
 
     python3 tools/catalog_sort.py --reach tools/fleet-reach.json
+
+## 让排序在 `ocx sync` 后依然生效
+
+`ocx sync` 会从零重建 catalog，并把每个条目的 `priority` 重置为 5，
+`catalog_sort.py` 排好的顺序会被整个冲掉。ocx 没有提供 hook，所以
+FleetKit 用一个 wrapper 把真实 ocx 包起来：
+
+    ~/.local/node-v22.20.0-darwin-arm64/bin/ocx
+      -> <kit>/tools/fleet-sort-after-sync.sh   （软链）
+
+wrapper 先按原样执行真实 ocx，只有子命令是 `sync` / `sync-cache` 且
+退出码为 0 时，才补跑一次 `catalog_sort.py` 再 `ocx sync-cache`。
+其它子命令（status / doctor / models ...）完全不受影响。
+
+### 安装 / 卸载
+
+    bash tools/fleet-sort-after-sync.sh --install
+    bash tools/fleet-sort-after-sync.sh --uninstall
+
+### 排错
+
+排序没生效时，先手动跑一次看真实报错（wrapper 里输出被丢掉了）：
+
+    python3 tools/catalog_sort.py --reach tools/fleet-reach.json
+
+`--reach` 快照缺失或 provider 名单过旧都会让可达性判断失真，
+更新 `tools/fleet-reach.json` 后重跑即可。
+
+真实 ocx 路径可用 `FLEET_REAL_OCX` 覆盖，Python 用 `FLEET_PYTHON`，
+快照用 `FLEET_REACH_FILE`。
