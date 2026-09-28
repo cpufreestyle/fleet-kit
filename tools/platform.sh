@@ -342,6 +342,55 @@ _fleet_write_cmd_wrapper() {
   } | sed 's/$/\r/' > "$path"
 }
 
+# writes <service-dir>/<label>.vbs: a wscript launcher that starts the .cmd
+# wrapper with no console window, then echoes the launcher path in Windows
+# form. Task Scheduler hidden only hides the task itself; with Windows Terminal
+# set as the default terminal app every console child of an action gets a real
+# window that steals focus (measured: a cmd.exe /c action flashes a Terminal
+# window on every single run). wscript.exe is a GUI-subsystem host, so the
+# action itself never allocates a console, and it starts the console child
+# with SW_HIDE so nothing ever becomes visible.
+# writes <service-dir-or-tools>/<label>.launcher.vbs: a wscript launcher that
+# starts the .cmd wrapper with no console window, then echoes the launcher
+# path in Windows form. Task Scheduler hidden only hides the task itself; with
+# Windows Terminal set as the default terminal app every console child of an
+# action gets a real window that steals focus (measured: a cmd.exe /c action
+# flashes a Terminal window on every single run). wscript.exe is a
+# GUI-subsystem host, so the action itself never allocates a console, and it
+# starts the console child with SW_HIDE so nothing ever becomes visible.
+fleet_write_hidden_launcher() {
+  # $1 = label, $2 = the .cmd wrapper this task must run
+  local label="$1" wrapper="$2" dir vbs
+  # The launcher must live where the Task Scheduler action process can open
+  # it. The default service dir sits under %LOCALAPPDATA%, which sandboxes
+  # (the Codex CLI sandbox on Windows, for one) back with a junction into a
+  # package-private folder, and a task started from there fails silently
+  # without ever running the timer. The directory holding this script is
+  # readable and writable, so generate the launcher next to it, and fall back
+  # to the service dir, then TEMP.
+  dir="$(_fleet_platform_dir)"
+  [ -n "$dir" ] && [ -w "$dir" ] || dir="$(fleet_service_dir)"
+  [ -d "$dir" ] && [ -w "$dir" ] || dir="${TMPDIR:-/tmp}"
+  mkdir -p "$dir"
+  vbs="${dir}/${label}.launcher.vbs"
+  cat > "$vbs" <<VBS
+' FleetKit: timer action launcher. Generated on install -- edit
+' tools/platform.sh instead of this file.
+Set sh = CreateObject("WScript.Shell")
+WScript.Quit sh.Run("cmd.exe /c " & Chr(34) & "$(_fleet_win_path "$wrapper")" & Chr(34), 0, True)
+VBS
+  # WSH reads the file as ANSI and wants CRLF line endings
+  sed "s/$/\r/" "$vbs" > "${vbs}.tmp" && mv "${vbs}.tmp" "$vbs"
+  _fleet_win_path "$vbs"
+}
+
+# directory that holds this file, i.e. the kit tools directory
+_fleet_platform_dir() {
+  local src dir
+  src="${BASH_SOURCE[0]:-$0}"
+  dir="$(cd "$(dirname "$src")" 2>/dev/null && pwd)"
+  printf "%s\n" "$dir"
+}
 # writes <service-dir>/<label>.sh used by the linux backend
 _fleet_write_sh_wrapper() {
   local path="$1" workdir="$2" interpreter="$3" script="$4" extra="$5" envpairs="$6" logfile="$7"
@@ -431,6 +480,8 @@ ${userid}      <LogonType>InteractiveToken</LogonType>
     <StartWhenAvailable>true</StartWhenAvailable>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <Priority>7</Priority>
+    <!-- without this the task flashes a console window on every run -->
+    <Hidden>true</Hidden>
   </Settings>
   <Actions Context="Author">
     <Exec>
@@ -653,7 +704,7 @@ fleet_service_remove() {
     return 1
   elif fleet_is_windows; then
     _fleet_win_stop_service "$label"
-    rm -f "$(fleet_service_dir)/${label}.cmd" "$(fleet_service_dir)/${label}.task.xml" \
+    rm -f "$(fleet_service_dir)/${label}.cmd" "$(fleet_service_dir)/${label}.vbs" "$(_fleet_platform_dir)/${label}.launcher.vbs" "$(fleet_service_dir)/${label}.task.xml" \
           "$(fleet_service_dir)/${label}-super.ps1" \
           "$(fleet_service_dir)/${label}.super.pid" "$(fleet_service_dir)/${label}.child.pid"
     return 0
@@ -744,10 +795,11 @@ PLIST
     launchctl bootout "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
     launchctl bootstrap "gui/$(id -u)" "${dir}/${label}.plist" >/dev/null 2>&1 || true
   elif fleet_is_windows; then
-    local wrapper
+    local wrapper launcher
     wrapper="$(_fleet_win_path "${dir}/${label}.cmd")"
     _fleet_write_cmd_wrapper "$wrapper" "$(pwd)" "$interpreter" "$script" "$extra" "" "$logfile"
-    fleet_task_install "$label" "false" "$interval" "" "cmd.exe" "/c \"${wrapper}\"" "$(_fleet_win_path "$(pwd)")"
+    launcher="$(fleet_write_hidden_launcher "$label" "${dir}/${label}.cmd")"
+    fleet_task_install "$label" "false" "$interval" "" "wscript.exe" "/B /NOLOGO \"${launcher}\"" "$(_fleet_win_path "$(pwd)")"
   else
     local wrapper="${dir}/${label}.sh"
     printf '#!/usr/bin/env bash\nwhile true; do\n  "%s" "%s" %s >> "%s" 2>&1\n  sleep %s\ndone\n' \
@@ -804,10 +856,11 @@ PLIST
     launchctl bootout "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
     launchctl bootstrap "gui/$(id -u)" "${dir}/${label}.plist" >/dev/null 2>&1 || true
   elif fleet_is_windows; then
-    local wrapper
+    local wrapper launcher
     wrapper="$(_fleet_win_path "${dir}/${label}.cmd")"
     _fleet_write_cmd_wrapper "$wrapper" "$(pwd)" "$interpreter" "$script" "$extra" "" "$logfile"
-    fleet_task_install "$label" "false" "" "$at" "cmd.exe" "/c \"${wrapper}\"" "$(_fleet_win_path "$(pwd)")"
+    launcher="$(fleet_write_hidden_launcher "$label" "${dir}/${label}.cmd")"
+    fleet_task_install "$label" "false" "" "$at" "wscript.exe" "/B /NOLOGO \"${launcher}\"" "$(_fleet_win_path "$(pwd)")"
   else
     fleet_timer_install "$label" 86400 "$interpreter" "$script" "$extra"
   fi
