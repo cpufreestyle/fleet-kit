@@ -1,6 +1,6 @@
 # zcode2codex（智谱 Z.AI Coding / ZCode）反代理 runbook
 
-链路：Codex -> 本桥(:8798) -> https://zcode.z.ai/api/v1/zcode-plan/anthropic
+链路：Codex -> 本桥(:8800) -> https://zcode.z.ai/api/v1/zcode-plan/anthropic
       -> GLM-5.3-Flash / GLM-5.3（Start Plan 免费额度）
 
 launchd：`com.local.zcode2codex`（plist 由 install.sh 生成，offset 13）
@@ -72,9 +72,9 @@ relay 页刻意与 ZCode.app 内部 SDK 调用对齐：`mode:'popup'`、真实
 ## 操作
 
     # 健康 / 模型 / 额度
-    curl -s http://127.0.0.1:8798/health
-    curl -s http://127.0.0.1:8798/v1/models
-    curl -s http://127.0.0.1:8798/entitlements
+    curl -s http://127.0.0.1:8800/health
+    curl -s http://127.0.0.1:8800/v1/models
+    curl -s http://127.0.0.1:8800/entitlements
 
     # 换 captcha
     open http://127.0.0.1:8910/
@@ -165,3 +165,52 @@ App 必带且被 zod 校验为 UUID，桥目前完全不带）。
 
 在 registry 一环解决前，本桥的 `zcode/GLM-5.3` 与 `zcode/GLM-5.3-Flash`
 会以 503 失败；按用户约定**不在选择器里隐藏它们**。
+
+
+## 2026-09-28：唯一卡点是一次 OAuth 登录（不是风控，也不是票据）
+
+结论先写：ZCode.app 的登出流程会删掉 zcodejwttoken（asar 里
+xue(e){return e==="zai"||e===Ne} = shouldClearZcodeJwtOnLogout，登出即删）。
+18:00 那次 oauth.logout + clearCodingPlanWebviewStorage + relaunchApp 之后，
+~/.zcode/v2/credentials.json 里只剩一个 49 字符 opaque key
+（account-provider:coding-plan:account:zai-team-coding-plan:account:8f26e3e6-...:api-key），
+而 zcode-plan 上游只认 JWT：同一个 key 下 /api/v1/client/configs 200，但
+/api/v1/zcode-plan/billing/current 401 空 body。所以过去桥只报裸 upstream 401；
+现在 /health 多一个 auth 字段，未登录直接 503 + 可执行修复命令。
+
+### 恢复步骤（一次点击，之后自动）
+
+    node "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs" login --no-browser
+    # 在浏览器打开它打印的 URL：
+    # https://chat.z.ai/api/oauth/authorize?client_id=...&state=...&response_type=code
+
+- JWT 落盘后不需要重启桥：read_token() 每请求重读凭证。
+- 本环境里 nohup ... & 会立刻退出，所以用 launchd 挂着等回调：
+  ~/Library/LaunchAgents/com.local.zcode-login.plist
+  （RunAtLoad，URL 打印到 /tmp/fleet-logs/zcode-login.log）。
+- CLI 是 zcode 0.16.9，与 App 读同一份 ~/.zcode/v2/credentials.json（n$s() 硬编码该路径）。
+
+### 顺带修掉的两处
+
+- 探针一直把 zcode 打到 8798（qwen 的口）：tools/fleet_probe.py 把 zcode 放在
+  GATEWAY 里，端口走 plist_port()，落回 qwen 的 offset。现已移出 GATEWAY、
+  加进 PORTS: 8800 与 KEY_ENV: ZCODE2CODEX_KEY；实测
+  DOWN zcode 8800 GLM-5.3-Flash: HTTP 503（503 = 未登录），端口终于对了。
+- tools/catalog_sort.py 里 provider_of() 重复定义 3 次，删到 1 处，并同步到
+  runtime/（两边不一致会让排序行为对不上）。
+
+## 2026-09-28 无头 CLI 路线（方案 C）进展
+
+- zcode --prompt ... --json 能起来，但报 Error: Model creation failed。
+- 真因在 ~/.zcode/cli/log/zcode-2026-09-28.jsonl 的
+  zcode_protocol.provider_registry.ready：accountRevision 里 8 个 provider
+  全是 entitled:false，~/.zcode/v2/coding-plan-cache.json 也全是
+  coding_plan_not_entitled —— 与 JWT 缺失完全一致，登录后这个错应当消失。
+- ZCode Built-in skipped (lease-held) 是正常提示，不是错误：
+  ~/.zcode/v2/runtime/provider/darwin-aarch64/<ver>/endpoint-<sha256>/zcode-builtin-refresh.json
+  的 leaseUntil 在 2026-11 之后，本实例直接用本地缓存的 zcode-builtin.json
+  （186KB，provider/model 规则齐全）。
+- 无头跑 provider 注册要用 bridges/zcode/_provider_env.py 导出
+  ZCODE_BUILTIN_PROVIDER_CONFIG_FILE / ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE /
+  ZCODE_PERSONAL_PROVIDER_CONFIG_FILE / ZCODE_DATA_BASE_DIR，
+  否则 registry 里一个 provider 都没有。

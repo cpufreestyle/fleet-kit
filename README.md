@@ -39,7 +39,7 @@ Codex 里模型以 `桥名/模型` 出现，例如 `workbuddy/hy4-preview`。
 项目名 **FleetKit**（十一桥反代理舰队）。git 源码与运行目录分离：
 
     <项目目录>/kit/       git 仓库（本文档所在）：改代码、git pull 都在这里
-    <项目目录>/runtime/   运行根（FLEET_HOME）：11 座桥、fleet.env、logs、checkin
+    <项目目录>/runtime/   运行根（FLEET_HOME）：13 座桥、fleet.env、logs、checkin
 
 共 13 座桥 + 若干 timer（签到、ocx catalog 看门狗、可达性探测）全部指向
 `<项目目录>/runtime/`，日志统一落在 `<项目目录>/runtime/logs/`。换机器或起第二套时用
@@ -47,7 +47,7 @@ Codex 里模型以 `桥名/模型` 出现，例如 `workbuddy/hy4-preview`。
 
 日常命令（`<R>` = 运行根，例如本机 `<项目目录>/runtime`）：
 
-    bash "<R>/tools/status.sh"                  # 11 座桥健康表 + ocx 状态
+    bash "<R>/tools/status.sh"                  # 13 座桥健康表 + ocx 状态
     bash "<R>/tools/checkin.sh" status          # 签到状态
     bash "<R>/bridges/finish.sh" <name>         # 某座桥登录后收尾
     bash "<R>/uninstall.sh"                     # 卸载
@@ -148,7 +148,7 @@ FleetKit 设计为可整体搬走：`kit/`（源码）与 `runtime/`（运行根
                [--with-checkin] [--with-ui] [--no-ocx-guard] [-h]
 
 - `--home DIR`：安装根目录，默认 "<PRJ>/runtime"
-- `--port-base N`：起始端口，11 座桥依次占用 N .. N+11，默认 8787
+- `--port-base N`：起始端口，13 座桥依次占用 N .. N+13（offset 9 留空），默认 8787
 - `--with-checkin`：装每日 09:00 CST 签到 timer（当前只有 xhx 任务）
 - `--with-ui`：装本地状态面板 launchd 常驻服务，端口 N+9（默认 8796）
 - `--no-ocx-guard`：关掉反代理模型 catalog 看门狗（默认随 opencodex 一起装）
@@ -229,7 +229,7 @@ WorkBuddy 的 dashboard 领取接口保持 cookie 鉴权，独立 timer 不复�
 
 ## 本地状态面板（status_ui）
 
-零依赖的本地网页面板（Python 标准库单文件），用来看舰队整体运行情况：11 座桥的健康、
+零依赖的本地网页面板（Python 标准库单文件），用来看舰队整体运行情况：13 座桥的健康、
 模型数、ocx、今日签到、日志尾巴、每座桥的真实调用判定，并且可以直接点按钮做签到 / 强制重签 /
 重启单座桥 / 发起真实调用核验。
 
@@ -247,7 +247,7 @@ verify_real_calls.py 的最近一次快照）；下面依次是 ocx 状态、今
 与余额、各桥日志 tail。提供签到 / 强制重签按钮、单桥重启按钮、10 秒自动刷新。
 
 安装时装上：`bash install.sh --with-ui`（或 `bash deploy.sh --with-ui`）。面板端口是
-PORT_BASE+9，默认 8796，与 11 座桥错开；端口若等于某个“实际桥端口”(PORT_BASE+offset) 会
+PORT_BASE+9，默认 8796，与 13 座桥错开；端口若等于某个“实际桥端口”(PORT_BASE+offset) 会
 拒绝启动（退出码 2）。配置读取优先级：命令行参数 > 进程环境 > `<home>/fleet.env` > 默认，
 fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而不是崩掉。
 
@@ -574,7 +574,17 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
    没有可用的 OpenAI 兼容推理端点（全局 auth 中间件把非白名单路径一律挡成 401），
    但本机 hub daemon 可以直连：`ws://127.0.0.1:25463/hub`，凭据在
    `~/.cline/data/locks/hub/production.json`。经 hub 驱动真实推理，
-   4 个免费模型实测 200 + verify 判 REAL。详见 docs/cline2codex-runbook.md。
+  4 个免费模型实测 200 + verify 判 REAL。详见 docs/cline2codex-runbook.md。
+
+9. **zcode**（第十三桥，:8800）：智谱 Z.AI Coding Plan / ZCode。桥暴露
+   `zcode/GLM-5.3` 与 `zcode/GLM-5.3-Flash`（Start Plan 3M / 5M tokens 每天，
+   周末活动 300M tokens 一次性）。**当前只差一次 OAuth 登录**：ZCode.app 的登出
+   流程会清掉 `zcodejwttoken`，之后桥返回 503 并在 `auth` 字段给出修复命令。恢复：
+
+       node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs login --no-browser
+
+   在浏览器打开它打印的 URL 即可，JWT 落盘后桥无需重启（`read_token()` 每请求重读）。
+   详见 docs/zcode2codex-runbook.md。
 
 2026-09-26 fleet_chat_test 实测（10 桥）：5 桥 PASS（workbuddy、workbuddy-gpt、
 qoder、trae、xhx）；5 项失败——codely 400 onboarding 门禁、lingxi 401 session
@@ -586,7 +596,7 @@ Plan API 后不受影响。
 
 ## 安全说明
 
-- 12 个本地 key 只写在 <home>/fleet.env（权限 600，10 座桥 + tokundance + stepfun），仅本机使用，不要提交 git 或外发
+- 13 个本地 key 只写在 <home>/fleet.env（权限 600，11 座桥 + tokundance + stepfun），仅本机使用，不要提交 git 或外发
 - 所有桥只监听 127.0.0.1；gemini/catpaw/antigravity 三桥不校验本地 key（Authorization 只用于上游 Google/美团）
 - 测试脚本只打印 key 的 md5，不打印明文
 - 状态面板只监听 127.0.0.1；key 只显示 md5 前 8 位；日志接口走桥名白名单
@@ -600,17 +610,17 @@ Plan API 后不受影响。
         uninstall.sh          卸载
         requirements.txt      Python 依赖
         README.md             本文
-        bridges/              12 座桥源码 + finish.sh（含 cline/，第十二桥）
+        bridges/              13 座桥源码 + finish.sh（含 cline/ 第十二桥、zcode/ 第十三桥）
         opencodex/            setup-providers.sh（ocx provider 注册）
         free-windows.json     免费模型标注数据（官网信息 + 时段，改这里不改代码）
         tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / verify_real_calls.py / fleet_split.py / free_models.py / short_aliases.py / catalog_filter.py / catalog-filter.sh
         docs/                 各桥 runbook + stepfun/tokundance 官方 API runbook + 全量实测报告
       runtime/                运行根（install.sh --home 的默认值）
         fleet.env             桥 API key + FLEET_HOME/PORT_BASE（600，不入库）
-        bridges/<name>/       12 座桥运行副本（登录态、state.json 都在这里）
+        bridges/<name>/       13 座桥运行副本（登录态、state.json 都在这里）
         tools/ docs/ opencodex/   从 kit/ 复制来的运行副本
         checkin/              每日签到 timer 的状态目录
-        logs/                 13 个 launchd 服务的日志
+        logs/                 zcode 相关 launchd 服务的日志
         .venv/                install.sh 建的 Python 环境
 
 ## 可选：TokenDance

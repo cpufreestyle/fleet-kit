@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """zcode2codex - 把本机 ZCode 免费模型暴露成标准 OpenAI 兼容 API。
 
-链路：Codex -> 本桥(:8796) -> https://zcode.z.ai/api/v1/zcode-plan/anthropic
+链路：Codex -> 本桥(:8800) -> https://zcode.z.ai/api/v1/zcode-plan/anthropic
       -> GLM-5.3 / GLM-5.3-Flash (Start Plan / Weekend Build 免费额度)
 
 凭证来源（全部本机解密，无需手填）：
@@ -23,7 +23,7 @@ prefix no8xfe）。captchaVerifyParam 是一次性的，过期后由 captcha-rel
   * /v1/models 端点不存在(404)，模型清单由 entitlement(billing/current)
     与 client/configs 的 startPlanPreview 合并而来
 
-用法：python3 zcode_bridge.py [--port 8796]
+用法：python3 zcode_bridge.py [--port 8800]
 """
 
 from __future__ import annotations
@@ -35,10 +35,11 @@ import hashlib
 import json
 import os
 import sys
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 import _platform
 import platform
 import pwd
+import re
 import sys
 import time
 import urllib.error
@@ -72,10 +73,36 @@ CALL_TIMEOUT = float(os.environ.get("ZCODE_CALL_TIMEOUT") or "300")
 
 # Start Plan / Weekend Build 授权的两个模型（entitlement capabilities:
 # model:glm-5.3-flash；startPlanPreview: GLM-5.3 + GLM-5.3-Flash）。
+#
+# 列表顺序就是 Codex 选择器里的顺序：先按用户指定的家族
+# deepseek -> glm -> stepfun -> seed 排，同一家族内按版本号从高到低。
+# zcode 上游目前只放出 GLM-5.3 家族，但排序规则对将来新增的家族同样成立。
+MODEL_FAMILY_ORDER = ("deepseek", "glm", "step", "seed")
 FREE_MODELS = [
-    "GLM-5.3-Flash",
     "GLM-5.3",
+    "GLM-5.3-Flash",
 ]
+
+
+def family_rank(model: str) -> int:
+    """Index in the user's family order; an unknown family sorts last."""
+    low = model.lower()
+    for i, fam in enumerate(MODEL_FAMILY_ORDER):
+        if fam in low:
+            return i
+    return len(MODEL_FAMILY_ORDER)
+
+
+def _version_key(model: str):
+    """Version numbers, negated so the strongest build sorts first."""
+    nums = [int(n) for n in re.findall(r"\d+", model)]
+    return tuple(-n for n in nums) or (0,)
+
+
+def ordered_models(models=None) -> list:
+    """FREE_MODELS in picker order: family first, then strongest version."""
+    items = list(FREE_MODELS if models is None else models)
+    return sorted(items, key=lambda m: (family_rank(m), _version_key(m), m))
 
 
 def log(*args) -> None:
@@ -142,14 +169,64 @@ def _gcm_python(key: bytes, iv: bytes, tag: bytes, ct: bytes) -> bytes:
     return aes.decrypt(iv, ct + tag, None)
 
 
-def read_token() -> str:
+# zcodejwttoken is a JWT: header.payload.signature, each part base64url. The
+# coding-plan api-key is a flat 49-char key that the plan endpoint rejects
+# with 401, so shape is what tells the two apart.
+JWT_RE = re.compile(r"^[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(\.[A-Za-z0-9_-]+)?$")
+
+# The one manual step that gets the bridge talking again: ZCode writes the
+# JWT back into the shared credential file as soon as this finishes.
+ZCODE_LOGIN_HINT = (
+    "node \"/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs\" "
+    "login --no-browser")
+
+
+def _credentials() -> dict:
     try:
-        creds = json.loads(CREDS_PATH.read_text(encoding="utf-8"))
-        token = _decrypt(creds.get("zcodejwttoken", ""))
-        return token.strip()
+        return json.loads(CREDS_PATH.read_text(encoding="utf-8"))
     except Exception as exc:
         log("credential error:", type(exc).__name__, exc)
+        return {}
+
+
+def read_token() -> str:
+    """Bearer for the zcode-plan upstream, or "" when ZCode is signed out.
+
+    ZCode keeps the OAuth JWT under zcodejwttoken. An oauth.logout (or a
+    coding-plan switch that clears the plan webview storage) deletes it and
+    leaves only the opaque coding-plan api-key, which the plan endpoint
+    answers 401. Only a JWT-shaped value authenticates, so the api-key is
+    reported through auth_state() instead of being sent upstream.
+    """
+    raw = _credentials().get("zcodejwttoken") or ""
+    if not raw:
         return ""
+    try:
+        token = _decrypt(raw).strip()
+    except Exception:
+        return ""
+    return token if JWT_RE.match(token) else ""
+
+
+def auth_state() -> dict:
+    """What the shared ZCode credential file can authenticate right now."""
+    creds = _credentials()
+    state = {"jwt": False, "api_key": False, "logged_in": False}
+    for key, value in creds.items():
+        if not isinstance(value, str) or not value:
+            continue
+        try:
+            if key.endswith("zcodejwttoken"):
+                if JWT_RE.match(_decrypt(value).strip()):
+                    state["jwt"] = True
+            elif "coding-plan" in key and key.endswith(":api-key"):
+                state["api_key"] = True
+        except Exception:
+            continue
+    state["logged_in"] = state["jwt"]
+    if not state["logged_in"]:
+        state["fix"] = ZCODE_LOGIN_HINT
+    return state
 
 
 # --------------------------------------------------------------------------
@@ -428,9 +505,10 @@ async def health():
         "ok": True,
         "bridge": BRIDGE_VERSION,
         "logged_in": bool(token),
+        "auth": auth_state(),
         "captcha": "present" if cap else "missing",
         "captcha_age_hours": None if not cap else round(captcha_age_hours(), 2),
-        "models": FREE_MODELS,
+        "models": ordered_models(),
     }
 
 
@@ -444,7 +522,7 @@ async def list_models(request: Request):
         "object": "list",
         "data": [
             {"id": m, "object": "model", "created": 0, "owned_by": "zcode"}
-            for m in FREE_MODELS
+            for m in ordered_models()
         ],
     })
 
@@ -525,7 +603,7 @@ async def chat_completions(request: Request):
         return JSONResponse({"error": {"message": "bad json: %s" % exc}},
                             status_code=400)
 
-    model = strip_prefix(body.get("model") or FREE_MODELS[0])
+    model = strip_prefix(body.get("model") or ordered_models()[0])
     if model not in FREE_MODELS:
         return JSONResponse(
             {"error": {"message": "unknown model %r; available: %s"
@@ -535,7 +613,10 @@ async def chat_completions(request: Request):
     token = read_token()
     if not token:
         return JSONResponse(
-            {"error": {"message": "ZCode not logged in; run: open -a ZCode"}},
+            {"error": {"message":
+                       "ZCode 未登录（凭证里没有可用的 JWT）。重新登录：%s"
+                       % ZCODE_LOGIN_HINT,
+                       "auth": auth_state()}},
             status_code=503)
 
     payload = _anthropic_payload(body, model)
@@ -578,6 +659,17 @@ async def chat_completions(request: Request):
                    status_code=503)
             if exc.code in (400, 429) and "3007" in raw:
                 continue      # 这张被拒了，换下一张新票
+            if exc.code == 401:
+                # Empty-body 401 from zcode-plan means the bearer is not a
+                # session any more: the JWT went away with oauth.logout and
+                # only the api-key is left. Say so instead of "upstream 401".
+                return JSONResponse(
+                    {"error": {"message":
+                               "上游 401：ZCode 登录态失效。重新登录后桥会自动"
+                               "接上（凭证每次请求重读）：%s" % ZCODE_LOGIN_HINT,
+                               "auth": auth_state(),
+                               "upstream": last_upstream}},
+                    status_code=503)
             return JSONResponse({"error": {"message": "upstream %d: %s"
                                                       % (exc.code, last_upstream)}},
                                 status_code=502)
@@ -633,7 +725,7 @@ async def root():
         "ok": True,
         "bridge": "zcode2codex",
         "version": BRIDGE_VERSION,
-        "models": FREE_MODELS,
+        "models": ordered_models(),
         "captcha_relay": CAPTCHA_RELAY,
     }
 
@@ -650,7 +742,7 @@ def main():
     global DEVICE_MID
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8796)
+    ap.add_argument("--port", type=int, default=8800)
     args = ap.parse_args()
 
     if not DEVICE_MID:
@@ -666,10 +758,13 @@ def main():
 
     token = read_token()
     log("zcode2codex %s on http://%s:%d" % (BRIDGE_VERSION, args.host, args.port))
-    log("  logged in :", "yes" if token else "NO (open -a ZCode)")
+    _auth = auth_state()
+    log("  logged in :", "yes" if _auth["logged_in"] else
+        "NO (jwt missing, api_key=%s) -> %s" % (_auth["api_key"],
+                                                ZCODE_LOGIN_HINT))
     log("  captcha   :", read_captcha()[:24] + "..."
         if read_captcha() else "MISSING -> open " + CAPTCHA_RELAY)
-    log("  models    :", ", ".join(FREE_MODELS))
+    log("  models    :", ", ".join(ordered_models()))
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

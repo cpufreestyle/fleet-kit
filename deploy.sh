@@ -18,7 +18,7 @@ WITH_UI=0
 WITH_OCX_GUARD=1
 SMOKE=0
 UPDATE=0
-BRIDGES="workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline"
+BRIDGES="workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode"
 
 usage() {
   cat <<USAGE
@@ -27,7 +27,7 @@ FleetKit deploy
 Usage: deploy.sh [options]
 
   --home DIR        install root (default: ~/FleetKit/runtime)
-  --port-base N     first bridge port; bridges use N..N+11 (default: 8787)
+  --port-base N     first bridge port; bridges use N..N+13 (default: 8787)
   --with-checkin    install the daily check-in timer (09:00 CST)
   --with-ui         install the local status panel (port PORT_BASE+9)
   --no-ocx-guard    skip the ocx catalog guard timer (on when opencodex is wired)

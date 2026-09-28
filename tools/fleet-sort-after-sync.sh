@@ -25,32 +25,89 @@ if [ -f "$KIT/tools/platform.sh" ]; then
   # shellcheck source=platform.sh
   . "$KIT/tools/platform.sh"
 fi
+# Chase a symlink chain all the way down: readlink alone peels one layer,
+# and a bin/ocx -> wrapper chain resolved back to this very file.
+resolve_links() {
+    local p="$1" nxt i=0
+    while [ -L "$p" ] && [ "$i" -lt 16 ]; do
+        nxt="$(readlink "$p" 2>/dev/null)" || break
+        [ -n "$nxt" ] || break
+        case "$nxt" in
+            /*) p="$nxt" ;;
+            *)  p="$(dirname "$p")/$nxt" ;;
+        esac
+        i=$((i + 1))
+    done
+    printf '%s\n' "$p"
+}
+
+# A usable real ocx is a JavaScript entry point; this wrapper never is.
+# Both ocx and opencodex symlink here, so anything that resolves to this
+# file is the wrapper reporting on itself.
+is_real_ocx() {
+    local c="$1"
+    # SELF is resolved at the top of the script, before detect_real_ocx runs.
+    [ -n "$c" ] || return 1
+    case "$c" in
+        *.mjs|*.cjs|*.js) ;;
+        *) return 1 ;;
+    esac
+    [ -f "$c" ] || return 1
+    [ "$(resolve_links "$c")" != "$(resolve_links "$SELF")" ]
+}
+
 # Resolve the real ocx entry point instead of hardcoding one machine's node
 # install: FLEET_REAL_OCX wins, then whatever `ocx`/`opencodex` resolves to.
 detect_real_ocx() {
-  local resolved=""
-  local base
-  base="$(command -v ocx 2>/dev/null || true)"
-  [ -n "$base" ] && resolved="$(readlink "$base" 2>/dev/null || echo "$base")"
-  if [ -z "$resolved" ]; then
-    base="$(command -v opencodex 2>/dev/null || true)"
-    [ -n "$base" ] && resolved="$(readlink "$base" 2>/dev/null || echo "$base")"
-  fi
-  if [ -n "$resolved" ]; then
-    # bin/ocx -> ../lib/node_modules/<pkg>/bin/ocx.mjs
-    local d
-    d="$(cd "$(dirname "$resolved")/../lib/node_modules" 2>/dev/null && pwd || true)"
-    if [ -n "$d" ]; then
-      local cand
-      cand="$(ls -d "$d"/*opencodex*/bin/ocx.mjs 2>/dev/null | head -n 1 || true)"
-      [ -n "$cand" ] && { echo "$cand"; return 0; }
-    fi
-    echo "$resolved"
+  local real cand root base
+  real="${FLEET_REAL_OCX:-}"
+  if is_real_ocx "$real"; then
+    printf '%s\n' "$(resolve_links "$real")"
     return 0
   fi
+
+  # global node_modules roots across managers: node, homebrew, bun, nvm.
+  # npm puts the package under a scope dir, hence the extra glob level.
+  local roots=()
+  base="$(command -v node 2>/dev/null || command -v bun 2>/dev/null || true)"
+  if [ -n "$base" ]; then
+    roots+=("$(dirname "$base")/../lib/node_modules")
+  fi
+  if command -v npm >/dev/null 2>&1; then
+    roots+=("$(npm root -g 2>/dev/null || true)")
+  fi
+  roots+=("${NVM_DIR:-$HOME/.nvm}/versions/node"/*/lib/node_modules
+          "$HOME/.bun/install/global/node_modules"
+          "/usr/local/lib/node_modules"
+          "/opt/homebrew/lib/node_modules"
+          "/usr/lib/node_modules"
+          "${LOCALAPPDATA:-/nonexistent}/Programs/nodejs/node_modules")
+  for root in "${roots[@]}"; do
+    [ -n "$root" ] || continue
+    for cand in "$root"/*opencodex*/bin/ocx.mjs "$root"/*/*opencodex*/bin/ocx.mjs; do
+      [ -f "$cand" ] || continue
+      printf '%s\n' "$cand"
+      return 0
+    done
+  done
+
+  # last resort: the bin on PATH, fully resolved, as long as it is not us
+  for real in "$(command -v opencodex 2>/dev/null || true)" \
+              "$(command -v ocx 2>/dev/null || true)"; do
+    [ -n "$real" ] || continue
+    real="$(resolve_links "$real")"
+    if is_real_ocx "$real"; then
+      printf '%s\n' "$real"
+      return 0
+    fi
+  done
   echo ""
 }
+# resolve our own path first: detect_real_ocx must be able to recognise and
+# reject this very file when it follows the ocx/opencodex symlinks
+SELF="$(cd "$(dirname "$SRC")" && pwd)/$(basename "$SRC")"
 REAL_OCX="${FLEET_REAL_OCX:-$(detect_real_ocx)}"
+
 OCX_BIN="${FLEET_OCX_BIN:-$(command -v ocx 2>/dev/null || true)}"
 OCX_ALIAS="${FLEET_OCX_ALIAS:-$(command -v opencodex 2>/dev/null || true)}"
 REACH="${FLEET_REACH_FILE:-$HOME/.codex/fleet-reach.json}"
@@ -66,7 +123,6 @@ if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
     PYTHON="$(command -v python3 || command -v python || echo python3)"
   fi
 fi
-SELF="$(cd "$(dirname "$SRC")" && pwd)/$(basename "$SRC")"
 
 run_real() {
     if command -v bun >/dev/null 2>&1; then
@@ -99,9 +155,10 @@ unlink_one() {
     return 1
 }
 
-if [ ! -f "$REAL_OCX" ]; then
-    echo "fleet-sort: real ocx not found at $REAL_OCX" >&2
-    exit 127
+if ! is_real_ocx "$REAL_OCX"; then
+  echo "fleet-sort: real ocx entry point not found (tried: $REAL_OCX)" >&2
+  echo "  set FLEET_REAL_OCX=/path/to/node_modules/@bitkyc08/opencodex/bin/ocx.mjs" >&2
+  exit 127
 fi
 
 sub="${1:-}"

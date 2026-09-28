@@ -78,6 +78,7 @@ PROVIDERS=(
   "antigravity|10|ANTIGRAVITY2CODEX_KEY"
   "qwen|11|QWEN2CODEX_KEY"
   "cline|12|CLINE2CODEX_KEY"
+  "zcode|13|ZCODE2CODEX_KEY"
 )
 
 echo "opencodex provider setup (port base ${PORT_BASE})"

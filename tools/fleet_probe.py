@@ -32,6 +32,7 @@ PORTS = {
     "codely": 8790, "trae": 8791, "lingxi": 8792,
     "xhx": 8793, "gemini": 8794, "catpaw": 8795,
     "antigravity": 8797, "qwen": 8798, "cline": 8799,
+    "zcode": 8800,
 }
 
 # Providers that do not own a local bridge: ocx forwards them straight to the
@@ -39,7 +40,6 @@ PORTS = {
 GATEWAY = {
     "stepfun": "stepfun",
     "tokendance": "tokendance",
-    "zcode": "zcode",
 }
 GATEWAY_PORT = 10100
 
@@ -52,6 +52,7 @@ KEY_ENV = {
     "xhx": "XHX2CODEX_KEY", "gemini": "GEMINI2CODEX_KEY",
     "catpaw": "CATPAW2CODEX_KEY", "antigravity": "ANTIGRAVITY2CODEX_KEY",
     "qwen": "QWEN2CODEX_KEY", "cline": "CLINE2CODEX_KEY",
+    "zcode": "ZCODE2CODEX_KEY",
 }
 
 NONCE = "E2E_OK"

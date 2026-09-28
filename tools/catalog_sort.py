@@ -33,7 +33,33 @@ import time
 
 DEFAULT_ORDER = os.environ.get(
     "FLEET_MODEL_ORDER",
-    "workbuddy,workbuddy-gpt,trae,stepfun,xhx,lingxi,cline")
+    "tokendance,trae,cline,workbuddy-gpt,workbuddy,stepfun,catpaw,xhx,codely,"
+    "gemini,qoder,lingxi,antigravity,zcode,qwen")
+
+# Model families, in the order the user wants them listed. A family is a
+# vendor substring matched against the model id, so zcode/GLM-5.3 and
+# tokendance/glm-5.3 land in the same bucket. Rows matching no family sort
+# after every family, so opt-in models are never hidden by accident.
+FAMILY_ORDER = tuple(
+    f.strip().lower() for f in os.environ.get(
+        "FLEET_MODEL_FAMILIES", "deepseek,glm,step,seed").split(",") if f.strip())
+
+
+def family_of(slug, families=FAMILY_ORDER):
+    """Which model family a row belongs to, or None."""
+    name = (slug or "").split("/", 1)[-1].lower()
+    for family in FAMILY_ORDER:
+        if family in name:
+            return family
+    return None
+
+
+def family_rank(slug, families=FAMILY_ORDER):
+    """Sort key for the family half of the ordering."""
+    family = family_of(slug, families)
+    if family is None:
+        return len(families)
+    return families.index(family)
 
 # hy4 is the model the user asks to see first, even when the bridge behind
 # it is momentarily unreachable. Everything else still obeys tiering.
@@ -43,8 +69,8 @@ HY4_SLUGS = ("workbuddy/hy4-preview", "workbuddy-gpt/hy4-preview")
 def is_hy4(slug):
     return slug in HY4_SLUGS
 
-def interleave_reps(models, order, good=None):
-    """Float one representative per provider to the front, in --order.
+def interleave_reps(models, order, good=None, families=()):
+    """Float one representative per family, then per provider, to the front.
 
     Sorting by tier alone lets one big provider swallow the whole first
     screen: workbuddy alone has a dozen rows, so every other reachable
@@ -54,13 +80,31 @@ def interleave_reps(models, order, good=None):
 
     When good is provided, only reachable providers get a front-row
     representative. Unreachable providers stay in their tier block.
+
+    families lists model vendors (deepseek, glm, step, seed). One row per
+    family leads, so the opening screen spans the families instead of
+    sitting inside a single vendor's block; --order then does the same for
+    providers.
     """
     reps, rest = [], []
     taken = set()
+    pool = [m for m in models
+            if good is None or provider_of(slug_of(m)) in good]
+    # One row per model family first, so the picker's opening screen shows
+    # deepseek, glm, step and seed side by side instead of one vendor's
+    # whole block.
+    if families:
+        for family in families:
+            for model in pool:
+                if family_of(slug_of(model), families) == family \
+                        and slug_of(model) not in taken:
+                    reps.append(model)
+                    taken.add(slug_of(model))
+                    break
     for prov in order:
         if good is not None and prov not in good:
             continue
-        for model in models:
+        for model in pool:
             slug = model.get("slug") or model.get("id") or ""
             if provider_of(slug) == prov and slug not in taken:
                 reps.append(model)
@@ -92,6 +136,10 @@ def catalog_path():
 
 def provider_of(slug):
     return slug.split("/", 1)[0] if "/" in slug else None
+
+
+def slug_of(model):
+    return model.get("slug") or model.get("id") or ""
 
 
 def proven_candidates(verified_model, provider):
@@ -135,6 +183,9 @@ def main():
     ap.add_argument("--reach", default=os.environ.get("FLEET_REACH_FILE", ""))
     ap.add_argument("--catalog", default=None)
     ap.add_argument("--order", default=DEFAULT_ORDER)
+    ap.add_argument("--families", default=",".join(FAMILY_ORDER),
+                    help="model families listed first, in this order "
+                         "(default: %s)" % ",".join(FAMILY_ORDER))
     ap.add_argument("--drop-unreachable", action="store_true")
     ap.add_argument("--strict-coverage", action="store_true",
                     help="fail instead of warn when the snapshot misses providers")
@@ -190,6 +241,8 @@ def main():
     bad = set(reach.get("unreachable") or [])
     verified = reach.get("verified_models") or {}
     order = [p.strip() for p in args.order.split(",") if p.strip()]
+    families = tuple(f.strip().lower() for f in args.families.split(",")
+                     if f.strip())
 
     path = args.catalog or catalog_path()
     with open(path, encoding="utf-8") as fh:
@@ -223,9 +276,13 @@ def main():
             tier = 1
         pos = order.index(prov) if prov in order else len(order)
         proven = 0 if slug in proven_candidates(verified.get(prov), prov) else 1
+        # families come before provenance: the user asked for deepseek, glm,
+        # step and seed blocks, so a family must not be split by a bogus
+        # probe result on another vendor's bridge
+        fam = family_rank(slug, families)
         # workbuddy hy4 is the model the user asks to see first
         hy4 = 0 if is_hy4(slug) else 1
-        return (tier, hy4, proven, pos, slug)
+        return (tier, hy4, fam, proven, pos, slug)
 
     NATIVE_PRIORITY = 105
 
@@ -238,9 +295,11 @@ def main():
     kept, dropped = [], {}
     original = [{k: (dict(v) if isinstance(v, dict) else v)
                  for k, v in m.items()} for m in models]
-    # one representative per provider first, then each provider keeps
-    # its block: otherwise the biggest provider eats the first screen
-    ordered = interleave_reps(sorted(models, key=rank), order, good=good)
+    # one representative per family and per provider first, then each
+    # provider keeps its block: otherwise the biggest provider, or the
+    # biggest vendor, eats the first screen
+    ordered = interleave_reps(sorted(models, key=rank), order, good=good,
+                             families=families)
     for _rank_i, model in enumerate(ordered):
         slug = model.get("slug") or model.get("id") or ""
         prov = provider_of(slug)
@@ -287,6 +346,9 @@ def main():
         not good_pri or not bad_pri or max(good_pri) < min(bad_pri))
     summary["first_by_priority"] = [
         m.get("slug") or m.get("id") for m in by_priority[:8]]
+    summary["families"] = list(families)
+    summary["family_heads"] = [f for f in families
+                               if any(family_of(slug_of(m)) == f for m in kept)]
 
     before_slugs = [m.get("slug") for m in models]
     after_slugs = [m.get("slug") for m in kept]

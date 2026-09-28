@@ -50,7 +50,7 @@ done
 
 if [ -z "$NAME" ]; then
   echo "bridge name required" >&2
-  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen" >&2
+  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode" >&2
   exit 1
 fi
 
@@ -118,7 +118,7 @@ zcode|zcode2codex|13|zcode|ZCODE2CODEX_KEY|zcode_bridge.py
 CASES
 if [ -z "$found" ]; then
   echo "unknown bridge: $NAME" >&2
-  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen" >&2
+  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode" >&2
   exit 1
 fi
 

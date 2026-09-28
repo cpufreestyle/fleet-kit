@@ -9,6 +9,7 @@
 # Bridges (default ports): workbuddy 8787, workbuddy-gpt 8788, qoder 8789,
 # codely 8790, trae 8791, lingxi 8792, xhx 8793, gemini 8794, catpaw 8795,
 # qwen 8798 (Qwen Cloud 海外托管; qwen3.8-flash = Qwen4 架构生产版),
+# zcode 8800 (Z.AI Coding Plan; GLM-5.3 / GLM-5.3-Flash 免费额度).
 # antigravity 8797 (Cloudflare-style gap: 8796 is the status panel).
 set -euo pipefail
 
@@ -40,7 +41,7 @@ FleetKit installer v1.1.0
 Usage: install.sh [options]
 
   --home DIR        install root (default: ~/FleetKit/runtime)
-  --port-base N     first bridge port; bridges use N..N+10 (default: 8787)
+  --port-base N     first bridge port; bridges use N..N+13 (default: 8787)
   --with-opencodex  register bridges with opencodex after install (default)
   --no-opencodex    skip opencodex wiring
   --with-checkin   install the daily check-in timer (09:00 CST)
@@ -121,7 +122,10 @@ run() {
 # name | label-suffix | bridge-dir | script | port-offset | key-env | extra-args | extra-env
 BRIDGES=(
   "workbuddy|workbuddy2codex|workbuddy-cn|converter.py|0|CODEBUDDY2OPENAI_KEY|--host 127.0.0.1 --port @PORT@|"
-  "workbuddy-gpt|workbuddy2codex-gpt|workbuddy-gpt|converter.py|1|CODEBUDDY2OPENAI_KEY|--host 127.0.0.1 --port @PORT@ --auth-dir @FLEET_HOME@/bridges/workbuddy-gpt/auths|WORKBUDDY_AUTH_POOL_DIR=@FLEET_HOME@/bridges/workbuddy-gpt/auths;WORKBUDDY_LOCAL_STORAGE=@HOME@/.workbuddy-ai/local_storage"
+  # no --auth-dir here on purpose: extra-args is word-split, so a path with
+  # a space in FLEET_HOME becomes two argv entries and the bridge dies with
+  # "unrecognized arguments". WORKBUDDY_AUTH_POOL_DIR names the same folder.
+  "workbuddy-gpt|workbuddy2codex-gpt|workbuddy-gpt|converter.py|1|CODEBUDDY2OPENAI_KEY|--host 127.0.0.1 --port @PORT@|WORKBUDDY_AUTH_POOL_DIR=@FLEET_HOME@/bridges/workbuddy-gpt/auths;WORKBUDDY_LOCAL_STORAGE=@HOME@/.workbuddy-ai/local_storage"
   "qoder|qoder2codex|qoder|qoder_bridge.py|2|QODER2CODEX_KEY|--host 127.0.0.1 --port @PORT@|QODER_CALL_TIMEOUT=300"
   "codely|codely2codex|codely|codely_bridge.py|3|CODELY2CODEX_KEY|--host 127.0.0.1 --port @PORT@|CODELY_CALL_TIMEOUT=300"
   "trae|trae2codex|trae|trae_bridge.py|4|TRAE2CODEX_KEY|--host 127.0.0.1 --port @PORT@|TRAE_CALL_TIMEOUT=300"
