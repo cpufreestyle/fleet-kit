@@ -45,6 +45,67 @@ FAMILY_ORDER = tuple(
         "FLEET_MODEL_FAMILIES", "deepseek,glm,step,seed").split(",") if f.strip())
 
 
+
+# Per-provider "important models" — listed first inside each provider block,
+# in the order given here. Matches are checked against the model slug part
+# (after the provider prefix), case-insensitive. Anything not listed falls
+# back to family + version-number ordering.
+PER_PROVIDER_IMPORTANT = {
+    "workbuddy": ("hy4-preview", "hy3", "deepseek-v4-pro", "deepseek-v4-flash",
+                  "glm-5.3", "glm-5.2"),
+    "workbuddy-gpt": ("hy4-preview", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4",
+                       "glm-5.3", "gemini-3.5-flash"),
+    "stepfun": ("step-5-preview", "step-3.7-flash", "step-3.5-flash",
+                 "step-router-v1"),
+    "trae": ("seed-code-pro-0430", "kimi-k2.7-code", "Doubao-Seed-2.0-Code",
+              "Doubao-Seed-Evolving", "Doubao-Seed-2.1-Pro", "kimi-k3",
+              "DeepSeek-V4-Pro", "DeepSeek-V4-Flash"),
+    "cline": ("cline-free-deepseek-v4.1-flash", "z-ai-glm-5.3-flash",
+               "cline-free-muse-spark-1.3-contributor"),
+    "qoder": ("GLM-5.3", "GLM-5.3-Flash", "GLM-5.2", "DeepSeek-Flash",
+               "Kimi-K3"),
+    "xhx": ("xhx-sn-deepseek-v4-1-flash", "xhx-sn-glm-5-3",
+             "xhx-sn-glm-5-3-flash", "xhx-sn-kimi-k3"),
+    "codely": ("codely-core", "codely-air", "codely-flash", "codely-basic",
+                "codely-vl"),
+    "lingxi": ("lingxi-deepseek-flash", "lingxi-glm-5.3-flash"),
+    "zcode": ("GLM-5.3", "GLM-5.3-Flash"),
+    "catpaw": ("glm-5.3-flashx", "glm-5.2", "glm-5.1", "deepseek-v3.2"),
+    "gemini": ("gemini-3-pro-preview", "gemini-3-flash-preview",
+                "gemini-2.5-pro", "gemini-2.5-flash"),
+    "antigravity": ("claude-opus-4-8@default", "claude-opus-4-6@default",
+                     "claude-opus-4-5@20251101", "claude-sonnet-4-5@20250929",
+                     "gemini-3-flash-preview"),
+    "tokendance": ("deepseek-v4.1-flash", "deepseek-v4-pro", "glm-5.3",
+                     "glm-5.2", "qwen-3.7-plus"),
+    "qwen": ("qwen3.8-max", "qwen-3.7-plus"),
+}
+
+
+def important_rank(slug):
+    """Position inside the provider's important list, or len(list) if absent.
+
+    Matching is substring-based against the lowercased model name (the
+    part after the provider prefix). This handles bridges that repeat
+    their own prefix (trae/trae-Doubao vs trae/Doubao) and other minor
+    naming differences. First match wins, so order in the list matters
+    and more-specific needles should come first.
+    """
+    prov = provider_of(slug)
+    name = (slug.split("/", 1)[1] if "/" in slug else slug).lower()
+    lst = PER_PROVIDER_IMPORTANT.get(prov, ())
+    for i, needle in enumerate(lst):
+        if needle.lower() in name:
+            return i
+    return len(lst)
+
+def _version_key(slug):
+    """Descending version-number key: higher versions sort first."""
+    import re as _re
+    nums = [int(n) for n in _re.findall(r"\d+", slug)]
+    return tuple(-n for n in nums) or (0,)
+
+
 def family_of(slug, families=FAMILY_ORDER):
     """Which model family a row belongs to, or None."""
     name = (slug or "").split("/", 1)[-1].lower()
@@ -70,53 +131,54 @@ def is_hy4(slug):
     return slug in HY4_SLUGS
 
 def interleave_reps(models, order, good=None, families=()):
-    """Float one representative per family, then per provider, to the front.
+    """Float one representative per reachable provider to the front.
 
-    Sorting by tier alone lets one big provider swallow the whole first
-    screen: workbuddy alone has a dozen rows, so every other reachable
-    provider got pushed past position 30. Leading with one row per
-    provider keeps the reachable set visible at the top, then each
-    provider keeps its block in order.
+    With client-first ordering, each provider's models form a contiguous
+    block. Without reps, the biggest provider (e.g. tokendance with 96
+    models) would push every other provider off the first screen. Leading
+    with one row per reachable provider keeps the whole fleet visible at
+    the top; the full blocks follow in order.
 
-    When good is provided, only reachable providers get a front-row
-    representative. Unreachable providers stay in their tier block.
-
-    families lists model vendors (deepseek, glm, step, seed). One row per
-    family leads, so the opening screen spans the families instead of
-    sitting inside a single vendor's block; --order then does the same for
-    providers.
+    The representative is the most important model in that provider per
+    PER_PROVIDER_IMPORTANT. workbuddy hy4 is always the very first row,
+    because the user wants it pinned first.
     """
     reps, rest = [], []
     taken = set()
     pool = [m for m in models
             if good is None or provider_of(slug_of(m)) in good]
-    # One row per model family first, so the picker's opening screen shows
-    # deepseek, glm, step and seed side by side instead of one vendor's
-    # whole block.
-    if families:
-        for family in families:
-            for model in pool:
-                if family_of(slug_of(model), families) == family \
-                        and slug_of(model) not in taken:
-                    reps.append(model)
-                    taken.add(slug_of(model))
-                    break
+    # hy4 first — always, even before the other reps, so the user's go-to
+    # model is the first row in the picker.
+    for model in pool:
+        if is_hy4(slug_of(model)):
+            reps.append(model)
+            taken.add(slug_of(model))
+            break
+    # One row per reachable provider, in --order order, skipping hy4 since
+    # it already leads. Picking the "most important" model per provider
+    # gives the user a quick scan of the whole fleet on the first screen.
     for prov in order:
         if good is not None and prov not in good:
             continue
+        best = None
+        best_rank = None
         for model in pool:
-            slug = model.get("slug") or model.get("id") or ""
-            if provider_of(slug) == prov and slug not in taken:
-                reps.append(model)
-                taken.add(slug)
-                break
+            slug = slug_of(model)
+            if provider_of(slug) != prov or slug in taken:
+                continue
+            r = important_rank(slug)
+            if best is None or r < best_rank:
+                best = model
+                best_rank = r
+        if best is not None:
+            reps.append(best)
+            taken.add(slug_of(best))
     for model in models:
         slug = model.get("slug") or model.get("id") or ""
         if slug not in taken:
             rest.append(model)
             taken.add(slug)
     return reps + rest
-
 
 def catalog_path():
     home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
@@ -274,15 +336,19 @@ def main():
             tier = 2
         else:
             tier = 1
+        # Provider (client) order is the primary sort key inside each tier,
+        # so every model from provider X stays together in a single block.
         pos = order.index(prov) if prov in order else len(order)
         proven = 0 if slug in proven_candidates(verified.get(prov), prov) else 1
-        # families come before provenance: the user asked for deepseek, glm,
-        # step and seed blocks, so a family must not be split by a bogus
-        # probe result on another vendor's bridge
-        fam = family_rank(slug, families)
-        # workbuddy hy4 is the model the user asks to see first
+        # workbuddy hy4 is pinned first (even before the per-provider list)
         hy4 = 0 if is_hy4(slug) else 1
-        return (tier, hy4, fam, proven, pos, slug)
+        # Per-provider important models come next, in the listed order.
+        imp = important_rank(slug)
+        # Then fall back to family order and version-number (desc),
+        # so pro > flash > older versions within the same family.
+        fam = family_rank(slug, families)
+        ver = _version_key(slug)
+        return (tier, pos, hy4, imp, proven, fam, ver, slug)
 
     NATIVE_PRIORITY = 105
 
