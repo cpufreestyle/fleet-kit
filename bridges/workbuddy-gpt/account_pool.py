@@ -47,15 +47,12 @@ def harden_private_path(path: Path) -> None:
         os.chmod(path, 0o700 if path.is_dir() else 0o600)
         return
     try:
-        identity = subprocess.check_output(
-            ["whoami"], text=True, encoding="utf-8", errors="replace",
-        ).strip()
-        if not identity:
-            raise OSError("无法确定当前 Windows 用户")
+        identity = _current_identity()
         own_rule = f"{identity}:(OI)(CI)F" if path.is_dir() else f"{identity}:(F)"
         system_rule = "*S-1-5-18:(OI)(CI)F" if path.is_dir() else "*S-1-5-18:(F)"
         result = subprocess.run(
-            ["icacls", str(path), "/inheritance:r", "/grant:r", own_rule, system_rule],
+            [_system_tool("icacls.exe"), str(path), "/inheritance:r", "/grant:r",
+             own_rule, system_rule],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=15, check=False,
         )
@@ -63,6 +60,43 @@ def harden_private_path(path: Path) -> None:
             raise OSError(result.stderr.strip() or result.stdout.strip() or "icacls failed")
     except (OSError, subprocess.SubprocessError) as exc:
         raise OSError(f"无法保护本地凭据权限：{path}") from exc
+
+
+def _system_tool(name: str) -> str:
+    """Resolve a System32 tool by absolute path.
+
+    Under Task Scheduler / cmd.exe the PATH may hold MSYS-style entries that
+    CreateProcess cannot resolve, and the bare name then fails with WinError 2.
+    """
+    root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+    candidate = os.path.join(root, "System32", name)
+    return candidate if os.path.exists(candidate) else name
+
+
+def _current_identity() -> str:
+    """Current account as an SID when possible, else the bare account name.
+
+    The SID keeps non-ASCII account/domain names intact: a console-decoded
+    name can turn into mojibake that icacls cannot resolve.
+    """
+    whoami = _system_tool("whoami.exe")
+    try:
+        done = subprocess.run(
+            [whoami, "/user"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=15, check=False,
+        )
+        for token in reversed((done.stdout or "").split()):
+            if token.upper().startswith("S-1-"):
+                # icacls grant rules need the * prefix to read a raw SID
+                return f"*{token}"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    identity = subprocess.check_output(
+        [whoami], text=True, encoding="utf-8", errors="replace",
+    ).strip()
+    if not identity:
+        raise OSError("无法确定当前 Windows 用户")
+    return identity
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
