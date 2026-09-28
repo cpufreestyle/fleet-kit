@@ -51,17 +51,20 @@ BRIDGES = [
 
 
 def plist_keys(prefix="com.local"):
-    out = {}
-    for p in glob.glob(os.path.expanduser("~/Library/LaunchAgents/%s.*2codex*.plist" % prefix)):
-        name = p.split("/")[-1].replace(prefix + ".", "").replace(".plist", "")
-        try:
-            raw = open(p, encoding="utf-8", errors="replace").read()
-        except Exception:
-            continue
-        m = re.search(r"<key>([A-Z0-9_]*(?:KEY|TOKEN)[A-Z0-9_]*)</key>\s*<string>([^<]+)</string>", raw)
-        if m:
-            out[name] = m.group(2)
-    return out
+    """{label: api key} per installed *2codex* service.
+
+    Reads launchd plists on macOS and the generated .cmd / supervisor wrapper
+    elsewhere (see fleet_platform.service_keys), so the tool works on Windows.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        from fleet_platform import service_keys
+    except Exception:
+        return {}
+    try:
+        return service_keys()
+    except Exception:
+        return {}
 
 
 def get_models(port, key):

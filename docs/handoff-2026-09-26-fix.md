@@ -87,8 +87,8 @@
 - cline(8799) 4 模型 ok(free-only,刚上线)
 
 ## 环境
-- 仓库:/Users/a1-6/AI Shared/repo/FleetKit/kit,remote github.com/cpufreestyle/fleet-kit,branch main
-- runtime(不入库):/Users/a1-6/AI Shared/repo/FleetKit/runtime
+- 仓库:$FLEET_HOME/../kit,remote github.com/cpufreestyle/fleet-kit,branch main
+- runtime(不入库):$FLEET_HOME/../runtime
 - venv:runtime/.venv/bin/python(python 3.14)
 - 面板:http://127.0.0.1:8796/(status_ui.sh 起的 ThreadingHTTPServer)
 - ocx 网关:http://127.0.0.1:10100(provider list 含 qwen-cloud/catpaw/cline 等)

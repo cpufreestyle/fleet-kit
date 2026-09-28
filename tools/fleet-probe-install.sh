@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Install a launchd timer that periodically re-measures fleet reachability.
+# Install a periodic timer that re-measures fleet reachability.
+# macOS uses a launchd StartInterval plist, Windows a repeating scheduled
+# task, Linux a respawning wrapper that sleeps INTERVAL between runs.
 #
 # Why a timer instead of an inline call: a full probe makes a real chat call
 # per bridge and takes minutes, so it must never block `ocx sync`. The wrapper
@@ -12,69 +14,51 @@
 set -euo pipefail
 
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LABEL="com.local.fleet-probe"
-PLIST="${FLEET_LAUNCH_DIR:-$HOME/Library/LaunchAgents}/${LABEL}.plist"
-PYTHON="${FLEET_PYTHON:-$KIT/../runtime/.venv/bin/python}"
+# Platform abstraction: launchd / Task Scheduler / Linux supervisor.
+if [ -f "$KIT/tools/platform.sh" ]; then
+  # shellcheck source=platform.sh
+  . "$KIT/tools/platform.sh"
+fi
+LABEL="${FLEET_LABEL_PREFIX:-com.local}.fleet-probe"
+SERVICE_DIR="$(fleet_service_dir 2>/dev/null || echo "${FLEET_LAUNCH_DIR:-$HOME/Library/LaunchAgents}")"
+SERVICE_DIR="${FLEET_LAUNCH_DIR:-${SERVICE_DIR}}"
+FLEET_SERVICE_DIR="${FLEET_SERVICE_DIR:-${SERVICE_DIR}}"
+export FLEET_SERVICE_DIR
+PLIST="${SERVICE_DIR}/${LABEL}.plist"
+PYTHON="${FLEET_PYTHON:-}"
+if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
+  PYTHON="$(fleet_venv_python 2>/dev/null || true)"
+  [ -n "$PYTHON" ] && [ -x "$PYTHON" ] || PYTHON="$(command -v python3 || command -v python)"
+fi
 PROBE="$KIT/tools/fleet_probe.py"
 REACH="${FLEET_REACH_FILE:-$HOME/.codex/fleet-reach.json}"
 ENV_FILE="${FLEET_ENV_FILE:-$KIT/../runtime/fleet.env}"
 ENV_FILE="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"  # absolute: launchd dislikes ..
-LOG="${FLEET_PROBE_LOG:-$HOME/Library/Logs/fleet-probe.log}"
+LOG="${FLEET_PROBE_LOG:-$(fleet_log_dir 2>/dev/null || echo /tmp/fleet-logs)/fleet-probe.log}"
 INTERVAL="${FLEET_PROBE_INTERVAL:-1800}"
 
-write_plist() {
-    mkdir -p "$(dirname "$PLIST")" "$(dirname "$LOG")"
-    {
-        echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-        echo "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">"
-        echo "<plist version=\"1.0\"><dict>"
-        echo "<key>Label</key><string>$LABEL</string>"
-        echo "<key>ProgramArguments</key><array>"
-        echo "    <string>$PYTHON</string>"
-        echo "    <string>$PROBE</string>"
-        echo "    <string>--out</string><string>$REACH</string>"
-        echo "    <string>--tries</string><string>6</string>"
-        echo "    <string>--call-timeout</string><string>45</string>"
-        echo "    <string>--sort-after</string>"
-        echo "</array>"
-        echo "<key>EnvironmentVariables</key><dict>"
-        echo "    <key>FLEET_ENV_FILE</key><string>$ENV_FILE</string>"
-        echo "</dict>"
-        echo "<key>StartInterval</key><integer>$INTERVAL</integer>"
-        echo "<key>RunAtLoad</key><true/>"
-        echo "<key>StandardOutPath</key><string>$LOG</string>"
-        echo "<key>StandardErrorPath</key><string>$LOG</string>"
-        echo "</dict></plist>"
-    } > "$PLIST"
-}
-
 install_timer() {
-    write_plist
-    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-    launchctl bootstrap "gui/$(id -u)" "$PLIST"
-    launchctl kickstart -k "gui/$(id -u)/$LABEL"
-    echo "installed $LABEL every ${INTERVAL}s"
-    echo "  plist: $PLIST"
-    echo "  log  : $LOG"
+    mkdir -p "$SERVICE_DIR" "$(dirname "$LOG")"
+    fleet_timer_install "$LABEL" "$INTERVAL" "$PYTHON" "$PROBE" \
+        "--out $REACH --tries 6 --call-timeout 45 --sort-after"
+    echo "installed $LABEL every ${INTERVAL}s on $(fleet_os 2>/dev/null || echo macos)"
+    echo "  service dir: $SERVICE_DIR"
+    echo "  log        : $LOG"
 }
 
 uninstall_timer() {
-    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-    if [ -f "$PLIST" ]; then
-        mv "$PLIST" "$PLIST.disabled"
-        echo "removed $LABEL (plist kept as .disabled)"
-    else
-        echo "$LABEL not installed"
-    fi
+    fleet_service_remove "$LABEL"
+    echo "removed $LABEL"
 }
 
 status_timer() {
     # `set -e` plus `grep -q` in a pipeline aborts the function, so capture first
-    local listing
-    listing="$(launchctl list 2>/dev/null || true)"
-    case "$listing" in
-        *"$LABEL"*) echo "$LABEL: loaded" ;;
-        *)          echo "$LABEL: not loaded" ;;
+    local st
+    st="$(fleet_service_status "$LABEL" 2>/dev/null || echo missing)"
+    case "$st" in
+        running) echo "$LABEL: loaded and running" ;;
+        ready)   echo "$LABEL: loaded" ;;
+        *)       echo "$LABEL: not loaded" ;;
     esac
     if [ -f "$REACH" ]; then
         echo "  snapshot: $REACH"

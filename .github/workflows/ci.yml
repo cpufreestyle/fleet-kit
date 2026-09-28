@@ -35,3 +35,82 @@ jobs:
             fi
           done
           exit $hits
+
+  # FleetKit ships one bash API for three service backends (launchd / schtasks /
+  # supervisor). Each runner proves the matching backend is the one selected and
+  # that the service helpers stay callable, so a platform regression fails here
+  # instead of on someone's machine.
+  platform:
+    name: platform (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: detect backend
+        shell: bash
+        run: |
+          # shellcheck source=tools/platform.sh
+          . tools/platform.sh
+          detected="$(fleet_os)"
+          echo "detected: $detected"
+          case "${{ matrix.os }}" in
+            macos-latest)   [ "$detected" = "macos" ]   || exit 1 ;;
+            windows-latest) [ "$detected" = "windows" ] || exit 1 ;;
+            ubuntu-latest)  [ "$detected" = "linux" ]   || exit 1 ;;
+          esac
+
+      - name: service dir and python resolution
+        shell: bash
+        run: |
+          # shellcheck source=tools/platform.sh
+          . tools/platform.sh
+          echo "service dir: $(fleet_service_dir)"
+          echo "log dir    : $(fleet_log_dir)"
+          echo "python     : $(fleet_system_python)"
+          [ -n "$(fleet_service_dir)" ] || exit 1
+          "$(fleet_system_python)" -c 'import sys; print(sys.version)'
+
+      - name: port probe works without lsof
+        shell: bash
+        run: |
+          # shellcheck source=tools/platform.sh
+          . tools/platform.sh
+          "$(fleet_system_python)" -m http.server 18923 --bind 127.0.0.1 >/dev/null 2>&1 &
+          server=$!
+          for _ in $(seq 1 30); do
+            "$(fleet_system_python)" -c 'import socket,sys; s=socket.socket(); s.settimeout(.3); sys.exit(0 if s.connect_ex(("127.0.0.1",18923))==0 else 1)' && break
+            sleep 0.3
+          done
+          fleet_port_in_use 18923 || { echo "port probe missed a listening port"; exit 1; }
+          fleet_port_in_use 18924 && { echo "port probe reported a free port as busy"; exit 1; }
+          kill "$server" >/dev/null 2>&1 || true
+          echo "port probe ok"
+
+      - name: python platform module agrees
+        shell: bash
+        run: |
+          cd tools
+          "$(python3 -c 'import sys; print(sys.executable)')" - <<'PY'
+          import fleet_platform as fp
+          print("os:", fp.os_name())
+          print("service dir:", fp.service_dir())
+          print("log dir:", fp.log_dir())
+          print("ports:", sorted(fp.service_ports().items())[:3])
+          print("venv python:", fp.venv_python("."))
+          PY
+
+      - name: install plan is dry-run safe
+        shell: bash
+        run: |
+          # a dry run must never touch a service backend or a home directory
+          bash install.sh --dry-run --skip-deps --no-opencodex >/dev/null || {
+            echo "install.sh --dry-run failed"; exit 1; }
+          echo "dry run ok"

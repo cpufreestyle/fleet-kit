@@ -20,16 +20,52 @@ if [ -L "$SRC" ]; then
     esac
 fi
 KIT="$(cd "$(dirname "$SRC")/.." && pwd)"
-REAL_OCX="${FLEET_REAL_OCX:-/Users/a1-6/.local/node-v22.20.0-darwin-arm64/lib/node_modules/@bitkyc08/opencodex/bin/ocx.mjs}"
-OCX_BIN="${FLEET_OCX_BIN:-/Users/a1-6/.local/node-v22.20.0-darwin-arm64/bin/ocx}"
-OCX_ALIAS="${FLEET_OCX_ALIAS:-/Users/a1-6/.local/node-v22.20.0-darwin-arm64/bin/opencodex}"
+# Platform abstraction: launchd / Task Scheduler / Linux supervisor.
+if [ -f "$KIT/tools/platform.sh" ]; then
+  # shellcheck source=platform.sh
+  . "$KIT/tools/platform.sh"
+fi
+# Resolve the real ocx entry point instead of hardcoding one machine's node
+# install: FLEET_REAL_OCX wins, then whatever `ocx`/`opencodex` resolves to.
+detect_real_ocx() {
+  local resolved=""
+  local base
+  base="$(command -v ocx 2>/dev/null || true)"
+  [ -n "$base" ] && resolved="$(readlink "$base" 2>/dev/null || echo "$base")"
+  if [ -z "$resolved" ]; then
+    base="$(command -v opencodex 2>/dev/null || true)"
+    [ -n "$base" ] && resolved="$(readlink "$base" 2>/dev/null || echo "$base")"
+  fi
+  if [ -n "$resolved" ]; then
+    # bin/ocx -> ../lib/node_modules/<pkg>/bin/ocx.mjs
+    local d
+    d="$(cd "$(dirname "$resolved")/../lib/node_modules" 2>/dev/null && pwd || true)"
+    if [ -n "$d" ]; then
+      local cand
+      cand="$(ls -d "$d"/*opencodex*/bin/ocx.mjs 2>/dev/null | head -n 1 || true)"
+      [ -n "$cand" ] && { echo "$cand"; return 0; }
+    fi
+    echo "$resolved"
+    return 0
+  fi
+  echo ""
+}
+REAL_OCX="${FLEET_REAL_OCX:-$(detect_real_ocx)}"
+OCX_BIN="${FLEET_OCX_BIN:-$(command -v ocx 2>/dev/null || true)}"
+OCX_ALIAS="${FLEET_OCX_ALIAS:-$(command -v opencodex 2>/dev/null || true)}"
 REACH="${FLEET_REACH_FILE:-$HOME/.codex/fleet-reach.json}"
 PROBE="${FLEET_PROBE:-$KIT/tools/fleet_probe.py}"
 REACH_MAX_AGE="${FLEET_REACH_MAX_AGE:-86400}"
 ENV_FILE="${FLEET_ENV_FILE:-$KIT/../runtime/fleet.env}"
 # absolute like the probe plist: launchd and relative '..' do not mix
 ENV_FILE="$(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
-PYTHON="${FLEET_PYTHON:-$KIT/../runtime/.venv/bin/python}"
+PYTHON="${FLEET_PYTHON:-}"
+if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
+  PYTHON="$(fleet_venv_python "$KIT/../runtime" 2>/dev/null || true)"
+  if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
+    PYTHON="$(command -v python3 || command -v python || echo python3)"
+  fi
+fi
 SELF="$(cd "$(dirname "$SRC")" && pwd)/$(basename "$SRC")"
 
 run_real() {
@@ -99,7 +135,9 @@ reach_age() {
     [ -f "$REACH" ] || { echo 999999; return; }
     local now mt
     now=$(date +%s)
-    mt=$(stat -f %m "$REACH" 2>/dev/null || echo 0)
+    # BSD stat uses -f %m, GNU stat uses -c %Y; Windows/Git Bash has GNU stat.
+    local mt
+    mt=$(stat -f %m "$REACH" 2>/dev/null || stat -c %Y "$REACH" 2>/dev/null || echo 0)
     echo $(( now - mt ))
 }
 
@@ -110,10 +148,11 @@ refresh_reach() {
     age=$(reach_age)
     [ "$age" -le "$REACH_MAX_AGE" ] && return 0
     echo "fleet-sort: snapshot is ${age}s old, re-probing in background" >&2
-    # launchd, not a detached job: this sandbox reaps background children
-    local plist="${FLEET_LAUNCH_DIR:-$HOME/Library/LaunchAgents}/com.local.fleet-probe.plist"
-    if [ -f "$plist" ]; then
-        launchctl kickstart "gui/$(id -u)/com.local.fleet-probe" >/dev/null 2>&1 || true
+    # hand the work to the installed timer instead of a detached child: this
+    # sandbox reaps background children on every platform
+    local label="${FLEET_LABEL_PREFIX:-com.local}.fleet-probe"
+    if fleet_service_exists "$label"; then
+        fleet_service_start "$label" >/dev/null 2>&1 || true
         return 0
     fi
     echo "fleet-sort: no probe timer installed; run tools/fleet-probe-install.sh" >&2

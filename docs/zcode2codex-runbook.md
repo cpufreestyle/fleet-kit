@@ -13,7 +13,7 @@ captcha 换取页：http://127.0.0.1:8910/ （launchd `com.local.zcode-captcha-r
 见 `zcode_bridge.py` 的 `_decrypt`/`_safe_storage_key`）：
 
 - `zcodejwttoken` -> `Authorization: Bearer`
-- `oauth:zai:user_info` -> 账号（cpufreestyle@gmail.com / Q Micheal）
+- `oauth:zai:user_info` -> 账号（<your-account@example.com> / Q Micheal）
 
 无需手填任何 key；`ZCODE2CODEX_KEY` 只是本桥自己的本地口令。
 

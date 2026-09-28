@@ -75,10 +75,19 @@ fi
 
 # fleet.env is optional, so these variables may be unset under set -u.
 set +u
+# Platform abstraction: launchd / Task Scheduler / Linux supervisor.
+if [ -f "$FLEET_HOME/tools/platform.sh" ]; then
+  # shellcheck source=tools/platform.sh
+  . "$FLEET_HOME/tools/platform.sh"
+fi
 if [ -z "$PORT_BASE" ]; then PORT_BASE=8787; fi
 if [ -z "$LABEL_PREFIX" ]; then LABEL_PREFIX=com.local; fi
+if command -v fleet_service_dir >/dev/null 2>&1; then LAUNCH_DIR="$(fleet_service_dir)"; fi
+if command -v fleet_log_dir >/dev/null 2>&1; then LOG_DIR="$(fleet_log_dir)"; fi
 if [ -z "$LAUNCH_DIR" ]; then LAUNCH_DIR="$HOME/Library/LaunchAgents"; fi
 if [ -z "$LOG_DIR" ]; then LOG_DIR=/tmp/fleet-logs; fi
+FLEET_SERVICE_DIR="${FLEET_SERVICE_DIR:-$LAUNCH_DIR}"
+export FLEET_SERVICE_DIR FLEET_LOG_DIR="$LOG_DIR"
 if [ -z "$UI_PORT" ]; then UI_PORT=$((PORT_BASE + 9)); fi
 set -u
 
@@ -96,56 +105,13 @@ ui_pid() {
 
 install_ui_plist() {
   mkdir -p "$LAUNCH_DIR" "$LOG_DIR"
-  plist="$LAUNCH_DIR/$UI_LABEL.plist"
-  cat > "$plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>HOME</key>
-    <string>$HOME</string>
-    <key>PATH</key>
-    <string>$PATH</string>
-  </dict>
-  <key>KeepAlive</key>
-  <true/>
-  <key>Label</key>
-  <string>$UI_LABEL</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>$PY</string>
-    <string>$UI_PY</string>
-    <string>--port</string>
-    <string>$UI_PORT</string>
-    <string>--home</string>
-    <string>$FLEET_HOME</string>
-    <string>--no-browser</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StandardErrorPath</key>
-  <string>$LOG_DIR/status-ui.log</string>
-  <key>StandardOutPath</key>
-  <string>$LOG_DIR/status-ui.log</string>
-  <key>WorkingDirectory</key>
-  <string>$FLEET_HOME</string>
-</dict>
-</plist>
-PLIST
-  launchctl bootout "gui/$(id -u)/$UI_LABEL" >/dev/null 2>&1 || true
-  launchctl bootstrap "gui/$(id -u)" "$plist"
+  fleet_service_install "$UI_LABEL" "$FLEET_HOME" "" "$PY" "$UI_PY" \
+    "--port $UI_PORT --home $FLEET_HOME --no-browser"
   echo "installed $UI_LABEL: $UI_URL  log $LOG_DIR/status-ui.log"
 }
 
 remove_ui_plist() {
-  launchctl bootout "gui/$(id -u)/$UI_LABEL" >/dev/null 2>&1 || true
-  plist="$LAUNCH_DIR/$UI_LABEL.plist"
-  if [ -f "$plist" ]; then
-    unlink "$plist" 2>/dev/null || true
-    echo "removed $plist"
-  fi
+  fleet_service_remove "$UI_LABEL"
   echo "removed $UI_LABEL"
 }
 
@@ -177,8 +143,8 @@ case "$CMD" in
   status)
     if pid="$(ui_pid)"; then
       echo "running (pid $pid): $UI_URL"
-    elif launchctl print "gui/$(id -u)/$UI_LABEL" >/dev/null 2>&1; then
-      echo "launchd agent $UI_LABEL loaded: $UI_URL"
+    elif [ "$(fleet_service_status "$UI_LABEL" 2>/dev/null || echo missing)" != "missing" ]; then
+      echo "service $UI_LABEL installed: $UI_URL"
     else
       echo "stopped: $UI_URL (start it: bash $0 start)"
     fi

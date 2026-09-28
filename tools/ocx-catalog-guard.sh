@@ -35,7 +35,17 @@ MIN_MODELS=60
 INTERVAL=300
 CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
 LOG_FILE="${OCX_GUARD_LOG:-${HOME}/Library/Logs/ocx-catalog-guard.log}"
-LAUNCH_DIR="${FLEET_LAUNCH_DIR:-${HOME}/Library/LaunchAgents}"
+# Platform abstraction: launchd / Task Scheduler / Linux supervisor.
+if [ -f "${SCRIPT_DIR}/platform.sh" ]; then
+  # shellcheck source=platform.sh
+  . "${SCRIPT_DIR}/platform.sh"
+fi
+if command -v fleet_service_dir >/dev/null 2>&1; then
+  LAUNCH_DIR="$(fleet_service_dir)"
+fi
+LAUNCH_DIR="${FLEET_LAUNCH_DIR:-${LAUNCH_DIR:-${HOME}/Library/LaunchAgents}}"
+FLEET_SERVICE_DIR="${FLEET_SERVICE_DIR:-${LAUNCH_DIR}}"
+export FLEET_SERVICE_DIR
 LABEL_PREFIX="${FLEET_LABEL_PREFIX:-com.local}"
 DRY_RUN=0
 ACTION=run
@@ -140,58 +150,23 @@ cmd_run() {
 }
 
 cmd_install_timer() {
-  label="${LABEL_PREFIX}.ocx-catalog-guard"
-  plist="${LAUNCH_DIR}/${label}.plist"
-  script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-  # launchd hands the job a minimal PATH, and ocx usually lives in a user-local node
-  # bin dir that is not on it. Bake that directory in, or the guard can only ever skip.
-  path_value="${OCX_GUARD_PATH:-/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}"
+  local label="${LABEL_PREFIX}.ocx-catalog-guard"
+  local path_value="${CATALOG_FILTER_PATH:-${PATH:-/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}}"
+  local ocx_bin
   ocx_bin="$(command -v ocx 2>/dev/null || true)"
   if [ -n "$ocx_bin" ]; then
     path_value="$(dirname "$ocx_bin"):${path_value}"
   fi
-  mkdir -p "$LAUNCH_DIR"
-  cat >"$plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${label}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/bash</string>
-    <string>${script_path}</string>
-    <string>run</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>${path_value}</string>
-    <key>HOME</key>
-    <string>${HOME}</string>
-  </dict>
-  <key>StartInterval</key>
-  <integer>${INTERVAL}</integer>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>${LOG_FILE}</string>
-  <key>StandardErrorPath</key>
-  <string>${LOG_FILE}</string>
-</dict>
-</plist>
-PLIST
-  launchctl unload "$plist" 2>/dev/null || true
-  launchctl load "$plist"
-  echo "installed ${label} (every ${INTERVAL}s), plist: ${plist}"
+  local ocx_path="$path_value"
+  local st
+  st="$(command -v bash 2>/dev/null || echo /bin/bash)"
+  fleet_timer_install "$label" "$INTERVAL" "$st" "${SCRIPT_DIR}/ocx-catalog-guard.sh" "run --hide-native-when-pool-down"
+  echo "installed ${label} (every ${INTERVAL}s) on $(fleet_os 2>/dev/null || echo macos): ${ocx_path}"
 }
 
 cmd_uninstall_timer() {
-  label="${LABEL_PREFIX}.ocx-catalog-guard"
-  plist="${LAUNCH_DIR}/${label}.plist"
-  launchctl unload "$plist" 2>/dev/null || true
-  unlink "$plist" 2>/dev/null || true
+  local label="${LABEL_PREFIX}.ocx-catalog-guard"
+  fleet_service_remove "$label"
   echo "removed ${label}"
 }
 
@@ -201,24 +176,21 @@ cmd_status() {
   echo "codex home  : ${CODEX_HOME}"
   echo "bridge models in catalog: ${count} (heal below ${MIN_MODELS})"
   echo "log         : ${LOG_FILE}"
-  # Verify the real launchd schedule, not just that a plist file exists. A plist with only
-  # RunAtLoad looks installed but fires once at login and never again, which is how the
-  # reverse-proxied models went missing after a ChatGPT restart.
+  # Verify the real schedule, not just that a definition file exists. A launchd
+  # plist with only RunAtLoad looks installed but fires once at login and never
+  # again, which is how the reverse-proxied models went missing after a restart.
   plist="${LAUNCH_DIR}/${label}.plist"
- if [ -f "$plist" ]; then
+  if [ -f "$plist" ]; then
     interval_kv="$(awk '/<key>StartInterval<\/key>/{f=1;next} f&&/<integer>/{gsub(/<[^>]*>/,"");sub(/^ +/,"");sub(/ +$/,"");print;exit}' "$plist")"
     if [ -n "$interval_kv" ] && [ "$interval_kv" -gt 0 ] 2>/dev/null; then
       echo "timer       : installed (every ${interval_kv}s)"
     else
       echo "timer       : BROKEN (plist has no StartInterval; re-run install-timer)"
     fi
+  elif fleet_service_exists "$label"; then
+    echo "timer       : installed (every ${INTERVAL}s, $(fleet_os 2>/dev/null || echo macos))"
   else
     echo "timer       : not installed"
-  fi
-  if launchctl list "$label" >/dev/null 2>&1; then
-    echo "launchd     : loaded"
-  else
-    echo "launchd     : NOT loaded (re-run install-timer)"
   fi
   if [ -f "$LOG_FILE" ]; then
     echo "last log lines:"

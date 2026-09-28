@@ -34,6 +34,9 @@ import binascii
 import hashlib
 import json
 import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
+import _platform
 import platform
 import pwd
 import sys
@@ -53,9 +56,9 @@ CATALOG_PREFIX = "zcode/"
 UPSTREAM = "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
 BILLING_URL = "https://zcode.z.ai/api/v1/zcode-plan/billing/current"
 CONFIGS_URL = ("https://zcode.z.ai/api/v1/client/configs"
-               "?app_version=3.14.3&platform=darwin-arm64")
+               "?app_version=3.14.3&platform=" + _platform.client_platform("darwin-arm64"))
 APP_VERSION = "3.14.3"
-PLATFORM = "darwin-arm64"
+PLATFORM = _platform.client_platform("darwin-arm64")
 DEVICE_MID = os.environ.get("ZCODE_DEVICE_MID", "")
 
 CREDS_PATH = Path.home() / ".zcode" / "v2" / "credentials.json"

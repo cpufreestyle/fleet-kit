@@ -28,6 +28,9 @@ import hashlib
 import hmac
 import json
 import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
+import _platform
 import secrets
 import time
 import uuid
@@ -141,7 +144,8 @@ def parse_trae_auth_value(value: str) -> dict:
 
 def storage_candidates() -> list[dict]:
     out = []
-    base = Path.home() / "Library" / "Application Support"
+    base = Path(_platform.first_existing(
+        _platform.app_support_dirs("Trae")) or (_platform.home() + "/Library/Application Support"))
     for name in APP_NAMES:
         out.append({"edition": name, "path": base / name / "User" / "globalStorage" / "storage.json", "source": "desktop"})
     out.append({"edition": "cli-cn", "path": Path.home() / ".trae-cn" / "trae-jwt-token", "source": "cli"})
@@ -243,7 +247,7 @@ def save_store(store: dict) -> None:
 def identity_of(cred: dict) -> dict:
     return {"machineId": cred.get("machine_id", ""), "deviceId": cred.get("device_id", ""),
             "appVersion": cred.get("app_version", ""), "buildVersion": cred.get("build_version", ""),
-            "platform": "darwin"}
+            "platform": _platform.short_platform()}
 
 
 async def resolve_credential(allow_refresh: bool = True) -> dict:

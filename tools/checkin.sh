@@ -75,8 +75,17 @@ if [ -z "$PY" ]; then
 fi
 
 LABEL_PREFIX="${LABEL_PREFIX:-com.local}"
+# Platform abstraction: launchd / Task Scheduler / Linux supervisor.
+if [ -f "$FLEET_HOME/tools/platform.sh" ]; then
+  # shellcheck source=tools/platform.sh
+  . "$FLEET_HOME/tools/platform.sh"
+fi
+if command -v fleet_service_dir >/dev/null 2>&1; then LAUNCH_DIR="$(fleet_service_dir)"; fi
+if command -v fleet_log_dir >/dev/null 2>&1; then LOG_DIR="$(fleet_log_dir)"; fi
 LAUNCH_DIR="${LAUNCH_DIR:-$HOME/Library/LaunchAgents}"
 LOG_DIR="${LOG_DIR:-/tmp/fleet-logs}"
+FLEET_SERVICE_DIR="${FLEET_SERVICE_DIR:-$LAUNCH_DIR}"
+export FLEET_SERVICE_DIR FLEET_LOG_DIR="$LOG_DIR"
 CHECKIN_LABEL="${LABEL_PREFIX}.fleet-checkin"
 
 case "$CMD" in
@@ -88,58 +97,11 @@ case "$CMD" in
     ;;
   install-timer)
     mkdir -p "$LAUNCH_DIR" "$CHECKIN_HOME" "$LOG_DIR"
-    plist="$LAUNCH_DIR/${CHECKIN_LABEL}.plist"
-    cat > "$plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>HOME</key>
-    <string>${HOME}</string>
-    <key>PATH</key>
-    <string>${PATH}</string>
-    <key>CODEX_CHECKIN_HOME</key>
-    <string>${CHECKIN_HOME}</string>
-  </dict>
-  <key>Label</key>
-  <string>${CHECKIN_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${PY}</string>
-    <string>${CHECKIN_PY}</string>
-    <string>--daemon</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StartCalendarInterval</key>
-  <dict>
-    <key>Hour</key>
-    <integer>9</integer>
-    <key>Minute</key>
-    <integer>0</integer>
-  </dict>
-  <key>StandardErrorPath</key>
-  <string>${LOG_DIR}/checkin.log</string>
-  <key>StandardOutPath</key>
-  <string>${LOG_DIR}/checkin.log</string>
-  <key>WorkingDirectory</key>
-  <string>${FLEET_HOME}</string>
-</dict>
-</plist>
-PLIST
-    launchctl bootout "gui/$(id -u)/${CHECKIN_LABEL}" >/dev/null 2>&1 || true
-    launchctl bootstrap "gui/$(id -u)" "$plist"
-    echo "installed ${CHECKIN_LABEL}: daily 09:00 CST, state ${CHECKIN_HOME}, log ${LOG_DIR}/checkin.log"
+    fleet_timer_daily "$CHECKIN_LABEL" "09:00" "$PY" "$CHECKIN_PY" "--daemon"
+    echo "installed ${CHECKIN_LABEL}: daily 09:00 CST, state ${CHECKIN_HOME}, log ${LOG_DIR}/${CHECKIN_LABEL}.log"
     ;;
   uninstall-timer)
-    launchctl bootout "gui/$(id -u)/${CHECKIN_LABEL}" >/dev/null 2>&1 || true
-    plist="$LAUNCH_DIR/${CHECKIN_LABEL}.plist"
-    if [ -f "$plist" ]; then
-      unlink "$plist" 2>/dev/null || true
-      echo "removed $plist"
-    fi
+    fleet_service_remove "${CHECKIN_LABEL}"
     echo "removed ${CHECKIN_LABEL}"
     ;;
 esac

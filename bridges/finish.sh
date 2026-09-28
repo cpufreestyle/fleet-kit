@@ -70,8 +70,18 @@ set +a
 
 PORT_BASE="${PORT_BASE:-8787}"
 LABEL_PREFIX="${LABEL_PREFIX:-com.local}"
+# Platform abstraction: launchd / Task Scheduler / Linux supervisor.
+if [ -f "$FLEET_HOME/tools/platform.sh" ]; then
+  # shellcheck source=tools/platform.sh
+  . "$FLEET_HOME/tools/platform.sh"
+fi
+if command -v fleet_service_dir >/dev/null 2>&1; then
+  LAUNCH_DIR="$(fleet_service_dir)"
+fi
 LAUNCH_DIR="${LAUNCH_DIR:-$HOME/Library/LaunchAgents}"
-FLEET_PYTHON="${FLEET_PYTHON:-python3}"
+FLEET_SERVICE_DIR="${FLEET_SERVICE_DIR:-$LAUNCH_DIR}"
+export FLEET_SERVICE_DIR
+FLEET_PYTHON="${FLEET_PYTHON:-$(fleet_system_python 2>/dev/null || echo python3)}"
 
 # name | label-suffix | port-offset | bridge-dir | key-env | catalog-inject-prefix
 found=""
@@ -114,23 +124,22 @@ fi
 
 port=$((PORT_BASE + offset))
 label="$LABEL_PREFIX.$suffix"
-service="gui/$(id -u)/$label"
 eval "key=\$$keyenv"
 PY="$FLEET_PYTHON"
-if [ ! -x "$PY" ]; then PY=python3; fi
+if [ ! -x "$PY" ]; then PY="$(command -v python3 || command -v python || echo python3)"; fi
 
 echo "== finish $NAME =="
-echo "service : $service"
+echo "service : $label ($(fleet_os 2>/dev/null || echo macos))"
 echo "port    : $port"
 echo "bridge  : $FLEET_HOME/bridges/$bridgedir"
 
-if ! launchctl print "$service" >/dev/null 2>&1; then
-  echo "service is not loaded; run install.sh (or bootstrap $LAUNCH_DIR/$label.plist) first" >&2
+if [ "$(fleet_service_status "$label" 2>/dev/null || echo missing)" = "missing" ]; then
+  echo "service is not installed; run install.sh first" >&2
   exit 1
 fi
 
 echo "[1/5] restarting service"
-launchctl kickstart -k "$service"
+fleet_service_restart "$label"
 
 echo "[2/5] waiting for /v1/models (up to $TRIES tries)"
 count=0

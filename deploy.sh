@@ -92,21 +92,30 @@ echo "  ports : $PORT_BASE..$((PORT_BASE + 12))"
 
 # [1/6] preflight
 echo "[1/6] preflight"
-if [ "$(uname -s)" != "Darwin" ]; then
-  echo "macOS with launchd is required" >&2
-  exit 1
+# Platform abstraction: macOS launchd, Windows Task Scheduler, Linux supervisor.
+if [ -f "$KIT_DIR/tools/platform.sh" ]; then
+  # shellcheck source=tools/platform.sh
+  . "$KIT_DIR/tools/platform.sh"
 fi
-for tool in python3 curl launchctl; do
+FLEET_OS_NAME="$(fleet_os 2>/dev/null || echo macos)"
+echo "  os    : $FLEET_OS_NAME"
+
+# curl is optional: every backend falls back to python when it is missing.
+for tool in python3 curl; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "$tool is required but not found" >&2
     exit 1
   fi
 done
+if [ "$FLEET_OS_NAME" = "macos" ] && ! command -v launchctl >/dev/null 2>&1; then
+  echo "launchctl is required on macOS but not found" >&2
+  exit 1
+fi
 BUSY=""
 i=0
-while [ "$i" -le 11 ]; do
+while [ "$i" -le 13 ]; do
   port=$((PORT_BASE + i))
-  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+  if fleet_port_in_use "$port"; then
     BUSY="$BUSY $port"
   fi
   i=$((i + 1))

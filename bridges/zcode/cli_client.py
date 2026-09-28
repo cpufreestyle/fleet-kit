@@ -29,10 +29,28 @@ except ImportError:  # pragma: no cover - standalone use
     def provider_env():
         return {}
 
-CLI_CANDIDATES = [
-    os.environ.get("ZCODE_CLI", ""),
-    "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs",
-]
+def _default_cli_candidates():
+    """ZCode CLI location per platform: the macOS app bundle, the Windows
+    install directory, or a plain checkout. FLEET_ZCODE_CLI wins over all."""
+    home = os.path.expanduser("~")
+    out = [
+        "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs",
+        os.path.join(home, "Applications", "ZCode.app", "Contents", "Resources",
+                     "glm", "zcode.cjs"),
+    ]
+    if os.name == "nt" or sys.platform.startswith("win"):
+        for base in (os.environ.get("LOCALAPPDATA", ""),
+                     os.environ.get("PROGRAMFILES", ""),
+                     os.path.join(home, "AppData", "Local", "Programs")):
+            if base:
+                out.append(os.path.join(base, "ZCode", "resources", "glm", "zcode.cjs"))
+    else:
+        out.append(os.path.join(home, ".local", "share", "zcode", "glm", "zcode.cjs"))
+        out.append("/opt/zcode/resources/glm/zcode.cjs")
+    return [c for c in out if c]
+
+
+CLI_CANDIDATES = [os.environ.get("ZCODE_CLI", "")] + _default_cli_candidates()
 
 RUNTIME_PREFS = {
     "askUserQuestionAutoResolutionEnabled": True,

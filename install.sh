@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # FleetKit installer
 #
-# Deploys eleven local reverse-proxy bridges as macOS launchd agents and
-# optionally registers them with opencodex so Codex can call them.
+# Deploys eleven local reverse-proxy bridges as background services
+# (macOS launchd agents, Windows Task Scheduler tasks, or a detached
+# supervisor on Linux) and optionally registers them with opencodex so
+# Codex can call them.
 #
 # Bridges (default ports): workbuddy 8787, workbuddy-gpt 8788, qoder 8789,
 # codely 8790, trae 8791, lingxi 8792, xhx 8793, gemini 8794, catpaw 8795,
@@ -10,8 +12,15 @@
 # antigravity 8797 (Cloudflare-style gap: 8796 is the status panel).
 set -euo pipefail
 
-KIT_VERSION="1.2.0"
+KIT_VERSION="1.3.0"
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Platform abstraction: launchd on macOS, Task Scheduler on Windows,
+# a detached respawn wrapper on Linux. Everything below calls fleet_*.
+if [ -f "${KIT_DIR}/tools/platform.sh" ]; then
+  # shellcheck source=tools/platform.sh
+  . "${KIT_DIR}/tools/platform.sh"
+fi
 
 FLEET_HOME="${HOME}/FleetKit/runtime"
 PORT_BASE=8787
@@ -43,9 +52,12 @@ Usage: install.sh [options]
   -h, --help        show this help
 
 Environment overrides (advanced: second fleet, CI):
-  FLEET_LAUNCH_DIR   plist directory (default: ~/Library/LaunchAgents)
-  FLEET_LABEL_PREFIX launchd label prefix (default: com.local)
+  FLEET_SERVICE_DIR  service directory (macOS ~/Library/LaunchAgents,
+                     Windows %LOCALAPPDATA%\FleetKit\services)
+  FLEET_LAUNCH_DIR   alias of FLEET_SERVICE_DIR (kept for older scripts)
+  FLEET_LABEL_PREFIX service label prefix (default: com.local)
   FLEET_LOG_DIR      bridge log directory (default: /tmp/fleet-logs)
+  FLEET_OS           force a backend: macos | windows | linux
 USAGE
 }
 
@@ -85,9 +97,17 @@ case "$PORT_BASE" in
   ""|*[!0-9]*) echo "--port-base must be an integer" >&2; exit 1 ;;
 esac
 
-LAUNCH_DIR="${FLEET_LAUNCH_DIR:-${HOME}/Library/LaunchAgents}"
+if command -v fleet_service_dir >/dev/null 2>&1; then
+  LAUNCH_DIR="$(fleet_service_dir)"
+  LOG_DIR="$(fleet_log_dir)"
+else
+  LAUNCH_DIR="${FLEET_LAUNCH_DIR:-${HOME}/Library/LaunchAgents}"
+  LOG_DIR="${FLEET_LOG_DIR:-/tmp/fleet-logs}"
+fi
+LAUNCH_DIR="${FLEET_LAUNCH_DIR:-${LAUNCH_DIR}}"
+FLEET_SERVICE_DIR="${FLEET_SERVICE_DIR:-${LAUNCH_DIR}}"
 LABEL_PREFIX="${FLEET_LABEL_PREFIX:-com.local}"
-LOG_DIR="${FLEET_LOG_DIR:-/tmp/fleet-logs}"
+export FLEET_SERVICE_DIR FLEET_LOG_DIR="$LOG_DIR"
 
 info() { echo "  $*"; }
 run() {
@@ -123,7 +143,11 @@ info "launch dir : ${LAUNCH_DIR}"
 info "log dir    : ${LOG_DIR}"
 if [ "$DRY_RUN" = "1" ]; then info "mode       : DRY RUN (nothing is written)"; fi
 
-if ! command -v python3 >/dev/null 2>&1; then
+SYS_PYTHON="$(fleet_system_python 2>/dev/null || echo python3)"
+if [ "$SYS_PYTHON" = "py" ]; then
+  SYS_PYTHON="$(command -v py) -3"
+fi
+if ! command -v ${SYS_PYTHON%% *} >/dev/null 2>&1; then
   echo "python3 is required but was not found in PATH" >&2
   exit 1
 fi
@@ -175,22 +199,31 @@ else
 fi
 
 # ---------- 2. python environment ----------
-FLEET_PYTHON="${FLEET_HOME}/.venv/bin/python"
+# venv layout: posix uses .venv/bin/python, Windows .venv/Scripts/python.exe
+if command -v fleet_venv_python >/dev/null 2>&1; then
+  FLEET_PYTHON="$(fleet_venv_python "${FLEET_HOME}")"
+else
+  FLEET_PYTHON="${FLEET_HOME}/.venv/bin/python"
+fi
+VENV_PIP="${FLEET_HOME}/.venv/bin/pip"
+if command -v fleet_is_windows >/dev/null 2>&1 && fleet_is_windows; then
+  VENV_PIP="${FLEET_HOME}/.venv/Scripts/pip.exe"
+fi
 if [ "$SKIP_DEPS" = "1" ]; then
   if [ ! -x "$FLEET_PYTHON" ]; then
-    FLEET_PYTHON="$(command -v python3)"
+    FLEET_PYTHON="$(command -v ${SYS_PYTHON%% *})"
   fi
   info "python     : ${FLEET_PYTHON} (deps skipped)"
-elif [ -x "${FLEET_HOME}/.venv/bin/python" ] && [ -f "${FLEET_HOME}/.venv/.fleet-deps-ok" ]; then
+elif [ -x "$FLEET_PYTHON" ] && [ -f "${FLEET_HOME}/.venv/.fleet-deps-ok" ]; then
   info "python     : ${FLEET_PYTHON} (reusing virtualenv)"
 else
   echo "[2/5] creating virtualenv and installing dependencies"
   if [ "$DRY_RUN" = "1" ]; then
-    info "[dry-run] python3 -m venv ${FLEET_HOME}/.venv ; pip install -r requirements.txt"
+    info "[dry-run] ${SYS_PYTHON} -m venv ${FLEET_HOME}/.venv ; pip install -r requirements.txt"
   else
-    python3 -m venv "${FLEET_HOME}/.venv"
-    "${FLEET_HOME}/.venv/bin/pip" install --quiet --upgrade pip
-    "${FLEET_HOME}/.venv/bin/pip" install --quiet -r "${KIT_DIR}/requirements.txt"
+    ${SYS_PYTHON} -m venv "${FLEET_HOME}/.venv"
+    "$VENV_PIP" install --quiet --upgrade pip
+    "$VENV_PIP" install --quiet -r "${KIT_DIR}/requirements.txt"
     touch "${FLEET_HOME}/.venv/.fleet-deps-ok"
   fi
 fi
@@ -205,8 +238,13 @@ detect_venv_python() {
   if [ -n "${FLEET_VENV_PYTHON:-}" ] && python_has_fastapi "${FLEET_VENV_PYTHON}"; then
     echo "${FLEET_VENV_PYTHON}"; return 0
   fi
-  for cand in "${HOME}"/.local/node-*/lib/node_modules/*/.venv/bin/python \
-              "${HOME}"/.local/share/pnpm/global/*/node_modules/*/.venv/bin/python \
+  local venv_sub="bin/python"
+  if command -v fleet_is_windows >/dev/null 2>&1 && fleet_is_windows; then
+    venv_sub="Scripts/python.exe"
+  fi
+  for cand in "${HOME}"/.local/node-*/lib/node_modules/*/.venv/${venv_sub} \
+              "${HOME}"/.local/share/pnpm/global/*/node_modules/*/.venv/${venv_sub} \
+              "${FLEET_HOME}"/bridges/*/.venv/${venv_sub} \
               "${FLEET_HOME}"/bridges/*/.venv/bin/python; do
     [ -x "$cand" ] || continue
     if python_has_fastapi "$cand"; then echo "$cand"; return 0; fi
@@ -355,86 +393,29 @@ else
   ( umask 077; emit_fleet_env > "$ENVFILE" )
 fi
 
-# ---------- 4. launchd agents ----------
-detect_path() {
-  local value="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-  local nodebin=""
-  nodebin="$(command -v node || true)"
-  if [ -n "$nodebin" ]; then
-    value="$(dirname "$nodebin"):${value}"
-  fi
-  if [ -d /opt/homebrew/bin ]; then
-    value="/opt/homebrew/bin:${value}"
-  fi
-  echo "$value"
-}
-PATH_VALUE="$(detect_path)"
-
-plist_xml() {
-  local name="$1" labelsuffix="$2" keyenv="$3" script="$4" workdir="$5" extra="$6" extraenv="$7" interpreter="$8"
-  local label="${LABEL_PREFIX}.${labelsuffix}"
-  local keyval="${!keyenv}"
-  local entry k v arg
-  local env_xml=""
-  local args_xml=""
+# ---------- 4. background services (launchd / Task Scheduler / supervisor) ----------
+# The service spec is platform-neutral: a label, a working directory, a list of
+# KEY=VALUE pairs, an interpreter, a script and its extra args. tools/platform.sh
+# turns that into a launchd plist, a scheduled task, or a respawning wrapper.
+service_env() {
+  local keyenv="$1" keyval="$2" extraenv="$3"
+  local entry k v out=""
   if [ -n "$extraenv" ]; then
     local oifs="$IFS"
     IFS=';'
     for entry in $extraenv; do
+      [ -n "$entry" ] || continue
       k="${entry%%=*}"
       v="${entry#*=}"
-      env_xml="${env_xml}    <key>${k}</key>
-    <string>${v}</string>
-"
+      [ -n "$k" ] || continue
+      out="${out}${k}=${v};"
     done
     IFS="$oifs"
   fi
-  if [ -n "$extra" ]; then
-    local oifs="$IFS"
-    IFS=' '
-    for arg in $extra; do
-      args_xml="${args_xml}    <string>${arg}</string>
-"
-    done
-    IFS="$oifs"
-  fi
-  cat <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>HOME</key>
-    <string>${HOME}</string>
-    <key>PATH</key>
-    <string>${PATH_VALUE}</string>
-    <key>${keyenv}</key>
-    <string>${keyval}</string>
-${env_xml}  </dict>
-  <key>KeepAlive</key>
-  <true/>
-  <key>Label</key>
-  <string>${label}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${interpreter}</string>
-    <string>${script}</string>
-${args_xml}  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StandardErrorPath</key>
-  <string>${LOG_DIR}/${name}.log</string>
-  <key>StandardOutPath</key>
-  <string>${LOG_DIR}/${name}.log</string>
-  <key>WorkingDirectory</key>
-  <string>${workdir}</string>
-</dict>
-</plist>
-PLIST
+  printf '%s' "HOME=${HOME};PATH=$(fleet_detect_path);${keyenv}=${keyval};${out}"
 }
 
-echo "[4/5] writing launchd agents"
+echo "[4/5] installing bridge services ($(fleet_os 2>/dev/null || echo macos) backend)"
 for row in "${BRIDGES[@]}"; do
   name="$(echo "$row" | cut -d'|' -f1)"
   labelsuffix="$(echo "$row" | cut -d'|' -f2)"
@@ -450,7 +431,7 @@ for row in "${BRIDGES[@]}"; do
   extraenv="${extraenv//@PORT@/$port}"
   extraenv="${extraenv//@FLEET_HOME@/$FLEET_HOME}"
   extra="${extra//@HOME@/$HOME}"
- extraenv="${extraenv//@HOME@/$HOME}"
+  extraenv="${extraenv//@HOME@/$HOME}"
   if [ "$name" = "antigravity" ] && [ -n "$ANTIGRAVITY_OAUTH_CLIENT_ID" ]; then
     extraenv="${extraenv};ANTIGRAVITY_OAUTH_CLIENT_ID=${ANTIGRAVITY_OAUTH_CLIENT_ID};ANTIGRAVITY_OAUTH_CLIENT_SECRET=${ANTIGRAVITY_OAUTH_CLIENT_SECRET}"
     extraenv="${extraenv};ANTIGRAVITY2CODEX_HOST=127.0.0.1"
@@ -459,7 +440,6 @@ for row in "${BRIDGES[@]}"; do
     fi
   fi
   label="${LABEL_PREFIX}.${labelsuffix}"
-  plist="${LAUNCH_DIR}/${label}.plist"
   scriptpath="${FLEET_HOME}/bridges/${bridgedir}/${script}"
   workdir="${FLEET_HOME}/bridges/${bridgedir}"
   if [ ! -f "$scriptpath" ] && [ "$DRY_RUN" != "1" ]; then
@@ -467,33 +447,24 @@ for row in "${BRIDGES[@]}"; do
     continue
   fi
   # A bridge with no key can never answer: the picker would show rows that 401 on
-  # every request. Skip the launchd agent entirely instead of leaving a dead port,
+  # every request. Skip the service entirely instead of leaving a dead port,
   # and say which env var to fill in so the next install picks it up.
   if [ -z "$(eval echo \${$keyenv:-})" ]; then
     echo "  [skip] ${label}: ${keyenv} is not set; run 'bash bridges/finish.sh ${name}' after logging in" >&2
     continue
   fi
   if [ "$DRY_RUN" = "1" ]; then
-    info "[dry-run] ${label} -> :${port} (${plist})"
+    info "[dry-run] ${label} -> :${port}"
   else
-    plist_xml "$name" "$labelsuffix" "$keyenv" "$scriptpath" "$workdir" "$extra" "$extraenv" "$(bridge_python "$name")" > "$plist"
+    if [ "$DO_START" = "1" ] && fleet_port_in_use "$port"; then
+      echo "  [warn] port ${port} is already in use; ${label} may fail to bind" >&2
+    fi
     if [ "$DO_START" = "1" ]; then
-      if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
-        echo "  [warn] port ${port} is already in use; ${label} may fail to bind" >&2
-      fi
-      launchctl bootout "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
-      booted=0
-      for _try in 1 2 3 4 5; do
-        if launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1; then booted=1; break; fi
-        sleep 1
-      done
-      if [ "$booted" != "1" ]; then
-        launchctl bootstrap "gui/$(id -u)" "$plist" || echo "  [warn] bootstrap failed for ${label}" >&2
-      fi
-      launchctl kickstart -k "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
+      fleet_service_install "$label" "$workdir" "$(service_env "$keyenv" "$(eval echo \${$keyenv:-})" "$extraenv")" \
+        "$(bridge_python "$name")" "$scriptpath" "$extra"
       info "started ${label} on :${port}"
     else
-      info "wrote ${plist} (not started)"
+      echo "  [info] ${label} -> :${port} (--no-start: not installed)"
     fi
   fi
 done

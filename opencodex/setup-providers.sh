@@ -83,6 +83,27 @@ PROVIDERS=(
 echo "opencodex provider setup (port base ${PORT_BASE})"
 run ocx service
 
+# Read one KEY out of any installed service definition, on any platform.
+# macOS keeps launchd plists, Windows/Linux keep the generated wrapper; both are
+# parsed by tools/fleet_platform.py so this works without PlistBuddy.
+service_key_for() {
+  local label="$1" keyenv="$2"
+  local py tools
+  py="$(command -v python3 || command -v python || echo python3)"
+  tools="${FLEET_HOME:-.}/tools"
+  [ -d "$tools" ] || tools="$(cd "$(dirname "${BASH_SOURCE[0]}")/../tools" && pwd)"
+  FLEET_SERVICE_DIR="${FLEET_SERVICE_DIR:-}" "$py" - "$label" "$keyenv" <<PYKEY
+import os, sys
+sys.path.insert(0, "$tools")
+try:
+    from fleet_platform import service_key
+except Exception:
+    sys.exit(0)
+sys.stdout.write(service_key(sys.argv[1], sys.argv[2]))
+PYKEY
+}
+
+
 for row in "${PROVIDERS[@]}"; do
   name="$(echo "$row" | cut -d'|' -f1)"
   offset="$(echo "$row" | cut -d'|' -f2)"
@@ -90,11 +111,11 @@ for row in "${PROVIDERS[@]}"; do
   port=$((PORT_BASE + offset))
   key="${!keyenv:-}"
   if [ -z "$key" ]; then
-    # live fleets keep keys in the launchd plists while fleet.env may be absent;
-    # same source tools/fleet_chat_test.py reads.
-    for pl in "$HOME/Library/LaunchAgents/${LABEL_PREFIX}.${name}2codex.plist" "$HOME/Library/LaunchAgents/${LABEL_PREFIX}.workbuddy2codex-gpt.plist"; do
-      [ -f "$pl" ] || continue
-      got="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:${keyenv}" "$pl" 2>/dev/null || true)"
+    # Live fleets keep keys in the installed service definition (launchd plist on
+    # macOS, the generated wrapper elsewhere) while fleet.env may be absent.
+    # One python helper reads all three backends; PlistBuddy is macOS-only.
+    for label in "${LABEL_PREFIX}.${name}2codex" "${LABEL_PREFIX}.workbuddy2codex-gpt"; do
+      got="$(service_key_for "$label" "$keyenv")"
       if [ -n "$got" ]; then key="$got"; break; fi
     done
   fi

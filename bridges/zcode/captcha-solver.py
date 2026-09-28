@@ -323,6 +323,23 @@ def solve_attempt(page, attempt: int, dry: bool) -> bool:
     return False
 
 
+def _chrome_installed():
+    """System Chrome present? Path differs per platform."""
+    import shutil as _shutil
+    if os.name == "nt":
+        for base in (os.environ.get("PROGRAMFILES", ""),
+                     os.environ.get("PROGRAMFILES(X86)", ""),
+                     os.environ.get("LOCALAPPDATA", "")):
+            if base and Path(base, "Google", "Chrome", "Application", "chrome.exe").exists():
+                return True
+        return bool(_shutil.which("chrome"))
+    if sys.platform == "darwin":
+        return (Path("/Applications/Google Chrome.app").exists()
+                or Path(os.path.expanduser("~/Applications/Google Chrome.app")).exists())
+    return bool(_shutil.which("google-chrome") or _shutil.which("chromium")
+                or _shutil.which("chromium-browser"))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--relay", default=RELAY)
@@ -339,7 +356,7 @@ def main() -> int:
 
     channel = None
     if args.channel == "chrome" or (args.channel == "auto"
-                                    and Path("/Applications/Google Chrome.app").exists()):
+                                    and _chrome_installed()):
         channel = "chrome"
 
     with sync_playwright() as pw:

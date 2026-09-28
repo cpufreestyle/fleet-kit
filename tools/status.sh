@@ -48,6 +48,12 @@ set +a
 
 PORT_BASE="${PORT_BASE:-8787}"
 LABEL_PREFIX="${LABEL_PREFIX:-com.local}"
+# Platform abstraction: launchd / Task Scheduler / Linux supervisor.
+if [ -f "$FLEET_HOME/tools/platform.sh" ]; then
+  # shellcheck source=tools/platform.sh
+  . "$FLEET_HOME/tools/platform.sh"
+fi
+if command -v fleet_log_dir >/dev/null 2>&1; then LOG_DIR="$(fleet_log_dir)"; fi
 LOG_DIR="${LOG_DIR:-/tmp/fleet-logs}"
 
 md5short() {
@@ -70,12 +76,13 @@ while IFS='|' read -r name labelsuffix offset keyenv; do
   label="$LABEL_PREFIX.$labelsuffix"
   port=$((PORT_BASE + offset))
 
-  if launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1; then
-    agent=up
-  else
-    agent=DOWN
-  fi
-  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+  state="$(fleet_service_status "$label" 2>/dev/null || echo missing)"
+  case "$state" in
+    running) agent=up ;;
+    ready)   agent=idle ;;
+    *)       agent=DOWN ;;
+  esac
+  if fleet_port_in_use "$port"; then
     listen=yes
   else
     listen=no

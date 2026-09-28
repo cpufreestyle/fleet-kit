@@ -1,3 +1,8 @@
+import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
+import _platform
+import sys
 #!/usr/bin/env python3
 # catpaw2codex v2: Meituan CatPawAI (miaoshou AI IDE) -> OpenAI-compatible bridge (port 8795)
 # API map extracted from app bundle 2026-09-25:
@@ -16,7 +21,10 @@ HOST = os.environ.get('CATPAW_HOST', '127.0.0.1')
 BASE = os.environ.get('CATPAW_BASE', 'https://catpaw.sankuai.com')
 MCOPILOT = os.environ.get('CATPAW_MCOPILOT', 'https://mcopilot-emb.sankuai.com')
 PUBLIC_BASE = 'https://catpaw.meituan.com'
-STATE_DB = os.path.expanduser('~/Library/Application Support/CatPawAI/User/globalStorage/state.vscdb')
+# The VS Code fork keeps its state under the per-user app-data directory, which
+# lives in a different place on each OS; probe them all.
+STATE_DB = os.environ.get('CATPAW_STATE_DB') or _platform.first_existing(
+    _platform.app_support_dirs('CatPawAI', 'User', 'globalStorage', 'state.vscdb'))
 IDEKIT_KEY = 'mt-idekit.mt-idekit-code'
 MODE = os.environ.get('CATPAW_MODE', 'completions')  # completions | agent
 MIS_ID = os.environ.get('CATPAW_MIS_ID', '13661621468')
@@ -146,7 +154,7 @@ def hdrs(at):
         'user-uid': mis,
         'mis-id': mis,
         'tenant': TENANT,
-        'platform-info': 'darwin',
+        'platform-info': _platform.short_platform(),
     }
 
 def model_type(name):

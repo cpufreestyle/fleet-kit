@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import tempfile
 import random
 import string
 import sys
@@ -30,7 +31,7 @@ from pathlib import Path
 
 RELAY = os.environ.get("ZCODE_CAPTCHA_RELAY", "http://127.0.0.1:8910/")
 PROFILE = os.environ.get(
-    "ZCAP_PROFILE", "/Users/a1-6/.cache/fleetkit-captcha-profile")
+    "ZCAP_PROFILE", os.path.join(tempfile.gettempdir(), "fleetkit-captcha-profile"))
 PAGE = os.environ.get("ZCAP_PAGE", RELAY.rstrip("/") + "/")
 POOL = Path(os.environ.get(
     "ZCODE_CAPTCHA_POOL",

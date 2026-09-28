@@ -23,11 +23,16 @@ install.sh calls this and writes the result into fleet.env, which launchd passes
 the bridge as ANTIGRAVITY_OAUTH_CLIENT_ID / ANTIGRAVITY_OAUTH_CLIENT_SECRET.
 """
 import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
+import _platform
 import json
 import re
 import sys
 
-DEFAULT_BIN = '/Applications/Antigravity.app/Contents/Resources/bin/language_server'
+DEFAULT_BIN = os.environ.get('ANTIGRAVITY_BIN') or _platform.first_existing(
+    _platform.app_bin_candidates('Antigravity.app', 'Contents', 'Resources', 'bin',
+                                 'language_server'))
 DEFAULT_LIMIT = 8
 CID_RE = re.compile(r'[0-9]{6,}-[a-z0-9]{20,}\.apps\.googleusercontent\.com')
 SEC_RE = re.compile(r'GOCSPX-[A-Za-z0-9_-]{10,}')

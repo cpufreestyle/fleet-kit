@@ -39,7 +39,17 @@ HIDE_ENABLED=0
 REPORT_ONLY=0
 PROXY_BASE="${FLEET_PROXY_BASE:-http://127.0.0.1:10100}"
 LOG_FILE="${CATALOG_FILTER_LOG:-${HOME}/Library/Logs/catalog-filter.log}"
-LAUNCH_DIR="${FLEET_LAUNCH_DIR:-${HOME}/Library/LaunchAgents}"
+# Platform abstraction: launchd / Task Scheduler / Linux supervisor.
+if [ -f "${SCRIPT_DIR}/platform.sh" ]; then
+  # shellcheck source=platform.sh
+  . "${SCRIPT_DIR}/platform.sh"
+fi
+if command -v fleet_service_dir >/dev/null 2>&1; then
+  LAUNCH_DIR="$(fleet_service_dir)"
+fi
+LAUNCH_DIR="${FLEET_LAUNCH_DIR:-${LAUNCH_DIR:-${HOME}/Library/LaunchAgents}}"
+FLEET_SERVICE_DIR="${FLEET_SERVICE_DIR:-${LAUNCH_DIR}}"
+export FLEET_SERVICE_DIR
 LABEL_PREFIX="${FLEET_LABEL_PREFIX:-com.local}"
 DRY_RUN=0
 ACTION=run
@@ -128,58 +138,22 @@ cmd_run() {
 
 cmd_install_timer() {
   local label="${LABEL_PREFIX}.catalog-filter"
-  local plist="${LAUNCH_DIR}/${label}.plist"
-  local path_value="${CATALOG_FILTER_PATH:-/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}"
+  local path_value="${CATALOG_FILTER_PATH:-${PATH:-/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}}"
   local ocx_bin
   ocx_bin="$(command -v ocx 2>/dev/null || true)"
   if [ -n "$ocx_bin" ]; then
     path_value="$(dirname "$ocx_bin"):${path_value}"
   fi
-  mkdir -p "$LAUNCH_DIR"
-  cat >"$plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${label}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/bash</string>
-    <string>${SCRIPT_DIR}/catalog-filter.sh</string>
-    <string>run</string>
-    <string>--hide-native-when-pool-down</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>${path_value}</string>
-    <key>HOME</key>
-    <string>${HOME}</string>
-    <key>CODEX_HOME</key>
-    <string>${CODEX_HOME_DIR}</string>
-  </dict>
-  <key>StartInterval</key>
-  <integer>${INTERVAL}</integer>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>${LOG_FILE}</string>
-  <key>StandardErrorPath</key>
-  <string>${LOG_FILE}</string>
-</dict>
-</plist>
-PLIST
-  launchctl unload "$plist" 2>/dev/null || true
-  launchctl load "$plist"
-  echo "installed ${label} (every ${INTERVAL}s), plist: ${plist}"
+  local ocx_path="$path_value"
+  local st
+  st="$(command -v bash 2>/dev/null || echo /bin/bash)"
+  fleet_timer_install "$label" "$INTERVAL" "$st" "${SCRIPT_DIR}/catalog-filter.sh" "run --hide-native-when-pool-down"
+  echo "installed ${label} (every ${INTERVAL}s) on $(fleet_os 2>/dev/null || echo macos): ${ocx_path}"
 }
 
 cmd_uninstall_timer() {
   local label="${LABEL_PREFIX}.catalog-filter"
-  local plist="${LAUNCH_DIR}/${label}.plist"
-  launchctl unload "$plist" 2>/dev/null || true
-  unlink "$plist" 2>/dev/null || true
+  fleet_service_remove "$label"
   echo "removed ${label}"
 }
 
@@ -223,7 +197,7 @@ print("models      : %d total, %d bridged" % (len(models), len(slashed)))
 print("providers   : %s" % (", ".join("%s=%d" % kv for kv in sorted(providers.items())) or "-"))
 PY
   echo "log         : ${LOG_FILE}"
-  # A plist without StartInterval looks installed but fires once at login.
+  # The installed definition is the source of truth on every platform.
   if [ -f "${LAUNCH_DIR}/${label}.plist" ]; then
     interval_kv="$(awk '/<key>StartInterval<\/key>/{f=1;next} f&&/<integer>/{gsub(/<[^>]*>/,"");sub(/^ +/,"");sub(/ +$/,"");print;exit}' "${LAUNCH_DIR}/${label}.plist")"
     if [ -n "$interval_kv" ] && [ "$interval_kv" -gt 0 ] 2>/dev/null; then
@@ -231,13 +205,10 @@ PY
     else
       echo "timer       : BROKEN (no StartInterval; re-run install-timer)"
     fi
+  elif fleet_service_exists "$label"; then
+    echo "timer       : installed (every ${INTERVAL}s, $(fleet_os 2>/dev/null || echo macos))"
   else
     echo "timer       : not installed"
-  fi
-  if launchctl list "$label" >/dev/null 2>&1; then
-    echo "launchd     : loaded"
-  else
-    echo "launchd     : NOT loaded (re-run install-timer)"
   fi
   if [ -f "$LOG_FILE" ]; then
     echo "last log lines:"

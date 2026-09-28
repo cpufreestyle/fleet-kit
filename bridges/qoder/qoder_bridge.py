@@ -17,6 +17,9 @@ import argparse
 import asyncio
 import json
 import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
+import _platform
 import re
 import shutil
 import subprocess
@@ -31,8 +34,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
 
 BRIDGE_VERSION = "0.1.0"
+# The npm-installed CLI lives under a platform-tagged node directory on macOS;
+# on Windows/Linux it is on PATH or pointed at by FLEET_QODERCLICN_PATH.
 CLI_CANDIDATES = [
     os.environ.get("QODER_CLI_PATH") or "",
+    _platform.cli_binary("qoderclicn",
+                         unix_glob=[".local/node-*/bin/qoderclicn",
+                                    ".local/share/pnpm/global/*/bin/qoderclicn"],
+                         windows_names=["qoderclicn.cmd", "qoderclicn.exe"]),
     str(Path.home() / ".local/node-v22.20.0-darwin-arm64/bin/qoderclicn"),
     shutil.which("qoderclicn") or "",
 ]

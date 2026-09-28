@@ -1,3 +1,8 @@
+import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
+import _platform
+import sys
 #!/usr/bin/env python3
 # Extract gemini.google.com web cookies from Chrome -> ~/.gemini2codex/cookies.txt
 # tries two key derivations: Safe-Storage-direct AES-128 and PBKDF2(saltysalt,1003)
@@ -10,7 +15,7 @@ def keychain_password():
     return out.stdout.strip()
 
 def dump_enc():
-    base = os.path.expanduser('~/Library/Application Support/Google/Chrome')
+    base = os.environ.get('CHROME_USER_DATA') or _platform.chrome_user_data()
     out = {}
     for db in [base + '/Default/Cookies'] + sorted(glob.glob(base + '/Profile */Cookies')):
         if not os.path.exists(db):

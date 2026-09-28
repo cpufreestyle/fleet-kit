@@ -21,7 +21,7 @@ Codex → ocx(:10100) → cline2codex 桥(:8799) → Cline hub daemon(:25463 Web
 - 存储：`~/.cline/data/settings/providers.json` → `providers.cline.settings.auth`
   - `accessToken`：WorkOS JWT，**有效期仅约 1 小时**
   - `refreshToken`：长期有效，**可反复换新票**
-  - `accountId`：`usr-01M33YFPFXS4J4ZDRTBC3DYGAB`，账号 `cpufreestyle@gmail.com`
+  - `accountId`：`usr-01M33YFPFXS4J4ZDRTBC3DYGAB`，账号 `<your-account@example.com>`
 - 刷新端点（实测 200）：`POST https://api.cline.bot/api/v1/auth/refresh`
   - body：`{"refreshToken": "...", "grantType": "refresh_token"}`
   - 返回：`{data:{accessToken, tokenType, expiresAt, refreshToken, userInfo}, success:true}`

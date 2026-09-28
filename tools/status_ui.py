@@ -35,6 +35,10 @@ import datetime as dt
 import hashlib
 import json
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fleet_platform
 import plistlib
 import re
 import shutil
@@ -183,9 +187,19 @@ def resolve_python(keys):
 # --------------------------------------------------------------------------- #
 
 def launchd_info(label):
-    code, out = run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), label)], timeout=6.0)
-    if code != 0:
-        return {"loaded": False, "state": "not loaded", "pid": None, "last_exit": None}
+    """Service state for a label: launchd on macOS, schtasks on Windows,
+    pgrep on Linux. Kept under the old name so callers do not change."""
+    if fleet_platform.is_macos():
+        code, out = run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), label)], timeout=6.0)
+        if code != 0:
+            return {"loaded": False, "state": "not loaded", "pid": None, "last_exit": None}
+    else:
+        out = ""
+        state = fleet_platform.service_status(label)
+        if state == "missing":
+            return {"loaded": False, "state": "not loaded", "pid": None, "last_exit": None}
+        out = "state = %s" % state
+
     state = None
     match = re.search(r"^\s*state = (.+?)\s*$", out, re.MULTILINE)
     if match:
@@ -515,9 +529,10 @@ def build_config(args):
                     or keys.get("LABEL_PREFIX") or "com.local")
     log_dir = (args.log_dir or os.environ.get("LOG_DIR")
                or keys.get("LOG_DIR") or "/tmp/fleet-logs")
-    launch_dir = (args.launch_dir or os.environ.get("FLEET_LAUNCH_DIR")
+    launch_dir = (args.launch_dir or os.environ.get("FLEET_SERVICE_DIR")
+                  or os.environ.get("FLEET_LAUNCH_DIR")
                   or keys.get("LAUNCH_DIR")
-                  or os.path.join(os.path.expanduser("~"), "Library", "LaunchAgents"))
+                  or fleet_platform.service_dir())
     ui_port = args.port
     if ui_port is None:
         ui_port = port_base + UI_PORT_OFFSET
@@ -656,8 +671,16 @@ def actions_restart(cfg, name):
     if spec is None:
         return {"ok": False, "error": "unknown bridge: %s" % name}
     label = cfg["label_prefix"] + "." + spec[1]
-    target = "gui/%d/%s" % (os.getuid(), label)
-    code, out = run(["launchctl", "kickstart", "-k", target], timeout=25.0)
+    if fleet_platform.is_macos():
+        target = "gui/%d/%s" % (os.getuid(), label)
+        code, out = run(["launchctl", "kickstart", "-k", target], timeout=25.0)
+    else:
+        # Task Scheduler / supervisor: restart through the service API and
+        # confirm by port, because neither backend reports a return code.
+        fleet_platform.service_restart(label)
+        code, out = 0, ""
+        if not fleet_platform.port_open(spec[2] if len(spec) > 2 else 0):
+            out = "restarted; port not answering yet"
     record = {"name": name, "label": label, "at": now_str(), "returncode": code,
               "ok": code == 0, "out": _short(out, 400)}
     with ACTIONS_LOCK:

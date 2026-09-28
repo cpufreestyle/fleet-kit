@@ -36,22 +36,21 @@ Codex 里模型以 `桥名/模型` 出现，例如 `workbuddy/hy4-preview`。
 
 ## 项目命名与目录
 
-项目名 **FleetKit**（十一桥反代理舰队）。本机所有相关文件都收在 `/Users/a1-6/AI Shared/repo/FleetKit/` 一个目录里，
-git 源码与运行目录分离：
+项目名 **FleetKit**（十一桥反代理舰队）。git 源码与运行目录分离：
 
-    /Users/a1-6/AI Shared/repo/FleetKit/kit/       git 仓库（本文档所在）：改代码、git pull 都在这里
-    /Users/a1-6/AI Shared/repo/FleetKit/runtime/   运行根（FLEET_HOME）：11 座桥、fleet.env、logs、checkin
+    <项目目录>/kit/       git 仓库（本文档所在）：改代码、git pull 都在这里
+    <项目目录>/runtime/   运行根（FLEET_HOME）：11 座桥、fleet.env、logs、checkin
 
-launchd 侧共 15 个服务（11 座桥 + lingxi 登录助手 + workbuddy 主桥 + 签到 timer +
-qoder 登录 + ocx catalog 看门狗）全部指向 `/Users/a1-6/AI Shared/repo/FleetKit/runtime/`，日志统一落在
-`/Users/a1-6/AI Shared/repo/FleetKit/runtime/logs/`。换机器或起第二套时用 `install.sh --home <目录>` 指定别的运行根。
+共 13 座桥 + 若干 timer（签到、ocx catalog 看门狗、可达性探测）全部指向
+`<项目目录>/runtime/`，日志统一落在 `<项目目录>/runtime/logs/`。换机器或起第二套时用
+`install.sh --home <目录>` 指定别的运行根。
 
-日常命令：
+日常命令（`<R>` = 运行根，例如本机 `<项目目录>/runtime`）：
 
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/status.sh"            # 11 座桥健康表 + ocx 状态
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/checkin.sh" status    # 签到状态
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/bridges/finish.sh" <name>   # 某座桥登录后收尾
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/uninstall.sh"               # 卸载
+    bash "<R>/tools/status.sh"                  # 11 座桥健康表 + ocx 状态
+    bash "<R>/tools/checkin.sh" status          # 签到状态
+    bash "<R>/bridges/finish.sh" <name>         # 某座桥登录后收尾
+    bash "<R>/uninstall.sh"                     # 卸载
 
 ## 两座 WorkBuddy 桥
 
@@ -70,13 +69,32 @@ FleetKit 里有两座 WorkBuddy 桥，分别打国内版和海外版，端口固
 auth JSON 丢进各自 `auths/` 目录，然后运行 `bash "<项目目录>/runtime/bridges/finish.sh" workbuddy`
 （或 `workbuddy-gpt`）收尾。
 
+## 跨平台：macOS / Windows / Linux
+
+同一套脚本跑三个系统，服务托管交给 `tools/platform.sh` 自动选择后端：
+
+| 系统 | 常驻桥 | 定时 timer | 服务定义目录 |
+|------|--------|-----------|--------------|
+| macOS | launchd plist（`launchctl bootstrap/kickstart`） | `StartInterval` / `StartCalendarInterval` | `~/Library/LaunchAgents` |
+| Windows | 计划任务 `schtasks`（登录触发 + 重复间隔） | 计划任务 `TimeTrigger` / `CalendarTrigger` | `%LOCALAPPDATA%\FleetKit\services` |
+| Linux | 独立进程 + `while true` 自重启包装脚本 | 同一包装脚本内 `sleep N` | `~/.local/share/FleetKit/services` |
+
+Windows 需要 **Git Bash** 或 **PowerShell 7** 提供 `bash`（脚本本身是 bash），
+并且 `schtasks` 必须可用（Windows 自带）。Linux 只需 `bash` + `python3` + `pkill`。
+
+平台相关的上游标识（`"platform": "darwin"`、`platform=darwin-arm64` 之类）默认仍发
+darwin，因为部分上游按客户端标识做风控；要改就设环境变量：
+
+    export FLEET_CLIENT_PLATFORM=win32-x64   # zcode 的 app_version/platform
+    export FLEET_PLATFORM_SHORT=win32        # trae / catpaw / codely 的 platform 字段
+
 ## 搬迁与路径含空格
 
 FleetKit 设计为可整体搬走：`kit/`（源码）与 `runtime/`（运行根）两个目录一起拷贝到新机器或新位置，
-然后跑 `bash "<新目录>/kit/install.sh --home <新目录>/runtime"` 重写 launchd plist
-（13 个服务的路径全部由 `--home` 决定；换机或起第二套舰队都用这一条）。
+然后跑 `bash "<新目录>/kit/install.sh --home <新目录>/runtime"` 重写服务定义
+（所有服务的路径全部由 `--home` 决定；换机、跨平台、起第二套舰队都用这一条）。
 
-注意：**项目路径含空格也能跑**，本机就是 `/Users/a1-6/AI Shared/repo/FleetKit/`。相关约定：
+注意：**项目路径含空格也能跑**（例如 `~/AI Shared/repo/FleetKit`）。相关约定：
 
 - `runtime/fleet.env` 里每个值都必须用双引号包住，否则含空格的值会被 shell 拆词。
 - 本文档所有命令都已给含空格的路径加了引号，可直接复制粘贴。
@@ -85,34 +103,38 @@ FleetKit 设计为可整体搬走：`kit/`（源码）与 `runtime/`（运行根
 
 ## 环境要求
 
-- macOS（launchd 托管；其他平台可手动运行 bridges/ 里的脚本）
-- python3 >= 3.9（install.sh 自动建 venv 并装依赖，见 requirements.txt）
+- macOS 12+ / Windows 10+ / Linux（服务后端见上表）
+- python3 >= 3.9（install.sh 自动建 venv 并装依赖；Windows 用 `.venv\Scripts\python.exe`）
 - node/npm（仅用于安装 opencodex：npm install -g @bitkyc08/opencodex）
+- Windows：Git Bash（或 PowerShell + bash）与系统自带的 `schtasks`
 - 各服务的账号/订阅（见「登录表」）
 
 ## 快速开始（3 步）
 
-1. 取代码并安装（项目统一落在 `/Users/a1-6/AI Shared/repo/FleetKit/`）：
+1. 取代码并安装（`<PRJ>` = 项目目录，各平台自选，例如 macOS `~/AI Shared/repo/FleetKit`、
+   Windows `C:\\Users\\<你>\\FleetKit`）：
 
       # 方式 A：git clone（推荐，之后可 git pull 更新）
-      mkdir -p "/Users/a1-6/AI Shared/repo/FleetKit/"
-      git clone https://github.com/cpufreestyle/fleet-kit.git "/Users/a1-6/AI Shared/repo/FleetKit/kit"
+      mkdir -p "<PRJ>"
+      git clone https://github.com/cpufreestyle/fleet-kit.git "<PRJ>/kit"
 
       # 方式 B：解包 tar
       cd ~ && tar xzf fleet-kit.tar.gz
-      mkdir -p "/Users/a1-6/AI Shared/repo/FleetKit/"
-      mv fleet-kit "/Users/a1-6/AI Shared/repo/FleetKit/kit"
+      mkdir -p "<PRJ>"
+      mv fleet-kit "<PRJ>/kit"
 
-      bash "/Users/a1-6/AI Shared/repo/FleetKit/kit/install.sh"
+      bash "<PRJ>/kit/install.sh" --home "<PRJ>/runtime"
+
+   Windows 在 Git Bash 里跑同一条命令；没有 Git Bash 时先装 Git for Windows。
 
 2. 登录你想用的服务（见「登录表」），每个服务登录完成后运行：
 
-       bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/bridges/finish.sh" <name>
+       bash "<PRJ>/runtime/bridges/finish.sh" <name>
 
 3. 验收：
 
-       bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/status.sh"
-       python3 "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/fleet_chat_test.py"
+       bash "<PRJ>/runtime/tools/status.sh"
+       python3 "<PRJ>/runtime/tools/fleet_chat_test.py"
 
    如果装了状态面板（--with-ui），顺手打开 http://127.0.0.1:8796/ 看一眼。
 
@@ -125,17 +147,17 @@ FleetKit 设计为可整体搬走：`kit/`（源码）与 `runtime/`（运行根
                [--no-start] [--skip-deps] [--dry-run]
                [--with-checkin] [--with-ui] [--no-ocx-guard] [-h]
 
-- `--home DIR`：安装根目录，默认 "/Users/a1-6/AI Shared/repo/FleetKit/runtime"
+- `--home DIR`：安装根目录，默认 "<PRJ>/runtime"
 - `--port-base N`：起始端口，11 座桥依次占用 N .. N+11，默认 8787
 - `--with-checkin`：装每日 09:00 CST 签到 timer（当前只有 xhx 任务）
 - `--with-ui`：装本地状态面板 launchd 常驻服务，端口 N+9（默认 8796）
 - `--no-ocx-guard`：关掉反代理模型 catalog 看门狗（默认随 opencodex 一起装）
-- `--no-opencodex`：跳过 ocx provider 注册（之后可手动跑 bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/opencodex/setup-providers.sh）"
+- `--no-opencodex`：跳过 ocx provider 注册（之后可手动跑 bash "<PRJ>/runtime/opencodex/setup-providers.sh）"
 - `--no-start`：只写文件和 plist，不启动桥
 - `--skip-deps`：跳过 venv/依赖安装（用系统 python3）
 - `--dry-run`：只打印计划，不落盘
 
-换端口后记得同步测试脚本：python3 "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/fleet_chat_test.py" --port-base 9787。
+换端口后记得同步测试脚本：python3 "<PRJ>/runtime/tools/fleet_chat_test.py" --port-base 9787。
 
 ### 高级：起第二套舰队
 
@@ -151,7 +173,7 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
 
 一条命令跑完整条流水线，适合新机首装或整套重装：
 
-    bash deploy.sh                      # 装到 "/Users/a1-6/AI Shared/repo/FleetKit/runtime，端口" 8787..8798
+    bash deploy.sh                      # 装到 "<PRJ>/runtime，端口" 8787..8798
 
     bash deploy.sh --home /tmp/fleet-a --port-base 9687 \
         --with-checkin --with-ui --no-opencodex --smoke
@@ -162,7 +184,7 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
 
 | 选项 | 作用 |
 |------|------|
-| `--home DIR` | 安装根目录，默认 "/Users/a1-6/AI Shared/repo/FleetKit/runtime" |
+| `--home DIR` | 安装根目录，默认 "<PRJ>/runtime" |
 | `--port-base N` | 起始端口，默认 8787 |
 | `--with-checkin` | 装每日 09:00 CST 签到 timer |
 | `--with-ui` | 装本地状态面板 launchd 常驻服务（端口 N+9） |
@@ -173,24 +195,24 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
 
 退出语义：`0` = 该起的桥都就绪（个别没登录只算 warning）；`1` = preflight 失败或
 **一座桥都没起来**。单座桥连不上（VPN、内网、地域封锁）不会中断部署，只在汇总里
-列为 unreachable，其余桥照常收尾；之后用 `bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/bridges/finish.sh" <name>` 补收。
+列为 unreachable，其余桥照常收尾；之后用 `bash "<PRJ>/runtime/bridges/finish.sh" <name>` 补收。
 
 ## 自动签到（checkin.sh）
 
 部分上游服务每日登录送积分/额度，过期不补。kit 内置一个 launchd 定时任务，
 每天 09:00（CST）自动跑一遍，幂等：当天已签、或桌面端启动时已领，就直接跳过。
 
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/checkin.sh" status          # 今日是否签 + 余额
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/checkin.sh" run-now         # 立即跑全部任务
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/checkin.sh" run-now xhx     # 只跑指定任务
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/checkin.sh" install-timer   # 装每日 timer
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/checkin.sh" uninstall-timer # 卸掉 timer
+    bash "<PRJ>/runtime/tools/checkin.sh" status          # 今日是否签 + 余额
+    bash "<PRJ>/runtime/tools/checkin.sh" run-now         # 立即跑全部任务
+    bash "<PRJ>/runtime/tools/checkin.sh" run-now xhx     # 只跑指定任务
+    bash "<PRJ>/runtime/tools/checkin.sh" install-timer   # 装每日 timer
+    bash "<PRJ>/runtime/tools/checkin.sh" uninstall-timer # 卸掉 timer
 
 安装时加一个开关即可（等价于装完再跑 install-timer）：
 
     bash install.sh --with-checkin
 
-状态与日志位置（`--home DIR` 可改根目录，默认 "/Users/a1-6/AI Shared/repo/FleetKit/runtime）："
+状态与日志位置（`--home DIR` 可改根目录，默认 "<PRJ>/runtime）："
 
     <home>/checkin/state.json     # 每任务：今日是否成功、余额、上次时间
     <home>/logs/checkin.log       # timer 运行日志
@@ -367,10 +389,10 @@ catalog，追加的模型就被冲掉——表现为「重启一下 app，反代
 
 kit 因此带一个看门狗，数 catalog 里带 `/` 的桥模型，少于阈值就自动 `ocx sync`：
 
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/ocx-catalog-guard.sh" status           # 桥模型数 + timer 状态
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/ocx-catalog-guard.sh" run              # 立即检查并自愈
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/ocx-catalog-guard.sh" install-timer
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/ocx-catalog-guard.sh" uninstall-timer
+    bash "<PRJ>/runtime/tools/ocx-catalog-guard.sh" status           # 桥模型数 + timer 状态
+    bash "<PRJ>/runtime/tools/ocx-catalog-guard.sh" run              # 立即检查并自愈
+    bash "<PRJ>/runtime/tools/ocx-catalog-guard.sh" install-timer
+    bash "<PRJ>/runtime/tools/ocx-catalog-guard.sh" uninstall-timer
 
 默认装 launchd 常驻（`StartInterval` 300s + `RunAtLoad`），随 opencodex 接线一起启用，
 `--no-ocx-guard` 可关掉。日志：`~/Library/Logs/ocx-catalog-guard.log`。
@@ -392,9 +414,9 @@ Codex/ChatGPT（`ocx sync --restart-codex` 能自动做，但会结束进行中�
 
 `ocx-catalog-guard` 保证反代理模型「别消失」；但如果某个桥当前核验不是 REAL（端口通、能聊，真实调用核验没过），它仍会躺在选择器里，选中就报错。`catalog_filter.py` 补上另一半：按面板 `verify.real` 结果，把「有桥且非 REAL」的斜杠模型从 catalog 摘掉。
 
-    python3 "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/catalog_filter.py" --dry-run
-    python3 "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/catalog_filter.py"
-    bash    "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/catalog-filter.sh" status|run|install-timer|uninstall-timer
+    python3 "<PRJ>/runtime/tools/catalog_filter.py" --dry-run
+    python3 "<PRJ>/runtime/tools/catalog_filter.py"
+    bash    "<PRJ>/runtime/tools/catalog-filter.sh" status|run|install-timer|uninstall-timer
 
 同一脚本还顺手清掉「永远不会是聊天模型」的噪声行——只凭 slug 判定、不依赖面板状态：
 TTS/语音、embedding/rerank、OCR/ASR、图像/视频生成（-i2v/-r2v/-t2v、seedream、happyhorse）、
@@ -422,7 +444,7 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 
 `--hide-native-when-pool-down` 用一次最小请求（`gpt-5.5` + 16 token）探测 `http://127.0.0.1:10100/v1/responses`：只有明确读到「池无可用凭据」的 401 才判定不可用；其余任何结果（成功、其它 4xx/5xx、代理不可达）都按「可用」处理，探测失败不会误清空选择器。探测为不可用时隐藏这些行，池恢复后下个周期自动加回。
 
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/tools/catalog-filter.sh" run --hide-native-when-pool-down --dry-run
+    bash "<PRJ>/runtime/tools/catalog-filter.sh" run --hide-native-when-pool-down --dry-run
 
 `install-timer` 生成的 plist 默认已带 `--hide-native-when-pool-down`。2026-09-26 实测：池为空 → 8 个原生行隐藏，选择器 149 → 141，其余 141 个反代理模型不受影响。
 
@@ -444,9 +466,9 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 | qoder | npm i -g @qodercn-ai/qoderclicn，按 CLI 流程登录 | ~/.qoder-cn/.auth/user | 桥以非交互模式调用 CLI |
 | codely | 官方 CLI 设备码登录 | ~/.codely-cli/oauth_creds.json | 账号需先在网页端激活（见已知问题） |
 | trae | Trae CN IDE 登录 | IDE 登录态；桥缓存到 ~/.trae2codex/creds.json | |
-| lingxi | python3 "/Users/a1-6/AI Shared/repo/FleetKit/runtime/bridges/lingxi/login_helper.py" 打开浏览器登录 | ~/.LingXi/auth.json | |
+| lingxi | python3 "<PRJ>/runtime/bridges/lingxi/login_helper.py" 打开浏览器登录 | ~/.LingXi/auth.json | |
 | xhx | 商汤小浣熊桌面 app 登录 | ~/.box-agent/config/auth.json | 桌面端会重写该文件，属正常 |
-| gemini | gemini login，或 python3 "/Users/a1-6/AI Shared/repo/FleetKit/runtime/bridges/gemini/extract_cookies.py" 导出 cookie | ~/.gemini/jetski-standalone-oauth-token 或 ~/.gemini2codex/cookies.txt | 账号需通过 Google 验证（见已知问题） |
+| gemini | gemini login，或 python3 "<PRJ>/runtime/bridges/gemini/extract_cookies.py" 导出 cookie | ~/.gemini/jetski-standalone-oauth-token 或 ~/.gemini2codex/cookies.txt | 账号需通过 Google 验证（见已知问题） |
 | catpaw | CatPawAI 桌面 App 登录 | ~/Library/Application Support/CatPawAI/User/globalStorage/state.vscdb | 需美团内网/VPN（见已知问题） |
 | antigravity | Antigravity 桌面 App 登录（或 gemini login） | ~/.gemini/jetski-standalone-oauth-token | 与 gemini 共用 token；需能连 cloudcode-pa.googleapis.com |
 | qwen | qwencloud.com 控制台创建 API key，写入 `fleet.env` 的 `QWEN2CODEX_KEY` | `fleet.env`（无本地登录态） | 上游 maas.qwencloudapi.com；key 丢失可在控制台重建 |
@@ -571,7 +593,7 @@ Plan API 后不受影响。
 
 ## 目录结构
 
-    /Users/a1-6/AI Shared/repo/FleetKit/                  FleetKit 项目根
+    <PRJ>/                  FleetKit 项目根
       kit/                    git 仓库（本文档所在）
         install.sh            一键安装（plist + venv + fleet.env + ocx 注册）
         deploy.sh             一键部署流水线（install + finish + 签到 timer + 汇总）
@@ -594,7 +616,7 @@ Plan API 后不受影响。
 ## 可选：TokenDance
 
 fleet.env 里取消注释 TOKENDANCE_API_KEY= 并填入 key，重跑
-bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/opencodex/setup-providers.sh" 即追加 tokendance provider
+bash "<PRJ>/runtime/opencodex/setup-providers.sh" 即追加 tokendance provider
 （https://tokendance.space/gateway/v1，模型 step-5-preview 等）。
 
 ## StepFun Plan API（默认模型上游）
@@ -606,8 +628,8 @@ bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/opencodex/setup-providers.sh" 
 
 ## 卸载
 
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/uninstall.sh"            # 停服务并删 plist
-    bash "/Users/a1-6/AI Shared/repo/FleetKit/runtime/uninstall.sh" --purge    # 连 "/Users/a1-6/AI Shared/repo/FleetKit/runtime" 目录一起删
+    bash "<PRJ>/runtime/uninstall.sh"            # 停服务并删 plist
+    bash "<PRJ>/runtime/uninstall.sh" --purge    # 连 "<PRJ>/runtime" 目录一起删
 
 注意：uninstall.sh 不动 ocx 的 provider 配置；如需清除，用 ocx 自带命令管理。
 

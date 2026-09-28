@@ -26,6 +26,9 @@ import hashlib
 import hmac
 import json
 import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
+import _platform
 import time
 import uuid
 from pathlib import Path
@@ -66,7 +69,7 @@ _SIGN_BASE_KEY = bytes.fromhex("406f00f74768ba0cb0cd30f097ec6c2bdacb89c61a38b7dd
 #   缺官方 UA               -> 400 欢迎使用Codely 门禁
 # 两者必须一起带上才能过 400 门禁。
 _CODELY_CLI_VERSION = os.environ.get("CODELY_CLI_VERSION") or "1.0.0-rc.60"
-CLI_USER_AGENT = f"codely-cli/{_CODELY_CLI_VERSION} (darwin; arm64)"
+CLI_USER_AGENT = f"codely-cli/{_CODELY_CLI_VERSION} ({_platform.short_platform()}; {_platform.arch()})"
 _session_id = uuid.uuid4().hex
 
 
