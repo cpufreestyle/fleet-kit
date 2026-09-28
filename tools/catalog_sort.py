@@ -43,7 +43,7 @@ HY4_SLUGS = ("workbuddy/hy4-preview", "workbuddy-gpt/hy4-preview")
 def is_hy4(slug):
     return slug in HY4_SLUGS
 
-def interleave_reps(models, order):
+def interleave_reps(models, order, good=None):
     """Float one representative per provider to the front, in --order.
 
     Sorting by tier alone lets one big provider swallow the whole first
@@ -51,10 +51,15 @@ def interleave_reps(models, order):
     provider got pushed past position 30. Leading with one row per
     provider keeps the reachable set visible at the top, then each
     provider keeps its block in order.
+
+    When good is provided, only reachable providers get a front-row
+    representative. Unreachable providers stay in their tier block.
     """
     reps, rest = [], []
     taken = set()
     for prov in order:
+        if good is not None and prov not in good:
+            continue
         for model in models:
             slug = model.get("slug") or model.get("id") or ""
             if provider_of(slug) == prov and slug not in taken:
@@ -235,7 +240,7 @@ def main():
                  for k, v in m.items()} for m in models]
     # one representative per provider first, then each provider keeps
     # its block: otherwise the biggest provider eats the first screen
-    ordered = interleave_reps(sorted(models, key=rank), order)
+    ordered = interleave_reps(sorted(models, key=rank), order, good=good)
     for _rank_i, model in enumerate(ordered):
         slug = model.get("slug") or model.get("id") or ""
         prov = provider_of(slug)
