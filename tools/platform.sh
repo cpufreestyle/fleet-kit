@@ -329,7 +329,7 @@ _fleet_write_cmd_wrapper() {
     echo '@echo off'
     echo 'setlocal'
     if [ -n "$path_prefix" ]; then
-      printf 'set "PATH=%s"\n' "${path_prefix}%PATH%"
+      echo "set \"PATH=${path_prefix};%PATH%\""
     fi
     local oifs="$IFS"
     IFS=';'
