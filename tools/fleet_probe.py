@@ -58,6 +58,15 @@ KEY_ENV = {
 NONCE = "E2E_OK"
 SKIP_RE = ("image", "tts", "embed", "ocr", "vision", "vl")
 
+# Bridges whose upstream requires an interactive/anti-bot challenge on every
+# real call. Probing them from the launchd reachability timer burns captcha
+# tickets and repeatedly jumps the user to the verification page, without
+# ever improving the picker (the challenge alone marks them unreachable).
+# Add explicit --only <name> to probe one of these deliberately.
+NO_PROBE = {
+    "zcode": "upstream requires per-call Aliyun captcha; probe is opt-in",
+}
+
 # Every bridge and the ocx gateway listen on 127.0.0.1, but urllib picks up
 # the macOS system proxy, so a local call went out to the tunnel and back:
 # fine in a terminal, and a silent hang under launchd. Never proxy 127.0.0.1.
@@ -298,6 +307,9 @@ def main():
     names = [n.strip() for n in args.only.split(",") if n.strip()]
     every = sorted(set(PORTS) | set(GATEWAY))
     for name in (names or every):
+        if name in NO_PROBE and not names:
+            print("SKIP", name, NO_PROBE[name], flush=True)
+            continue
         port = plist_port(name) or PORTS.get(name) or GATEWAY_PORT
         ports[name] = port
         if name in GATEWAY:
