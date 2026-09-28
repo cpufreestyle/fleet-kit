@@ -21,6 +21,7 @@ Usage:
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -76,8 +77,25 @@ def api_get(path):
         return json.loads(resp.read().decode("utf-8", "ignore"))
 
 
+def ocx_executable():
+    """The first thing on PATH that can actually run the ocx CLI.
+
+    On Windows npm installs a `ocx.cmd` launcher next to the extension-less
+    sh shim, and subprocess cannot execute a shell script without a shell, so
+    prefer a .cmd/.exe sibling before falling back to the bare name.
+    """
+    which = shutil.which("ocx") or shutil.which("opencodex")
+    if which:
+        for suffix in (".cmd", ".exe", ".bat"):
+            candidate = which + suffix
+            if os.path.isfile(candidate):
+                return candidate
+        return which
+    return "ocx"
+
+
 def ocx_cli(args):
-    return subprocess.run(["ocx"] + args, capture_output=True, timeout=60)
+    return subprocess.run([ocx_executable()] + args, capture_output=True, timeout=60)
 
 
 def live_pairs():

@@ -38,7 +38,6 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 import _platform
 import platform
-import pwd
 import re
 import sys
 import time
@@ -113,11 +112,26 @@ def log(*args) -> None:
 # 凭证解密（ZCode 的 safeStorage：enc:v1:<iv>.<tag>.<ct>，base64url）
 # --------------------------------------------------------------------------
 
+try:  # pwd is POSIX-only; Windows keeps the login name in the environment
+    import pwd
+except ImportError:  # pragma: no cover - windows
+    pwd = None
+
+
+def _login_name() -> str:
+    if pwd is not None:
+        try:
+            return pwd.getpwuid(os.getuid()).pw_name
+        except Exception:
+            pass
+    return os.environ.get("USERNAME") or os.environ.get("USER") or ""
+
+
 def _safe_storage_key() -> bytes:
     secret = os.environ.get("ZCODE_CREDENTIAL_SECRET") or (
         "zcode-credential-fallback:%s:%s:%s" % (
             platform.system().lower(), str(Path.home()),
-            pwd.getpwuid(os.getuid()).pw_name))
+            _login_name()))
     return hashlib.sha256(secret.encode("utf-8")).digest()
 
 

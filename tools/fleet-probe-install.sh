@@ -27,7 +27,7 @@ export FLEET_SERVICE_DIR
 PLIST="${SERVICE_DIR}/${LABEL}.plist"
 PYTHON="${FLEET_PYTHON:-}"
 if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
-  PYTHON="$(fleet_venv_python 2>/dev/null || true)"
+  PYTHON="$(fleet_venv_python "$KIT" 2>/dev/null || true)"
   [ -n "$PYTHON" ] && [ -x "$PYTHON" ] || PYTHON="$(command -v python3 || command -v python)"
 fi
 PROBE="$KIT/tools/fleet_probe.py"

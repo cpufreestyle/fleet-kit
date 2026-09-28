@@ -31,6 +31,8 @@
 #   -h | --help
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 MIN_MODELS=60
 INTERVAL=300
 CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"

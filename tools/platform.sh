@@ -156,10 +156,171 @@ _fleet_cmd_escape() {
   printf '%s' "$1" | sed 's/%/%%/g'
 }
 
+# MSYS/bash paths (/c/..., /tmp/...) are meaningless to cmd.exe and Task
+# Scheduler; convert them to Windows form before writing anything the
+# Windows backend executes.
+_fleet_win_path() {
+  local p="$1"
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w -- "$p" 2>/dev/null || printf '%s' "$p"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+# converts every absolute-path token of a string (arg lists) to Windows form
+_fleet_win_tokens() {
+  local s="$1" out="" tok
+  for tok in $s; do
+    case "$tok" in
+      /*) tok="$(_fleet_win_path "$tok")" ;;
+    esac
+    out="${out}${out:+ }${tok}"
+  done
+  printf '%s' "$out"
+}
+
+# converts one env value for cmd.exe: PATH entries become Windows paths
+# joined with ';' (CreateProcess cannot resolve MSYS entries); a value that
+# is itself an absolute path (HOME, auth-pool dirs) is converted whole
+_fleet_win_value() {
+  local key="$1" v="$2" pout="" e
+  if [ "$key" = "PATH" ]; then
+    local oifs="$IFS"; IFS=':'
+    for e in $v; do
+      case "$e" in
+        /*) e="$(_fleet_win_path "$e")" ;;
+      esac
+      pout="${pout}${pout:+;}${e}"
+    done
+    IFS="$oifs"
+    printf '%s' "$pout"
+    return 0
+  fi
+  case "$v" in
+    /*) printf '%s' "$(_fleet_win_path "$v")" ;;
+    *) printf '%s' "$v" ;;
+  esac
+}
+
+# current user SID: schtasks rejects a bare LogonTrigger (no UserId) for
+# non-elevated users, and an InteractiveToken principal needs it too
+_fleet_user_sid() {
+  local who="" sid=""
+  if [ -n "${SYSTEMROOT:-}" ]; then
+    who="$(cygpath -u "$SYSTEMROOT" 2>/dev/null || echo '')/System32/whoami.exe"
+  fi
+  [ -n "$who" ] && [ -x "$who" ] || who="/c/Windows/System32/whoami.exe"
+  if [ -x "$who" ]; then
+    sid="$("$who" //user 2>/dev/null | awk 'NF{last=$NF} END{print last}')"
+  fi
+  case "$sid" in
+    S-1-*) printf '%s' "$sid" ;;
+    *) printf '' ;;
+  esac
+}
+
+# powershell.exe backs the windows service backend: Git Bash has no setsid, so
+# long-running services are hosted by a detached hidden PowerShell supervisor
+_fleet_win_powershell() {
+  local cand=""
+  if [ -n "${SYSTEMROOT:-}" ]; then
+    cand="$(cygpath -u "$SYSTEMROOT" 2>/dev/null || echo '')/System32/WindowsPowerShell/v1.0/powershell.exe"
+  fi
+  if [ -n "$cand" ] && [ -x "$cand" ]; then printf '%s' "$cand"; return 0; fi
+  command -v powershell.exe 2>/dev/null || command -v pwsh.exe 2>/dev/null || printf ''
+}
+
+# detach $2 so it outlives the shell that spawned it ($1 = powershell.exe).
+# Start-Process resolves executables the way Windows does, so it needs the
+# native path form, not the /c/... form bash uses to run powershell itself.
+_fleet_win_spawn() {
+  local ps="$1" target="$2" pswin
+  [ -n "$ps" ] && [ -n "$target" ] || return 1
+  pswin="$(_fleet_win_path "$ps")"
+  "$ps" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden \
+    -Command "Start-Process -FilePath '$pswin' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File','$target' -WindowStyle Hidden" \
+    >/dev/null 2>&1
+}
+
+_fleet_win_read_pid() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  tr -dc '0-9' < "$file" 2>/dev/null || true
+}
+
+_fleet_win_pid_alive() {
+  local pid="$1"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  "$(_fleet_win_powershell)" -NoProfile -Command \
+    "if (Get-Process -Id $pid -ErrorAction SilentlyContinue) { exit 0 }; exit 1" >/dev/null 2>&1
+}
+
+_fleet_win_kill_pid() {
+  local pid="$1"
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  taskkill //F //T //PID "$pid" >/dev/null 2>&1 || true
+}
+
+# Stop a windows service: kill the supervisor first (so it cannot restart the
+# wrapper), then its recorded child. Any task left by an older task-scheduler
+# based install is deleted so it cannot fire the wrapper again.
+_fleet_win_stop_service() {
+  local label="$1" dir pid ps pat
+  dir="$(fleet_service_dir)"
+  fleet_task_delete "$label" >/dev/null 2>&1 || true
+  for pid in "$(_fleet_win_read_pid "$dir/${label}.super.pid")" "$(_fleet_win_read_pid "$dir/${label}.child.pid")"; do
+    _fleet_win_kill_pid "$pid"
+    rm -f "$dir/${label}.super.pid" "$dir/${label}.child.pid"
+  done
+  # sweep strays: a supervisor killed between writing its pidfile and forking,
+  # plus anything an earlier install left running
+  ps="$(_fleet_win_powershell)"
+  [ -n "$ps" ] || return 0
+  for pat in "${label}-super.ps1" "${label}.cmd" "${label}.task.xml"; do
+    "$ps" -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { \$_.ProcessId -ne \$PID -and \$_.CommandLine -like '*$pat*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" >/dev/null 2>&1 || true
+  done
+  return 0
+}
+
+# writes <label>-super.ps1: a restart loop around the generated .cmd wrapper.
+# Both the supervisor PID and the child PID are recorded to disk so stop and
+# status never have to guess which process to signal.
+_fleet_write_ps_supervisor() {
+  local path="$1" label="$2" wrapper="$3" wait="${4:-5}"
+  local dir superpid childpid
+  dir="$(dirname "$path")"
+  superpid="$(_fleet_win_path "${dir}/${label}.super.pid")"
+  childpid="$(_fleet_win_path "${dir}/${label}.child.pid")"
+  cat > "$path" <<PS
+# FleetKit supervisor for $label. Do not edit; regenerated on install.
+\$ErrorActionPreference = 'SilentlyContinue'
+\$superPid  = '$superpid'
+\$childPid  = '$childpid'
+\$wrapper   = '$wrapper'
+\$restartIn = $wait
+Set-Content -Path \$superPid -Value \$PID -Force
+while (\$true) {
+  \$child = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', \$wrapper -PassThru -WindowStyle Hidden
+  if (\$child) {
+    Set-Content -Path \$childPid -Value \$child.Id -Force
+    \$child.WaitForExit()
+  }
+  Start-Sleep -Seconds \$restartIn
+}
+PS
+}
+
 # writes <service-dir>/<label>.cmd that sets the env then runs the bridge
 _fleet_write_cmd_wrapper() {
   local path="$1" workdir="$2" interpreter="$3" script="$4" extra="$5" envpairs="$6" logfile="$7"
   local entry k v
+  path="$(_fleet_win_path "$path")"
+  workdir="$(_fleet_win_path "$workdir")"
+  interpreter="$(_fleet_win_path "$interpreter")"
+  script="$(_fleet_win_path "$script")"
+  extra="$(_fleet_win_tokens "$extra")"
+  if [ -n "$logfile" ]; then logfile="$(_fleet_win_path "$logfile")"; fi
   {
     echo '@echo off'
     echo 'setlocal'
@@ -169,6 +330,7 @@ _fleet_write_cmd_wrapper() {
       [ -n "$entry" ] || continue
       k="${entry%%=*}"
       v="${entry#*=}"
+      v="$(_fleet_win_value "$k" "$v")"
       printf 'set "%s=%s"\n' "$(_fleet_cmd_escape "$k")" "$(_fleet_cmd_escape "$v")"
     done
     IFS="$oifs"
@@ -177,7 +339,7 @@ _fleet_write_cmd_wrapper() {
     if [ -n "$extra" ]; then printf ' %s' "$extra"; fi
     if [ -n "$logfile" ]; then printf ' >> "%s" 2>&1' "$logfile"; fi
     printf '\nendlocal\n'
-  } > "$path"
+  } | sed 's/$/\r/' > "$path"
 }
 
 # writes <service-dir>/<label>.sh used by the linux backend
@@ -210,11 +372,21 @@ _fleet_task_xml() {
   # $1 = logon trigger (true/false), $2 = interval seconds, $3 = daily HH:MM,
   # $4 = command, $5 = arguments, $6 = workdir
   local want_logon="$1" interval="$2" daily="$3" command="$4" args="$5" workdir="$6"
-  local triggers=""
+  local triggers="" sid userid logonuser
+  sid="$(_fleet_user_sid)"
+  if [ -n "$sid" ]; then
+    userid="      <UserId>${sid}</UserId>
+"
+    logonuser="      <UserId>${sid}</UserId>
+"
+  else
+    userid=""
+    logonuser=""
+  fi
   if [ "$want_logon" = "true" ]; then
     triggers="${triggers}    <LogonTrigger>
       <Enabled>true</Enabled>
-    </LogonTrigger>
+${logonuser}    </LogonTrigger>
 "
   fi
   if [ -n "$interval" ]; then
@@ -248,7 +420,7 @@ _fleet_task_xml() {
 ${triggers}  </Triggers>
   <Principals>
     <Principal id="Author">
-      <LogonType>InteractiveToken</LogonType>
+${userid}      <LogonType>InteractiveToken</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
   </Principals>
@@ -278,7 +450,15 @@ fleet_task_install() {
   dir="$(fleet_service_dir)"
   mkdir -p "$dir"
   xml="${dir}/${label}.task.xml"
-  _fleet_task_xml "$want_logon" "$interval" "$daily" "$command" "$args" "$workdir" > "$xml"
+  # schtasks/MSXML needs real UTF-16 bytes to match the declaration; a
+  # mismatch fails as a misleading "Access is denied", so transcode with BOM
+  if command -v iconv >/dev/null 2>&1; then
+    { printf '\377\376'
+      _fleet_task_xml "$want_logon" "$interval" "$daily" "$command" "$args" "$workdir" | iconv -f UTF-8 -t UTF-16LE
+    } > "$xml"
+  else
+    _fleet_task_xml "$want_logon" "$interval" "$daily" "$command" "$args" "$workdir" > "$xml"
+  fi
   local st
   st="$(_fleet_schtasks)"
   "$st" //Create //TN "$label" //XML "$xml" //F >/dev/null 2>&1 || \
@@ -338,10 +518,14 @@ fleet_service_install() {
   if fleet_is_macos; then
     _fleet_service_install_macos "$label" "$workdir" "$envpairs" "$interpreter" "$script" "$extra" "$logfile"
   elif fleet_is_windows; then
-    local wrapper="${dir}/${label}.cmd"
+    local wrapper
+    wrapper="$(_fleet_win_path "${dir}/${label}.cmd")"
     _fleet_write_cmd_wrapper "$wrapper" "$workdir" "$interpreter" "$script" "$extra" "$envpairs" "$logfile"
-    fleet_task_install "$label" "true" "60" "" "cmd.exe" "/c \"${wrapper}\"" "$workdir"
-    fleet_task_run "$label"
+    local supervisor
+    _fleet_win_stop_service "$label"
+    supervisor="${dir}/${label}-super.ps1"
+    _fleet_write_ps_supervisor "$supervisor" "$label" "$wrapper"
+    _fleet_win_spawn "$(_fleet_win_powershell)" "$(_fleet_win_path "$supervisor")" || return 1
   else
     local wrapper="${dir}/${label}.sh"
     _fleet_write_sh_wrapper "$wrapper" "$workdir" "$interpreter" "$script" "$extra" "$envpairs" "$logfile"
@@ -419,7 +603,14 @@ fleet_service_start() {
   if fleet_is_macos; then
     launchctl kickstart -k "gui/$(id -u)/${label}" >/dev/null 2>&1 || return 1
   elif fleet_is_windows; then
-    fleet_task_run "$label" || return 1
+    local dir pid supervisor
+    dir="$(fleet_service_dir)"
+    supervisor="${dir}/${label}-super.ps1"
+    [ -f "$supervisor" ] || return 1
+    pid="$(_fleet_win_read_pid "$dir/${label}.super.pid")"
+    if _fleet_win_pid_alive "$pid"; then return 0; fi
+    _fleet_win_stop_service "$label"
+    _fleet_win_spawn "$(_fleet_win_powershell)" "$(_fleet_win_path "$supervisor")" || return 1
   else
     local wrapper
     wrapper="$(fleet_service_dir)/${label}.sh"
@@ -435,7 +626,7 @@ fleet_service_stop() {
     launchctl kill TERM "gui/$(id -u)/${label}" >/dev/null 2>&1 || \
       launchctl bootout "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
   elif fleet_is_windows; then
-    fleet_task_end "$label" || true
+    _fleet_win_stop_service "$label"
   else
     pkill -f "$(fleet_service_dir)/${label}.sh" >/dev/null 2>&1 || true
   fi
@@ -461,11 +652,10 @@ fleet_service_remove() {
     fi
     return 1
   elif fleet_is_windows; then
-    if fleet_task_exists "$label"; then
-      fleet_task_end "$label"
-      fleet_task_delete "$label"
-    fi
-    rm -f "$(fleet_service_dir)/${label}.cmd" "$(fleet_service_dir)/${label}.task.xml"
+    _fleet_win_stop_service "$label"
+    rm -f "$(fleet_service_dir)/${label}.cmd" "$(fleet_service_dir)/${label}.task.xml" \
+          "$(fleet_service_dir)/${label}-super.ps1" \
+          "$(fleet_service_dir)/${label}.super.pid" "$(fleet_service_dir)/${label}.child.pid"
     return 0
   else
     pkill -f "$(fleet_service_dir)/${label}.sh" >/dev/null 2>&1 || true
@@ -479,7 +669,7 @@ fleet_service_exists() {
   if fleet_is_macos; then
     [ -f "$(fleet_service_dir)/${label}.plist" ]
   elif fleet_is_windows; then
-    fleet_task_exists "$label"
+    [ -f "$(fleet_service_dir)/${label}-super.ps1" ] || fleet_task_exists "$label"
   else
     [ -f "$(fleet_service_dir)/${label}.sh" ]
   fi
@@ -496,7 +686,15 @@ fleet_service_status() {
       echo ready
     fi
   elif fleet_is_windows; then
-    fleet_task_status "$label"
+    local dir pid
+    dir="$(fleet_service_dir)"
+    if [ ! -f "${dir}/${label}-super.ps1" ] && [ ! -f "${dir}/${label}.cmd" ] && ! fleet_task_exists "$label"; then
+      echo missing; return 1
+    fi
+    for pid in "$(_fleet_win_read_pid "$dir/${label}.child.pid")" "$(_fleet_win_read_pid "$dir/${label}.super.pid")"; do
+      if _fleet_win_pid_alive "$pid"; then echo running; return 0; fi
+    done
+    echo ready
   else
     [ -f "$(fleet_service_dir)/${label}.sh" ] || { echo missing; return 1; }
     if pgrep -f "$(fleet_service_dir)/${label}.sh" >/dev/null 2>&1; then echo running; else echo ready; fi
@@ -546,9 +744,10 @@ PLIST
     launchctl bootout "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
     launchctl bootstrap "gui/$(id -u)" "${dir}/${label}.plist" >/dev/null 2>&1 || true
   elif fleet_is_windows; then
-    local wrapper="${dir}/${label}.cmd"
+    local wrapper
+    wrapper="$(_fleet_win_path "${dir}/${label}.cmd")"
     _fleet_write_cmd_wrapper "$wrapper" "$(pwd)" "$interpreter" "$script" "$extra" "" "$logfile"
-    fleet_task_install "$label" "false" "$interval" "" "cmd.exe" "/c \"${wrapper}\"" "$(pwd)"
+    fleet_task_install "$label" "false" "$interval" "" "cmd.exe" "/c \"${wrapper}\"" "$(_fleet_win_path "$(pwd)")"
   else
     local wrapper="${dir}/${label}.sh"
     printf '#!/usr/bin/env bash\nwhile true; do\n  "%s" "%s" %s >> "%s" 2>&1\n  sleep %s\ndone\n' \
@@ -605,9 +804,10 @@ PLIST
     launchctl bootout "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
     launchctl bootstrap "gui/$(id -u)" "${dir}/${label}.plist" >/dev/null 2>&1 || true
   elif fleet_is_windows; then
-    local wrapper="${dir}/${label}.cmd"
+    local wrapper
+    wrapper="$(_fleet_win_path "${dir}/${label}.cmd")"
     _fleet_write_cmd_wrapper "$wrapper" "$(pwd)" "$interpreter" "$script" "$extra" "" "$logfile"
-    fleet_task_install "$label" "false" "" "$at" "cmd.exe" "/c \"${wrapper}\"" "$(pwd)"
+    fleet_task_install "$label" "false" "" "$at" "cmd.exe" "/c \"${wrapper}\"" "$(_fleet_win_path "$(pwd)")"
   else
     fleet_timer_install "$label" 86400 "$interpreter" "$script" "$extra"
   fi
