@@ -31,7 +31,13 @@
 #   -h | --help
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve without dirname: a Task Scheduler action inherits the bare machine
+# PATH, which has no Git for Windows coreutils, so $(dirname) would abort the
+# script under set -e before it can log anything.
+case "$0" in
+  */*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
+  *) SCRIPT_DIR="$(pwd)" ;;
+esac
 
 MIN_MODELS=60
 INTERVAL=300
@@ -162,7 +168,7 @@ cmd_install_timer() {
   local ocx_path="$path_value"
   local st
   st="$(command -v bash 2>/dev/null || echo /bin/bash)"
-  fleet_timer_install "$label" "$INTERVAL" "$st" "${SCRIPT_DIR}/ocx-catalog-guard.sh" "run --hide-native-when-pool-down"
+  fleet_timer_install "$label" "$INTERVAL" "$st" "${SCRIPT_DIR}/ocx-catalog-guard.sh" "run"
   echo "installed ${label} (every ${INTERVAL}s) on $(fleet_os 2>/dev/null || echo macos): ${ocx_path}"
 }
 

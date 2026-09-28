@@ -314,16 +314,23 @@ PS
 # writes <service-dir>/<label>.cmd that sets the env then runs the bridge
 _fleet_write_cmd_wrapper() {
   local path="$1" workdir="$2" interpreter="$3" script="$4" extra="$5" envpairs="$6" logfile="$7"
-  local entry k v
+  local entry k v interp_raw path_prefix
   path="$(_fleet_win_path "$path")"
   workdir="$(_fleet_win_path "$workdir")"
+  interp_raw="$interpreter"
   interpreter="$(_fleet_win_path "$interpreter")"
   script="$(_fleet_win_path "$script")"
   extra="$(_fleet_win_tokens "$extra")"
   if [ -n "$logfile" ]; then logfile="$(_fleet_win_path "$logfile")"; fi
+  # A Task Scheduler action inherits the bare machine PATH, which has no room
+  # for the MSYS coreutils (dirname, sed, grep) the shell tooling relies on.
+  path_prefix="$(_fleet_msys_path_prefix "$interp_raw")"
   {
     echo '@echo off'
     echo 'setlocal'
+    if [ -n "$path_prefix" ]; then
+      printf 'set "PATH=%s"\n' "${path_prefix}%PATH%"
+    fi
     local oifs="$IFS"
     IFS=';'
     for entry in $envpairs; do
@@ -342,14 +349,6 @@ _fleet_write_cmd_wrapper() {
   } | sed 's/$/\r/' > "$path"
 }
 
-# writes <service-dir>/<label>.vbs: a wscript launcher that starts the .cmd
-# wrapper with no console window, then echoes the launcher path in Windows
-# form. Task Scheduler hidden only hides the task itself; with Windows Terminal
-# set as the default terminal app every console child of an action gets a real
-# window that steals focus (measured: a cmd.exe /c action flashes a Terminal
-# window on every single run). wscript.exe is a GUI-subsystem host, so the
-# action itself never allocates a console, and it starts the console child
-# with SW_HIDE so nothing ever becomes visible.
 # writes <service-dir-or-tools>/<label>.launcher.vbs: a wscript launcher that
 # starts the .cmd wrapper with no console window, then echoes the launcher
 # path in Windows form. Task Scheduler hidden only hides the task itself; with
@@ -358,6 +357,69 @@ _fleet_write_cmd_wrapper() {
 # flashes a Terminal window on every single run). wscript.exe is a
 # GUI-subsystem host, so the action itself never allocates a console, and it
 # starts the console child with SW_HIDE so nothing ever becomes visible.
+# Windows form of the directories holding the coreutils this kit calls
+# through the shell. A Task Scheduler action starts with the machine PATH
+# only, so without this a bash interpreter cannot even run dirname.
+_fleet_msys_path_prefix() {
+  local tool d out="" seen=""
+  for tool in dirname sed grep date mktemp cat mkdir; do
+    d="$(command -v "$tool" 2>/dev/null)" || continue
+    case "$d" in /*) ;; *) continue ;; esac
+    d="${d%/*}"
+    [ -n "$d" ] || continue
+    case ";$seen;" in *";$d;"*) continue ;; esac
+    seen="${seen}${seen:+;}$d"
+    out="${out}${out:+;}$(_fleet_win_path "$d")"
+  done
+  printf "%s\n" "$out"
+}
+
+# true when the path, or any directory between it and the drive root, is a
+# reparse point (junction or symlink), which is how a sandbox hides a redirect
+# from anything that only inspects directory entries
+_fleet_path_is_reparse() {
+  fleet_is_windows || return 1
+  [ -e "$1" ] || return 1
+  local ps win out dir
+  ps="$(_fleet_win_powershell)"
+  [ -n "$ps" ] || return 1
+  # cygpath, not cd + pwd -W: bash resolves the junction while walking into it,
+  # which would report the destination instead of the redirect itself.
+  win="$(_fleet_win_path "$1")"
+  [ -n "$win" ] || return 1
+  # The redirect rarely sits on the directory itself: a sandbox usually hides a
+  # parent, so every ancestor up to the drive root has to be checked too, and a
+  # junction anywhere in that chain is just as closed to a process that Task
+  # Scheduler starts as one sitting on the leaf.
+  dir="$win"
+  while : ; do
+    out="$(timeout 20 env FK_PATH="$dir" "$ps" -NoProfile -NonInteractive -Command "if ((Get-Item -LiteralPath \$env:FK_PATH -Force).Target) { Write-Output yes }" 2>/dev/null || true)"
+    [ "$out" = "yes" ] && return 0
+    case "$dir" in
+      *[\/]*) dir="${dir%[\/]*}" ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+# where timer-generated files go: the service dir, unless it is a sandbox
+# redirect the Task Scheduler action process cannot open, in which case the
+# kit tools directory, then TEMP
+_fleet_timer_dir() {
+  local dir
+  dir="$(fleet_service_dir)"
+  if [ -d "$dir" ] && ! _fleet_path_is_reparse "$dir"; then
+    printf "%s\n" "$dir"
+    return 0
+  fi
+  dir="$(_fleet_platform_dir)"
+  if [ -n "$dir" ] && [ -d "$dir" ]; then
+    printf "%s\n" "$dir"
+    return 0
+  fi
+  printf "%s\n" "${TMPDIR:-/tmp}"
+}
+
 fleet_write_hidden_launcher() {
   # $1 = label, $2 = the .cmd wrapper this task must run
   local label="$1" wrapper="$2" dir vbs
@@ -368,9 +430,7 @@ fleet_write_hidden_launcher() {
   # without ever running the timer. The directory holding this script is
   # readable and writable, so generate the launcher next to it, and fall back
   # to the service dir, then TEMP.
-  dir="$(_fleet_platform_dir)"
-  [ -n "$dir" ] && [ -w "$dir" ] || dir="$(fleet_service_dir)"
-  [ -d "$dir" ] && [ -w "$dir" ] || dir="${TMPDIR:-/tmp}"
+  dir="$(_fleet_timer_dir)"
   mkdir -p "$dir"
   vbs="${dir}/${label}.launcher.vbs"
   cat > "$vbs" <<VBS
@@ -704,7 +764,12 @@ fleet_service_remove() {
     return 1
   elif fleet_is_windows; then
     _fleet_win_stop_service "$label"
-    rm -f "$(fleet_service_dir)/${label}.cmd" "$(fleet_service_dir)/${label}.vbs" "$(_fleet_platform_dir)/${label}.launcher.vbs" "$(fleet_service_dir)/${label}.task.xml" \
+    local tdir
+    tdir="$(_fleet_timer_dir)"
+    rm -f "$(fleet_service_dir)/${label}.cmd" "$(fleet_service_dir)/${label}.vbs" \
+          "${tdir}/${label}.cmd" "${tdir}/${label}.launcher.vbs" \
+          "$(_fleet_platform_dir)/${label}.launcher.vbs" \
+          "$(fleet_service_dir)/${label}.task.xml" \
           "$(fleet_service_dir)/${label}-super.ps1" \
           "$(fleet_service_dir)/${label}.super.pid" "$(fleet_service_dir)/${label}.child.pid"
     return 0
@@ -795,10 +860,11 @@ PLIST
     launchctl bootout "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
     launchctl bootstrap "gui/$(id -u)" "${dir}/${label}.plist" >/dev/null 2>&1 || true
   elif fleet_is_windows; then
-    local wrapper launcher
-    wrapper="$(_fleet_win_path "${dir}/${label}.cmd")"
+    local wrapper launcher tdir
+    tdir="$(_fleet_timer_dir)"
+    wrapper="$(_fleet_win_path "${tdir}/${label}.cmd")"
     _fleet_write_cmd_wrapper "$wrapper" "$(pwd)" "$interpreter" "$script" "$extra" "" "$logfile"
-    launcher="$(fleet_write_hidden_launcher "$label" "${dir}/${label}.cmd")"
+    launcher="$(fleet_write_hidden_launcher "$label" "${tdir}/${label}.cmd")"
     fleet_task_install "$label" "false" "$interval" "" "wscript.exe" "/B /NOLOGO \"${launcher}\"" "$(_fleet_win_path "$(pwd)")"
   else
     local wrapper="${dir}/${label}.sh"
@@ -856,10 +922,11 @@ PLIST
     launchctl bootout "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
     launchctl bootstrap "gui/$(id -u)" "${dir}/${label}.plist" >/dev/null 2>&1 || true
   elif fleet_is_windows; then
-    local wrapper launcher
-    wrapper="$(_fleet_win_path "${dir}/${label}.cmd")"
+    local wrapper launcher tdir
+    tdir="$(_fleet_timer_dir)"
+    wrapper="$(_fleet_win_path "${tdir}/${label}.cmd")"
     _fleet_write_cmd_wrapper "$wrapper" "$(pwd)" "$interpreter" "$script" "$extra" "" "$logfile"
-    launcher="$(fleet_write_hidden_launcher "$label" "${dir}/${label}.cmd")"
+    launcher="$(fleet_write_hidden_launcher "$label" "${tdir}/${label}.cmd")"
     fleet_task_install "$label" "false" "" "$at" "wscript.exe" "/B /NOLOGO \"${launcher}\"" "$(_fleet_win_path "$(pwd)")"
   else
     fleet_timer_install "$label" 86400 "$interpreter" "$script" "$extra"
