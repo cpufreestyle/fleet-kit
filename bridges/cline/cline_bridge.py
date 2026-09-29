@@ -29,6 +29,8 @@ import time
 import uuid
 from pathlib import Path
 
+import urllib.parse
+
 import uvicorn
 import websockets
 from fastapi import FastAPI, HTTPException, Request
@@ -38,6 +40,26 @@ BRIDGE_VERSION = "0.1.0"
 
 HUB_DISCOVERY = Path.home() / ".cline" / "data" / "locks" / "hub" / "production.json"
 HUB_AUTH_PREFIX = "cline-hub-auth."
+
+
+def hub_proxy(url):
+    """websockets `proxy=` value for a hub URL: None = never proxy, True = system.
+
+    macOS publishes its HTTP proxy (MacPacket on :1082) through System Settings,
+    not env vars, so every Python process -- launchd bridge included -- inherits
+    it. scutil --proxy exempts localhost and the RFC1918 ranges but NOT
+    127.0.0.1, and websockets asks proxy_bypass("host:port"), so a loopback
+    WebSocket gets tunnelled through MacPacket. Measured 2026-09-29: when that
+    proxy hiccups it answers CONNECT with garbage, websockets raises
+    InvalidProxyMessage in 0.01s, the bridge answers 502 and the verifier
+    reads UPSTREAM_DOWN -- condemning 14 working models over one dead hop.
+    A hub is a local discovery file, so loopback must always be direct; a
+    non-loopback hub keeps honouring the system proxy as before.
+    """
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if host == "localhost" or host.startswith("127.") or host in ("::1", "[::1]"):
+        return None
+    return True
 
 # 上游免费模型：
 # - cline-free/* 与 z-ai/glm-5.3-flash、poolside/laguna-s-2.1:free：装机即验证（PONG）
@@ -146,6 +168,7 @@ class HubClient:
             origin="http://127.0.0.1",
             open_timeout=10,
             max_size=64 * 1024 * 1024,
+            proxy=hub_proxy(self.url),
         )
         await self.register()
         return self

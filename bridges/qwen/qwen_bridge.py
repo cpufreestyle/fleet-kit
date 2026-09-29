@@ -33,7 +33,13 @@ BRIDGE_VERSION = "1.0.0"
 
 UPSTREAM_BASE = (os.environ.get("QWEN_UPSTREAM") or "https://maas.qwencloudapi.com/compatible-mode/v1").rstrip("/")
 BRIDGE_KEY = os.environ.get("QWEN2CODEX_KEY") or ""
-API_KEY = os.environ.get("QWEN_API_KEY") or BRIDGE_KEY
+# Never fall back to BRIDGE_KEY here. Measured 2026-09-29: fleet.env carries
+# QWEN2CODEX_KEY but no QWEN_API_KEY, so the bridge shipped its own local key
+# to maas.qwencloudapi.com on every request. That leaks a local secret to a
+# third party, /health answered has_api_key=true, and upstream answered 401 --
+# an operator reading the health row then hunts an expired session that does
+# not exist. An unset key must stay visibly unset.
+API_KEY = os.environ.get("QWEN_API_KEY", "")
 UPSTREAM_PROXY = (os.environ.get("QWEN_UPSTREAM_PROXY") or "").strip()
 DEFAULT_TIMEOUT = float(os.environ.get("QWEN_CALL_TIMEOUT") or "300")
 CATALOG_PREFIX = "qwen/"
@@ -100,9 +106,20 @@ async def list_models(request: Request):
                     ids = kept
             else:
                 detail = f"upstream {r.status_code}"
+                if r.status_code in (401, 403):
+                    # The key was refused. Advertising rows here means every
+                    # chat call 401s while /health and the picker stay green,
+                    # so report the failure instead of the static catalog.
+                    # The names in FALLBACK_MODELS are real, which is why a
+                    # network/5xx failure below still serves them.
+                    return JSONResponse(
+                        {"error": {"message": f"qwen upstream refused the API key (HTTP {r.status_code}); "
+                                              f"set QWEN_API_KEY to a real Qwen Cloud key",
+                                   "type": "upstream_auth_error"}},
+                        status_code=401)
         except Exception as e:
             detail = f"{type(e).__name__}: {e}"
-    # 无 key / 上游失败：静态兜底目录（带 qwen/ 前缀，slug 与 catalog 注入一致）
+    # 无 key / 上游不可达：静态兜底目录（带 qwen/ 前缀，slug 与 catalog 注入一致）
     data = {
         "object": "list",
         "data": [
@@ -124,6 +141,14 @@ async def chat_completions(request: Request):
         raise HTTPException(status_code=400, detail="invalid json body")
     body["model"] = remap_model(body.get("model"))
     stream = bool(body.get("stream"))
+
+    if not API_KEY:
+        # No key means every upstream call is a guaranteed 401; fail locally
+        # with the fix instead of paying for the round trip.
+        return _common.upstream_error_response(
+            503, "", "qwen", "qwen_key_missing",
+            message="qwen bridge has no QWEN_API_KEY; set a real Qwen Cloud key "
+                    "in fleet.env and re-run bash bridges/finish.sh qwen")
 
     url = f"{UPSTREAM_BASE}/chat/completions"
     try:

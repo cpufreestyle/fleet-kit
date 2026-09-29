@@ -167,6 +167,29 @@ def make_prefix_stripper(catalog_prefix: str):
     return strip
 
 
+IMAGE_GEN_KEYWORDS = ("image", "img", "seedream", "seededit", "t2i", "i2i")
+
+
+def drop_image_models(ids):
+    """Keep chat-capable model ids only; image-generation models cannot answer
+    /v1/chat/completions at all.
+
+    WorkBuddy splits these off by supported_endpoint_types (core.py:1294), but a
+    gateway that reports nothing has to be matched by name: lingxi lists
+    gpt-image-2.5-sunburst next to its chat models, so every pick of that row
+    fails with a 502 from upstream and lands in the catalog as a dead model.
+    When the names would drop everything the input is returned untouched --
+    a wrongly hidden model is worse than one broken row.
+    """
+
+    def is_image(model: str) -> bool:
+        low = str(model).lower()
+        return any(k in low for k in IMAGE_GEN_KEYWORDS)
+
+    kept = [m for m in ids if not is_image(m)]
+    return kept or list(ids)
+
+
 def upstream_error_response(status_code: int, body: str, upstream_name: str,
                             error_type: str, max_chars: int = 400,
                             message: str = "") -> JSONResponse:

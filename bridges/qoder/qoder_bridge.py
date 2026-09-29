@@ -101,12 +101,28 @@ def _auth_state() -> dict:
     return info
 
 
+# `qoderclicn --list-models` 输出首行是字面量表头。老代码只过滤
+# Available/Models/Model 三种大小写混合的拼写，而 CLI 1.1.x 实际吐的是大写
+# "MODEL"，于是它被当成模型 id 泄漏进选择器（出现幽灵行 qoder/MODEL）。
+# 按「首个 token 是否表头词」判定，大小写无关，也不会误伤 modelscope-x 这类
+# 以合法前缀开头的 id。
+# 分隔符只取空白和冒号：表头行总是"MODEL"、"Models:"、"MODEL - DESCRIPTION"
+# 这种空白分写的形态；把 - 也算进来的话，model-router / id-chain 这种合法 id
+# 会被当成表头整行丢掉。
+_MODEL_HEADER_WORDS = {"model", "models", "available", "name", "id"}
+
+
+def _is_header_line(line: str) -> bool:
+    head = re.split(r"[\s:]+", line, maxsplit=1)[0].strip().lower()
+    return head in _MODEL_HEADER_WORDS
+
+
 def _parse_models(output: str) -> list[dict]:
     """解析 `qoderclicn --list-models` 输出，容错多种格式。"""
     models: list[dict] = []
     for line in (output or "").splitlines():
         line = line.strip()
-        if not line or line.startswith(("Available", "Models", "Model")):
+        if not line or _is_header_line(line):
             continue
         matched = re.match(r"^([A-Za-z0-9._\-/]+)\s*(?:[-–—:|]\s*(.*))?$", line)
         if not matched:
