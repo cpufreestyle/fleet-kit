@@ -193,8 +193,21 @@ elif [ -z "$first" ]; then
   echo "  skipped: no model id"
 else
   body="$(printf '{"model":"%s","messages":[{"role":"user","content":"请只回复两个字：正常"}],"max_tokens":16,"stream":false}' "$first")"
-  curl -s -m 60 -X POST "http://127.0.0.1:$port/v1/chat/completions"     -H "Content-Type: application/json"     -H "Authorization: Bearer $key"     -d "$body" | head -c 600
-  echo
+  # The status code has to travel with the body: a bridge that came back up but
+  # lost its session answers 401 with an {"error":...} JSON, and printing that
+  # and then reporting "done: $NAME is ready" is how a broken bridge gets
+  # committed. A 200 carrying an error object means the same thing.
+  raw="$(curl -s -m 60 -w '\n%{http_code}' -X POST "http://127.0.0.1:$port/v1/chat/completions" -H "Content-Type: application/json" -H "Authorization: Bearer $key" -d "$body" || true)"
+  code="${raw##*$'\n'}"
+  reply="${raw%$'\n'*}"
+  if [ "$code" = "200" ] && ! printf '%s' "$reply" | grep -qE '"error"[[:space:]]*:|"detail"[[:space:]]*:'; then
+    echo "  ok (HTTP $code): $(printf '%s' "$reply" | head -c 200)"
+  else
+    echo "  chat call FAILED (HTTP $code): $(printf '%s' "$reply" | head -c 400)" >&2
+    echo "  the bridge listens and lists models, but a chat call fails." >&2
+    echo "  check the bridge log and the runbook, then re-run finish.sh $NAME" >&2
+    exit 4
+  fi
 fi
 
 echo
