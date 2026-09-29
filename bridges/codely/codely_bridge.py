@@ -75,6 +75,12 @@ ALIAS_TO_MODEL = {
     "air": "codely-air",
     "basic": "codely-basic",
     "vl": "codely-vl",
+    # _strip_provider_prefix turns the catalog's own spelling "codely-flash"
+    # into "flash", and the table only held the opencodex short alias "fl", so
+    # the full alias fell straight through to the whitelist and came back as a
+    # 400 "model 'flash' is not allowed" -- from a model the picker advertises.
+    # Every other entry already matched its own stripped name; keep that true.
+    "flash": "codely-flash",
 }
 
 # 官方 CLI 逆向出的 LiteLLM 网关签名参数（HMAC-SHA256 双层派生）：
