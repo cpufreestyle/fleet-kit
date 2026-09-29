@@ -129,14 +129,27 @@ def parse_trae_auth_value(value: str) -> dict:
 
 # ---------------- 凭据与身份 ----------------
 
+def app_support_root() -> Path:
+    """应用数据根目录：macOS 是 ~/Library/Application Support。
+
+    app_support_dirs("Trae") 给的是 <root>/Trae，而各版本真实目录是
+    <root>/<版本名>，例如
+    ~/Library/Application Support/Trae CN/User/globalStorage/storage.json。
+    在中间多拼一级 "Trae/" 会让全部桌面候选被 exists() 过滤掉，
+    桥只剩凭据缓存兜底，缓存一失效就报「登录态未找到」。
+    """
+    return Path(_platform.app_support_dirs("Trae")[0]).parent
+
+
 def storage_candidates() -> list[dict]:
     out = []
-    base = Path(_platform.first_existing(
-        _platform.app_support_dirs("Trae")) or (_platform.home() + "/Library/Application Support"))
+    base = app_support_root()
     for name in APP_NAMES:
         out.append({"edition": name, "path": base / name / "User" / "globalStorage" / "storage.json", "source": "desktop"})
-    out.append({"edition": "cli-cn", "path": Path.home() / ".trae-cn" / "trae-jwt-token", "source": "cli"})
-    out.append({"edition": "cli", "path": Path.home() / ".trae" / "trae-jwt-token", "source": "cli"})
+    # ~/.trae-cn/trae-jwt-token 与 ~/.trae/trae-jwt-token 是 RS256 JWT，
+    # payload.data 只有 id/tenant_id/type/user_id，既没有 access token 也没有
+    # refresh token；直接拿整个 JWT 当 Bearer 打 get_detail_param 实测返回 0 个
+    # 模型。接进来只会得到一个永远失败的登录源，所以不列。
     return [c for c in out if c["path"].exists()]
 
 
@@ -176,14 +189,17 @@ def read_desktop_auth(candidate: dict) -> Optional[dict]:
             device_id = key[len(DC_PREFIX):]
             break
     app_version = ""
-    product = candidate["path"].parents[3] / "Resources" / "app" / "product.json"
-    # macOS: <App>.app/Contents/Resources/app/product.json —— storage.json 在
-    # User/globalStorage/ 下，向上 4 级是 App 根目录（.../<App>.app/User/globalStorage）
+    # storage.json 在用户数据目录里，不在 .app 包内，版本号得去别处找：
+    # 优先 Applications 下的同名 .app 包，再退回用户数据目录的祖先。
     try:
         p = candidate["path"]
-        app_root = p.parents[3]  # .../<App>.app
-        product = app_root / "Contents" / "Resources" / "app" / "product.json"
-        app_version = json.loads(product.read_text(encoding="utf-8")).get("appVersion") or ""
+        roots = [Path("/Applications") / (candidate["edition"] + ".app"), p.parents[3]]
+        for product in [r / "Contents" / "Resources" / "app" / "product.json" for r in roots]:
+            if not product.exists():
+                continue
+            app_version = json.loads(product.read_text(encoding="utf-8")).get("appVersion") or ""
+            if app_version:
+                break
     except Exception:
         app_version = ""
     build_version = storage.get("iCubeLastVersion") or ""
