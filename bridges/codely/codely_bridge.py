@@ -34,7 +34,7 @@ import uuid
 from pathlib import Path
 import httpx
 from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 BRIDGE_VERSION = "0.3.0"
 

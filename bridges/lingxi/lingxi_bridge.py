@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.p
 
 import httpx
 from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import _common
 
@@ -182,6 +182,7 @@ async def get_models(force: bool = False) -> list[str]:
                     ids.append(str(m["id"]))
                 elif isinstance(m, str):
                     ids.append(m)
+            ids = _common.drop_image_models(ids)
             if ids:
                 async with _lock:
                     _cache["models"] = ids
