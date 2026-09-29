@@ -72,3 +72,102 @@ grep -o "stepfun/[a-z0-9.-]*" ~/.codex/cc-switch-model-catalog.json | sort -u
 
 注：Plan API 的 openai-chat / responses 双协议都可用，船队统一用 openai-chat。
 上下文只填 ocx 明确记录的值，`—` 表示配置里没给。
+
+## 图片数 400：image-cap shim（2026-09-30）
+
+### 根因
+
+CC Switch 这一跳而不是模型设了上限。同一批图片，71 张以内 OK，第 71 张开始
+Plan API 回 `400 images_too_many`（`tools/image_cap.py` 是这次测量）：
+
+```
+70 images in one request -> HTTP 200
+71 images in one request -> HTTP 400 images_too_many
+```
+
+同一个 71 图请求直连 `api.stepfun.com` 返回 200 —— StepFun 文档写 1M 上下文，
+读图毫无问题，卡住的是 CC Switch 那一跳。
+
+Codex 对此毫无办法：`disable_response_storage = true` 让它每轮重发整段会话，
+所以运营者贴的 N 张截图每轮都被重发一次，长会话必然撞上一个用户无法处理的 400
+（`The amount of images you provided exceeds the model's limitation` ——
+这句话是报给 API 调用方的，不是报给屏幕上那个人的）。
+
+### 方案
+
+`tools/stepfun_image_shim.py` 是架在 CC Switch（127.0.0.1:15721）前面的透明透传，
+监听 15722，转发前对请求体做两件无损重写（实现在 `tools/image_cap.py`）：
+
+- 去重：同一个 data URL 重复出现（重新贴的截图、被回声两次的工具结果）算一张，
+  只留最新的 citation，也就是会话当前那份拷贝所在的位置。
+- 截断：去重后仍超过上限时保留最近的图片，最旧的替换成一句短文本说明。
+  被丢掉的槽位变成文本而不是被删掉 —— 空的 content 列表是畸形请求，
+  而一个静默的空洞对模型读起来像「用户这里什么都没发」。
+
+### 实测
+
+| 场景 | 上游实际收到 |
+|------|--------------|
+| 70 图 → 200；71 图 → 400 `images_too_many` | 直接测量 |
+| 沙盒 POST 100 图，cap 生效 | 32（`cap_dropped=68`） |
+| 经 launchd 全链路 100 图，`stepfun/step-5-preview` | 32 |
+| 经 launchd 全链路 100 图，`workbuddy/hy4-preview` | 100（原样透传） |
+
+stats：`requests:2, rewritten:1, images_seen:100, images_kept:32`。
+`hy4-preview` 拿到完整的 100 张，证明 `IMAGE_CAP_MODELS=step` 只对 step 前缀生效，
+没有顺手砍别的船。
+
+### 部署
+
+```bash
+tools/stepfun_image_shim.sh <run|start|stop|status|install-timer|uninstall-timer> [--home DIR]
+```
+
+`install.sh` 和 `opencodex/setup-providers.sh` 都已自动接线；两个入口都有 `--dry-run`
+分支，只打印计划、一个字节都不写。
+
+| 变量 | 作用 | 默认 |
+|------|------|------|
+| `IMAGE_CAP_PORT` | shim 监听端口 | 15722 |
+| `IMAGE_CAP_UPSTREAM` | 转发目标 | `http://127.0.0.1:15721` |
+| `IMAGE_CAP_MAX` | 每请求保留图片数 | 32（`<= 0` 不限） |
+| `IMAGE_CAP_MODELS` | 生效模型子串，逗号分隔 | `step` |
+| `FLEET_PYTHON` | shim 用的 python | 取 `runtime/.venv/bin/python` |
+
+日志：`/tmp/fleet-logs/com.local.stepfun-image-cap.log`。
+`uninstall.sh` 的 `SUFFIXES` 已含 `stepfun-image-cap`，卸载不会在 launchd 里留孤儿作业。
+
+### 必须配 base_url pin
+
+CC Switch 拥有 `~/.codex/config.toml`，运营者每切换一次 provider 它就把 custom
+provider 的 `base_url` 写回 15721。只装 shim 不 pin 的结果是：Codex 直连 CC Switch，
+shim 在 15722 上空转，图片照样撞 400。
+
+`tools/pin_shim_base_url.py` 就是这次 pin，幂等，`setup-providers.sh` 每次都会重跑：
+
+- 读顶层 `model_provider` 名字（默认 `custom`），只改那一个 provider 的 `base_url`，
+  不碰别的 provider，也不碰文件里其它 15721 引用；
+- 按 host:port 子串替换，scheme 和 `/v1` 路径原样保留；
+- 已经指向 shim、或指向别的 host 时文件一个字节都不动，报 `no change` —— 可以每次
+  setup 都跑，也可以挂定时任务。
+
+### 回滚
+
+```bash
+tools/stepfun_image_shim.sh uninstall-timer
+python3 tools/pin_shim_base_url.py --dry-run   # 先看会动哪里
+```
+
+然后把 `~/.codex/config.toml` 里 custom provider 的 `base_url` 改回 15721。
+
+### 两个坑
+
+- **代理环境变量吃 loopback**：本机开着 `http_proxy=127.0.0.1:1082` 时，httpx 和 curl
+  都会把 loopback 流量送进代理，探活 curl 一律加 `--noproxy '*'`。shim 内部用
+  `LOOPBACK_MOUNTS`（`trust_env=False`）自己绕开了这一层。
+- **日志名字必须和 launchd 一致**：platform.sh 把 plist 的
+  `StandardOutPath`/`StandardErrorPath` 指向 `$LOG_DIR/<label>.log`。控制脚本原来写
+  `stepfun-image-cap.log`（另一个名字），运营商去看日志时只看到空文件，而服务其实
+  一直在正常服务流量。已改成 `SHIM_LOG="$LOG_DIR/${SHIM_LABEL}.log"`。
+- **安装后 `-15` 不是崩溃**：`fleet_service_install` 末尾 `kickstart -k` 的 SIGTERM
+  残留，正常服务 `com.local.fleet-ui` 同样显示 `-15`；等几秒再看 PID 就在跑了。

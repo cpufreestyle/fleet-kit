@@ -691,6 +691,26 @@ bash "<PRJ>/runtime/opencodex/setup-providers.sh" 即追加 tokendance provider
 重跑 setup-providers.sh 即注册/更新 provider；没有 key 时该步骤自动跳过。
 详见 docs/stepfun2codex-runbook.md。
 
+### StepFun 图片上限：image-cap shim
+
+StepFun 的 Plan API 在 CC Switch 这一跳有 70 图上限（第 71 张回 400
+`images_too_many`；`disable_response_storage = true` 让 Codex 每轮重发整段会话，
+长会话必然撞上）。`tools/stepfun_image_shim.py` 架在 CC Switch（15721）前面的
+透传层，监听 15722，转发前去重 + 截断到 32 张（`tools/image_cap.py` 是测量）。
+
+```bash
+bash tools/stepfun_image_shim.sh status           # 看 URL / pid / 健康
+bash tools/stepfun_image_shim.sh install-timer   # launchd 常驻
+bash tools/stepfun_image_shim.sh uninstall-timer
+python3 tools/pin_shim_base_url.py --dry-run      # 预览 base_url pin
+```
+
+`install.sh` 和 `opencodex/setup-providers.sh` 已自动接线（含 `--dry-run` 守卫）。
+CC Switch 每次切 provider 都会把 `base_url` 写回 15721，所以 pin 必须跟着 setup 重跑；
+`tools/pin_shim_base_url.py` 幂等，只改 `model_provider` 指向的那个 provider。
+实测：100 图经 launchd 全链路，`stepfun/step-5-preview` 上游只收 32，
+`workbuddy/hy4-preview` 原样透传 100。详见 docs/stepfun2codex-runbook.md。
+
 ## 卸载
 
     bash "<PRJ>/runtime/uninstall.sh"            # 停服务并删 plist
