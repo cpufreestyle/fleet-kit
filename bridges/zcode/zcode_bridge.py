@@ -654,6 +654,38 @@ def _anthropic_payload(body: dict, model: str) -> dict:
     return payload
 
 
+# 路由 A 每次开一个全新 CLI session，把整段对话扇成一个 prompt 时的字符上限。
+CLI_PROMPT_MAX_CHARS = 24000
+
+
+def _cli_prompt(turns):
+    """Flatten the whole conversation into one prompt for a fresh CLI session.
+
+    Route A opens a new CLI session per call and holds no state across calls,
+    so earlier turns only reach the model if they are replayed into the prompt.
+    Reducing the history to its last message threw that history away: with
+    Codex, which resends the full conversation on every turn, every turn after
+    the first was answered with no context at all.
+
+    The last turn stays verbatim at the end; older ones are dropped from the
+    front once the character budget runs out, so a long history degrades into
+    "recent turns only" instead of overflowing the CLI context.
+    """
+    if not turns:
+        return ""
+    last = turns[-1][1]
+    budget = max(0, CLI_PROMPT_MAX_CHARS - len(last) - 2)
+    kept, used = [], 0
+    for role, text in reversed(turns[:-1]):
+        line = "%s: %s" % (role, text)
+        if used + len(line) > budget:
+            break
+        kept.append(line)
+        used += len(line) + 2
+    kept.reverse()
+    return "\n\n".join(kept + [last]) if kept else last
+
+
 def _cli_ask_all(model: str, payload_messages):
     """Route A: try every configured CLI provider, return OpenAI text.
 
@@ -664,7 +696,7 @@ def _cli_ask_all(model: str, payload_messages):
     """
     if not CLI_ENABLED:
         return "", "cli backend disabled (ZCODE_CLI_BACKEND=0)"
-    msgs = []
+    turns = []
     for m in (payload_messages or []):
         if not isinstance(m, dict):
             continue
@@ -674,8 +706,8 @@ def _cli_ask_all(model: str, payload_messages):
             if isinstance(c, dict))
         if role == "system" or not text:
             continue
-        msgs.append(text)
-    prompt = msgs[-1] if msgs else ""
+        turns.append((role, text))
+    prompt = _cli_prompt(turns)
     if not prompt:
         return "", "empty prompt for cli backend"
     cb = _cli_module()
@@ -737,7 +769,7 @@ async def chat_completions(request: Request):
     # built in). On success we skip the direct-HTTP route entirely.
     # Route A blocks for minutes (session polling); never run it on the
     # event loop or /health and every other request freezes behind it.
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     cli_text, cli_why = await loop.run_in_executor(
         None, lambda: _cli_ask_all(model, payload.get("messages") or []))
     if cli_text:
