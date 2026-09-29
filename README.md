@@ -263,22 +263,51 @@ fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而�
 白名单，路径穿越会被挡掉。写操作只有 `/api/action/checkin` 与 `/api/action/restart/<name>`，
 桥名不在白名单里直接返回 unknown bridge。
 
-## 免费模型标注（官网信息 + 时段）
+## 模型标注：免费状态 + 是否走客户端积分
 
-`free-windows.json` 按各服务官网/官方定价页逐条标注每个模型的免费状态与时段
-（2026-09-26 抓取）；`tools/free_models.py` 把它与 ocx live、Codex catalog 合并输出。
-改标注只改 JSON，不用动代码。
+`free-windows.json` 按各服务官网/官方定价页逐条标注每个模型的**免费状态与时段**，
+以及**这次调用走不走客户端积分**（2026-09-29 补第二维）；`tools/free_models.py` 把它与
+ocx live、Codex catalog 合并输出。改标注只改 JSON，不用动代码。
 
-    python3 tools/free_models.py                 # 全量标注表（188 个模型）
-    python3 tools/free_models.py --free-only     # 只看免费类
+「走客户端积分」的口径（`legend.credits`）：
+
+| credits | 含义 | 会不会把账号额度用光 |
+|----------|------|----------------------|
+| `client` | 消耗被反代理客户端账号内的点数/tokens/次数 | **会**，可扣完 |
+| `limit` | 官方不计点，只占账号免费限额（限速/限次） | 不会，只会被限流 |
+| `own` | 独立 API Key 余额 / 官方按量付费 / 原生订阅 | 不会，与反代理账号无关 |
+| `unknown` | 官网未公示或当前不可达 | 无法核实 |
+
+    python3 tools/free_models.py                          # 全量标注表（两维徽标 + 时段）
+    python3 tools/free_models.py --credits client         # 只看会扣客户端积分的
+    python3 tools/free_models.py --credits own            # 只看独立 Key / 原生订阅
+    python3 tools/free_models.py --free-only              # 只看免费类
     python3 tools/free_models.py --provider qoder
-    python3 tools/free_models.py --missing       # 选择器缺口报告
-    python3 tools/free_models.py --json          # 机器可读（状态面板同源）
-    python3 tools/free_models.py --check-sources # 官网来源可达性
+    python3 tools/free_models.py --missing                # 选择器缺口报告
+    python3 tools/free_models.py --json                   # 机器可读（状态面板同源）
+    python3 tools/free_models.py --check-sources          # 官网来源可达性
 
-状态面板（8796）新增「免费模型标注」区块：徽标 + 时段 + 是否在选择器，与 CLI 同源；
-并提供「隐藏不可用」开关——对应桥探测即停（probe.ok=false）或核验 verdict≠REAL 的
-provider 默认隐藏，并在 meta 行标注「已隐藏 N 个不可用模型 provider(verdict)...」，可取消恢复。
+状态面板（8796）的「模型标注」区块：免费徽标 + **客户端积分徽标** + 时段 + 是否在选择器，
+与 CLI 同源；积分单元格 hover 显示该行积分口径来源（如「codely 月度免费点数优先扣」）。
+两个开关：「隐藏不可用」（探测即停或 verdict≠REAL 的 provider）、
+「只看走客户端积分」（只列 `client` 行，方便排查额度耗尽）。
+
+### 哪些走客户端积分（2026-09-29 按官网/桥代码核实）
+
+| 走客户端积分（`client`） | 积分形态 |
+|--------------------------|----------|
+| workbuddy / workbuddy-gpt | 每模型 credits 倍率（`auto` 为动态倍率），仪表盘可见余额与折扣倍率 |
+| codely（团结AI） | 月度免费点数 + 充值点数，扣减时优先扣免费点数 |
+| lingxi（灵犀） | 「灵力」额度，7 天滚动 + 5 小时 + 30 天窗口 |
+| xhx（商汤小浣熊） | 每日登录积分（available / daily / reward points） |
+| zcode | Start Plan 3,000,000 tokens/天 + Weekend Build 300,000,000 tokens 一次性 |
+
+| 不走客户端积分 | 原因 |
+|----------------|------|
+| trae / qoder / cline（free 家族）/ gemini / antigravity | `limit`：官方不计点，只限速限次（Trae 免费档「限量使用」、Gemini 60 次/分 1000 次/天、Cline free 档 input/output 计费 0） |
+| tokendance / stepfun | `own`：独立 API Key 按量计费余额，与反代理客户端账号无关 |
+| openai（gpt-* 原生） | `own`：ChatGPT 原生订阅，按设计不进反代理 catalog |
+| catpaw | `unknown`：需美团公司 VPN，当前不可达，无法核实 |
 
 ### 官网标注结果（2026-09-26 抓取）
 
@@ -537,7 +566,7 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 - tools/status_ui.py [--port N] [--no-browser] [--once]：面板实现（stdlib 单文件；/api/status、/api/logs/<name>、/api/action/*（含 verify-real-calls））
 - tools/ocx-catalog-guard.sh run|install-timer|uninstall-timer|status：反代理模型 catalog 看门狗（默认 300s）
 - tools/catalog-filter.sh run|install-timer|uninstall-timer|status：按 verify.real 隐藏不可用桥模型＋按 slug 清理噪声行（默认 300s，与 ocx-catalog-guard 互补）
-- tools/free_models.py [--free-only] [--provider P] [--missing] [--json] [--check-sources]：免费模型标注（数据在仓库根 free-windows.json，状态面板同源）
+- tools/free_models.py [--free-only] [--credits client|limit|own|unknown] [--provider P] [--missing] [--json] [--check-sources]：模型标注：免费状态 + 是否走客户端积分（数据在仓库根 free-windows.json，状态面板同源）
 - tools/short_aliases.py [--dry-run]：选择器短名（ocx 别名，路由不受影响）
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
 - opencodex/setup-providers.sh：重新注册 11 桥
@@ -622,7 +651,7 @@ Plan API 后不受影响。
                               _common.py 是 8 座 FastAPI 桥共享的外壳（鉴权/SSE/uvicorn 入口）
                               workbuddy/ 是两座 WorkBuddy 桥共享的实现（cn/gpt 只留入口）
         opencodex/            setup-providers.sh（ocx provider 注册）
-        free-windows.json     免费模型标注数据（官网信息 + 时段，改这里不改代码）
+        free-windows.json     模型标注数据（免费状态 + 时段 + 是否走客户端积分，改这里不改代码）
         tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / verify_real_calls.py / fleet_split.py / free_models.py / short_aliases.py / catalog_filter.py / catalog-filter.sh（test_*.py 由 CI 跑 pytest）
         docs/                 各桥 runbook + stepfun/tokundance 官方 API runbook + 全量实测报告
       runtime/                运行根（install.sh --home 的默认值）

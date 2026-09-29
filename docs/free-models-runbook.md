@@ -28,12 +28,29 @@ HTML 提取 script/link 的 .js 资产并下载，按关键词（免费/限免/�
 
 ## 工具与数据
 
-- free-windows.json（仓库根）：providers（vendor/site/free/window/facts/sources/verified）
-  + models（逐模型覆盖）+ gaps（选择器缺口原因）+ legend。改标注只改这个文件。
+- free-windows.json（仓库根）：providers（vendor/site/free/window/credits/credits_note/facts/sources/verified）
+  + models（逐模型覆盖，同样可带 credits/credits_note）+ gaps（选择器缺口原因）
+  + legend（free 口径 + credits 口径）。改标注只改这个文件。
 - tools/free_models.py：合并 free-windows.json + ocx models live --json +
-  ~/.codex/cc-switch-model-catalog.json（slug）输出表格/JSON；--missing 输出缺口报告。
-- tools/status_ui.py：新增「免费模型标注」区块（30s 缓存，subprocess 调
-  free_models.py --json，失败不影响面板其他部分）。
+  ~/.codex/cc-switch-model-catalog.json（slug）输出表格/JSON；--missing 输出缺口报告；
+  --credits <kind> 只看某一种积分口径。
+- tools/status_ui.py：「模型标注」区块（30s 缓存，subprocess 调
+  free_models.py --json，失败不影响面板其他部分），多一列「客户端积分」，
+  单元格 title 显示 credits_note，并有「只看走客户端积分」开关。
+
+## 客户端积分口径（2026-09-29 新增）
+
+一列 `credits`，回答「这次调用会不会消耗被反代理客户端账号里的额度」：
+
+| 值 | 含义 | 证据 |
+|----|------|------|
+| `client` | 走客户端积分，可扣完 | bridges/workbuddy/core.py 读 `credits`/`discountedCredits`；tools/checkin.py 读 xhx `available_points`/`daily_points`；codely/lingxi/zcode 桥与官网额度说明 |
+| `limit` | 不走积分，只占账号免费限额 | Trae 官网「限量使用」；Gemini CLI 官方文档 60 次/分、1000 次/天；Cline free 家族 input/output 计费 0 |
+| `own` | 不走客户端积分 | tokendance / stepfun 独立 API Key 按量；openai 为 ChatGPT 原生订阅 |
+| `unknown` | 无法核实 | catpaw 需美团 VPN |
+
+排查额度耗尽：`python3 tools/free_models.py --credits client`；
+要区分「免费但限流」和「按量扣费」：对比 `--credits limit` 与 `--credits own`。
 
 当前规模：live 173 + catalog 14（qoder，代理未重载）+ 1 原生 = 188 行；94 个在选择器。
 分类：FREE 22（trae）/ LIMITED 26（workbuddy 系）/ QUOTA 10（codely 8 + lingxi 2）/
@@ -68,7 +85,8 @@ TRIAL 14（qoder）/ SUB 12（gemini 4 + 原生 8）/ PAID 95（tokendance）/ N
 
 ## 复现命令
 
-    python3 tools/free_models.py                 # 全量表
+    python3 tools/free_models.py                 # 全量表（免费 + 客户端积分两维）
+    python3 tools/free_models.py --credits client # 只看走客户端积分的模型
     python3 tools/free_models.py --missing       # 缺口报告
     python3 tools/free_models.py --json          # 面板同源数据
     python3 tools/free_models.py --check-sources # 官网可达性

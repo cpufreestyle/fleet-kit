@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-09-26",
+  "updated": "2026-09-29",
   "note": "免费标注依据各服务官网/官方定价页于 2026-09-26 实际抓取整理。verified=false 表示官网未明示或页面抓不到。所有时段均为北京时间。修改本文件即可更新标注，无需改代码。",
   "legend": {
     "free": "长期免费档（限量使用）",
@@ -10,7 +10,13 @@
     "subscription": "订阅套餐内含",
     "paid": "按量付费",
     "unknown": "官网未明示",
-    "blocked": "当前不可达（网络/登录条件限制）"
+    "blocked": "当前不可达（网络/登录条件限制）",
+    "credits": {
+      "client": "走客户端积分：消耗被反代理客户端账号内的点数/tokens/次数，可扣完",
+      "limit": "不走积分，只占账号免费限额：官方不计点，仅限速/限次",
+      "own": "不走客户端积分：独立 API Key 余额、官方按量付费或原生订阅",
+      "unknown": "官网未公示或当前不可达，无法核实"
+    }
   },
   "providers": {
     "workbuddy": {
@@ -22,7 +28,9 @@
       "sources": [
         "https://www.codebuddy.cn/pricing"
       ],
-      "verified": true
+      "verified": true,
+      "credits": "client",
+      "credits_note": "客户端 credits 计量：每模型有 credits 倍率，仪表盘可见余额/折扣倍率（bridges/workbuddy/core.py 读 credits / discountedCredits）"
     },
     "workbuddy-gpt": {
       "vendor": "腾讯 WorkBuddy（海外版）",
@@ -33,7 +41,9 @@
       "sources": [
         "https://www.workbuddy.ai/pricing"
       ],
-      "verified": true
+      "verified": true,
+      "credits": "client",
+      "credits_note": "海外版账号池 credits 计量：Hy4 preview 限免窗口 2026-09-23 已结束，之后按账号 credits/套餐额度扣减"
     },
     "trae": {
       "vendor": "字节跳动 TRAE",
@@ -45,7 +55,9 @@
         "https://www.trae.cn/pricing",
         "https://www.trae.ai/pricing"
       ],
-      "verified": true
+      "verified": true,
+      "credits": "limit",
+      "credits_note": "免费档不计点：官网免费计划「限量使用」（Auto 模式、每月 5000 次补全、2 个并发云任务），无积分扣减；Pro 套餐内才按 credits 计量"
     },
     "codely": {
       "vendor": "团结AI Tuanjie AI（游戏开发助手）",
@@ -57,7 +69,9 @@
         "https://codely.tuanjie.cn/",
         "https://codely-docs.tuanjie.cn/subscription-pricing-details"
       ],
-      "verified": true
+      "verified": true,
+      "credits": "client",
+      "credits_note": "客户端积分计量：账户有「月度免费点数」+「充值点数」两类余额，扣减时优先扣月度免费点数"
     },
     "lingxi": {
       "vendor": "灵犀AI LingXi",
@@ -68,7 +82,9 @@
       "sources": [
         "https://lingxi.regaing.com/"
       ],
-      "verified": true
+      "verified": true,
+      "credits": "client",
+      "credits_note": "客户端额度计量：登录后送的「灵力」额度，按 7 天滚动 + 5 小时 + 30 天窗口扣减"
     },
     "qoder": {
       "vendor": "阿里巴巴 Qoder",
@@ -80,7 +96,9 @@
         "https://qoder.com/pricing",
         "https://qoder.com/"
       ],
-      "verified": true
+      "verified": true,
+      "credits": "limit",
+      "credits_note": "新用户 2 周 Pro 试用期内不计点；到期自动降级 Free(Community) 限量档"
     },
     "cline": {
       "vendor": "Cline（cline.bot 免费档，经本机 hub daemon 反代理）",
@@ -91,7 +109,9 @@
       "sources": [
         "https://cline.bot/"
       ],
-      "verified": true
+      "verified": true,
+      "credits": "limit",
+      "credits_note": "free 档 input/output 计费均为 0，走 Cline 账号 entitlement（不计点，仅限流）；非 free 家族按 credits 计费"
     },
     "xhx": {
       "vendor": "商汤科技 小浣熊 RaccoonWork",
@@ -102,7 +122,9 @@
       "sources": [
         "https://www.xiaohuanxiong.com/"
       ],
-      "verified": false
+      "verified": false,
+      "credits": "client",
+      "credits_note": "客户端积分计量：每日登录发放积分，余额接口 available_points / daily_points / reward_points（tools/checkin.py）"
     },
     "gemini": {
       "vendor": "Google Gemini Code Assist（个人消费者档）",
@@ -115,7 +137,9 @@
         "https://google-gemini.github.io/gemini-cli/",
         "https://docs.cloud.google.com/gemini/docs/codeassist/overview"
       ],
-      "verified": true
+      "verified": true,
+      "credits": "limit",
+      "credits_note": "不走积分：个人 Google 账号自带免费档（官方 Gemini CLI 文档 60 次/分、1000 次/天），Pro/Ultra 只抬高限额"
     },
     "tokendance": {
       "vendor": "TokenDance 词元跳动",
@@ -127,7 +151,9 @@
         "https://tokendance.space/",
         "https://tokendance.space/models"
       ],
-      "verified": true
+      "verified": true,
+      "credits": "own",
+      "credits_note": "不走客户端积分：tokendance.space 独立 API Key 按量计费余额"
     },
     "catpaw": {
       "vendor": "美团 CatPawAI",
@@ -138,7 +164,9 @@
       "sources": [
         "https://catpaw.sankuai.com/"
       ],
-      "verified": false
+      "verified": false,
+      "credits": "unknown",
+      "credits_note": "需美团公司 VPN（sankuai 内网域），当前不可达，无法核实积分规则"
     },
     "antigravity": {
       "vendor": "Google Antigravity（Google 账号登录）",
@@ -150,7 +178,9 @@
         "https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals",
         "https://antigravity.google/"
       ],
-      "verified": true
+      "verified": true,
+      "credits": "limit",
+      "credits_note": "不走积分：Google 账号登录即用、带速率限制（官方未公示具体数值）"
     },
     "openai": {
       "vendor": "OpenAI / ChatGPT（ocx 原生）",
@@ -161,7 +191,9 @@
       "sources": [
         "https://chatgpt.com/"
       ],
-      "verified": false
+      "verified": false,
+      "credits": "own",
+      "credits_note": "不走反代理客户端积分：Codex/ChatGPT 原生订阅账号"
     },
     "zcode": {
       "vendor": "智谱 Z.AI Coding（ZCode 客户端 Start Plan / Weekend Build）",
@@ -173,7 +205,22 @@
         "https://zcode.z.ai/",
         "https://open.bigmodel.cn/"
       ],
-      "verified": true
+      "verified": true,
+      "credits": "client",
+      "credits_note": "客户端 entitlement 计量：Start Plan 3,000,000 tokens/天 + Weekend Build 300,000,000 tokens 一次性"
+    },
+    "stepfun": {
+      "vendor": "阶跃星辰 StepFun",
+      "site": "https://platform.stepfun.com",
+      "free": "paid",
+      "window": "按量付费，官方无免费档；step-5-preview 等模型按 token 计费",
+      "facts": "StepFun 官方开放平台 API，按 token 计费；ocx 内 stepfun provider 为官方 API Key，非反代理。",
+      "sources": [
+        "https://platform.stepfun.com"
+      ],
+      "verified": false,
+      "credits": "own",
+      "credits_note": "不走客户端积分：StepFun 官方 API Key 按量付费（stepfun plan api）"
     }
   },
   "models": {
@@ -181,13 +228,17 @@
       "free": "free-window",
       "window": "限免两周：2026-09-10 00:00 → 2026-09-23 23:59:59（国内版；海外版 2026-08-28 起）— 已结束",
       "source": "https://www.codebuddy.cn/pricing",
-      "verified": true
+      "verified": true,
+      "credits": "client",
+      "credits_note": "限免窗口 2026-09-23 已结束，现在按 hy4 倍率扣 credits"
     },
     "workbuddy-gpt/hy4-preview": {
       "free": "free-window",
       "window": "限免两周：2026-08-28 00:00 → 2026-09-23 23:59:59（海外版）— 已结束",
       "source": "https://www.workbuddy.ai/pricing",
-      "verified": true
+      "verified": true,
+      "credits": "client",
+      "credits_note": "海外版限免窗口 2026-09-23 已结束，现在按 credits 扣减"
     },
     "workbuddy-gpt/deepseek-v4.1-flash": {
       "free": "paid",
@@ -199,7 +250,9 @@
       "free": "paid",
       "window": "按量计费；⚠️ 当前不可用：ocx 内 tokendance API key 失效（401 API 密钥不存在），需重建 key",
       "source": "https://tokendance.space/",
-      "verified": true
+      "verified": true,
+      "credits": "own",
+      "credits_note": "tokendance 独立 API Key 按量计费"
     },
     "tokendance/deepseek-v4-flash": {
       "free": "paid",
@@ -312,12 +365,66 @@
     "zcode/GLM-5.3-Flash": {
       "free": "free",
       "window": "Weekend Build 300M tokens 一次性（2026-09-27 到期）；Start Plan 日常 5M/天",
-      "verified": true
+      "verified": true,
+      "credits": "client",
+      "credits_note": "Weekend Build 300,000,000 tokens 一次性（2026-09-27 到期）+ Start Plan 5,000,000/天"
     },
     "zcode/GLM-5.3": {
       "free": "free",
       "window": "Start Plan 3M tokens/天；Weekend Build 未授权（capabilities 仅 glm-5.3-flash）",
-      "verified": true
+      "verified": true,
+      "credits": "client",
+      "credits_note": "Start Plan 3,000,000 tokens/天，entitlement quota 扣减"
+    },
+    "trae/trae-step-5-preview": {
+      "free": "unknown",
+      "credits": "limit",
+      "credits_note": "免费档不计点（官网「限量使用」）；Pro 订阅内此模型按 credits 计量"
+    },
+    "trae/trae-glm-5.3": {
+      "free": "unknown",
+      "credits": "limit",
+      "credits_note": "免费档不计点（官网「限量使用」）"
+    },
+    "trae/trae-kimi-k3": {
+      "free": "unknown",
+      "credits": "limit",
+      "credits_note": "免费档不计点（官网「限量使用」）"
+    },
+    "trae/trae-DeepSeek-V4-Pro": {
+      "free": "unknown",
+      "credits": "limit",
+      "credits_note": "免费档不计点（官网「限量使用」）"
+    },
+    "trae/trae-minimax-m3": {
+      "free": "unknown",
+      "credits": "limit",
+      "credits_note": "免费档不计点（官网「限量使用」）"
+    },
+    "workbuddy/auto": {
+      "free": "unknown",
+      "credits": "client",
+      "credits_note": "credits_dynamic：auto 模型不固定倍率，按实际路由模型扣 credits"
+    },
+    "cline/stealth-pixel-canary": {
+      "free": "unknown",
+      "credits": "limit",
+      "credits_note": "Pixel Canary 属 Cline free 档，input/output 计费 0，走账号 entitlement"
+    },
+    "cline/z-ai-glm-5.3-flash": {
+      "free": "unknown",
+      "credits": "limit",
+      "credits_note": "Cline free 档 0 计费，走账号 entitlement"
+    },
+    "stepfun/step-5-preview": {
+      "free": "unknown",
+      "credits": "own",
+      "credits_note": "StepFun 官方 API Key 按量付费，与反代理客户端积分无关"
+    },
+    "openai/gpt-6-sol": {
+      "free": "unknown",
+      "credits": "own",
+      "credits_note": "ChatGPT 原生订阅，非反代理客户端"
     }
   },
   "gaps": [

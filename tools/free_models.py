@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
-"""free_models.py - annotate every fleet model with free-tier status and time windows.
+"""free_models.py - annotate every fleet model with free-tier status, time windows,
+and whether the call bills the reverse-proxied client's own credits.
 
 Data source: free-windows.json (repo root) - edit that file to change annotations.
 Live models:  ocx models live --json   (falls back to catalog-only when ocx is absent)
 Picker state: ~/.codex/cc-switch-model-catalog.json (slug list)
+
+credits kinds (legend.credits):
+  client  走客户端积分：消耗被反代理客户端账号内的点数/tokens/次数，可扣完
+  limit   不走积分，只占账号免费限额：官方不计点，仅限速/限次
+  own     不走客户端积分：独立 API Key 余额、官方按量付费或原生订阅
+  unknown 官网未公示或当前不可达
 
 Usage:
   free_models.py                  human table
   free_models.py --json           machine-readable snapshot
   free_models.py --free-only      only free/free-window/quota/trial rows
   free_models.py --provider P     filter one provider
+  free_models.py --credits K      only client / limit / own / unknown rows
   free_models.py --missing        picker gap report only
   free_models.py --check-sources  probe every official source URL for reachability
 """
@@ -28,6 +36,9 @@ FREE_KINDS = ("free", "free-window", "quota", "trial")
 BADGE = {"free": "FREE", "free-window": "LIMITED", "quota": "QUOTA",
          "trial": "TRIAL", "subscription": "SUB", "paid": "PAID",
          "unknown": "N/A", "blocked": "DOWN"}
+CREDITS_KINDS = ("client", "limit", "own", "unknown")
+CREDITS_BADGE = {"client": "客户端积分", "limit": "仅限额", "own": "独立Key",
+                 "unknown": "N/A"}
 
 
 def load_db():
@@ -119,8 +130,12 @@ def annotate(db, provider, model):
     window = (override or {}).get("window") or pdef.get("window") or ""
     source = (override or {}).get("source") or pdef.get("site") or ""
     verified = (override or {}).get("verified", pdef.get("verified", False))
+    credits = (override or {}).get("credits") or pdef.get("credits") or "unknown"
+    credits_note = (override or {}).get("credits_note") or pdef.get("credits_note") or ""
     return {"model": key, "provider": provider, "model_id": model,
             "free": free, "badge": BADGE.get(free, free),
+            "credits": credits, "credits_badge": CREDITS_BADGE.get(credits, credits),
+            "credits_note": credits_note,
             "window": window, "source": source, "verified": bool(verified)}
 
 
@@ -177,11 +192,15 @@ def build():
     counts = {}
     for row in models:
         counts[row["free"]] = counts.get(row["free"], 0) + 1
+    credits_counts = {}
+    for row in models:
+        credits_counts[row["credits"]] = credits_counts.get(row["credits"], 0) + 1
     return {"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "db_updated": db.get("updated", "?"),
             "live_source": source_kind,
             "catalog_total": len(slugs),
             "counts": counts,
+            "credits_counts": credits_counts,
             "live_by_provider": live_by_provider,
             "picker_by_provider": picker_by_provider,
             "providers": db.get("providers", {}),
@@ -190,21 +209,39 @@ def build():
             "legend": db.get("legend", {})}
 
 
-def print_table(snap, free_only=False, provider=None):
+def db_legend_text(snap, kind):
+    """One-line meaning of a credits kind, taken from free-windows.json legend."""
+    legend = snap.get("legend", {}).get("credits", {})
+    if isinstance(legend, dict):
+        return legend.get(kind, "")
+    for item in legend:
+        if item.get("key") == kind:
+            return item.get("text", "")
+    return ""
+
+
+def print_table(snap, free_only=False, provider=None, credits=None):
     rows = snap["models"]
     if free_only:
         rows = [r for r in rows if r["free"] in FREE_KINDS]
     if provider:
         rows = [r for r in rows if r["provider"] == provider]
-    print("free-model annotations (live source: %s, db updated %s, catalog %d entries)"
+    if credits:
+        rows = [r for r in rows if r["credits"] == credits]
+    print("fleet model annotations (live source: %s, db updated %s, catalog %d entries)"
           % (snap["live_source"], snap["db_updated"], snap["catalog_total"]))
-    print("-" * 110)
+    print("credits: %s" % " | ".join(
+        "%s=%s" % (CREDITS_BADGE.get(k, k), db_legend_text(snap, k))
+        for k in sorted(snap.get("credits_counts", {}))))
+    print("-" * 132)
     for row in rows:
         name = row["picker_name"] if row["in_picker"] else ("%s   [NOT in picker]" % row["model"])
-        print("%-26s %-8s %s" % (name, row["badge"], row["window"]))
-    print("-" * 110)
-    print("counts: " + "  ".join("%s=%d" % (BADGE.get(k, k), v)
-                                for k, v in sorted(snap["counts"].items())))
+        print("%-30s %-9s %-11s %s" % (name, row["badge"], row["credits_badge"], row["window"]))
+    print("-" * 132)
+    print("free   counts: " + "  ".join("%s=%d" % (BADGE.get(k, k), v)
+                                       for k, v in sorted(snap["counts"].items())))
+    print("credit counts: " + "  ".join("%s=%d" % (CREDITS_BADGE.get(k, k), v)
+                                        for k, v in sorted(snap.get("credits_counts", {}).items())))
     print("live/in-picker: " + "  ".join(
         "%s %d/%d" % (p, snap["live_by_provider"].get(p, 0),
                       snap["picker_by_provider"].get(p, 0))
@@ -247,6 +284,8 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("--free-only", action="store_true", help="only free rows")
     parser.add_argument("--provider", help="filter one provider")
+    parser.add_argument("--credits", choices=CREDITS_KINDS,
+                        help="only rows whose call bills this kind of quota")
     parser.add_argument("--missing", action="store_true", help="picker gap report")
     parser.add_argument("--check-sources", action="store_true", help="probe source URLs")
     args = parser.parse_args(argv)
@@ -260,7 +299,8 @@ def main(argv=None):
     if args.check_sources:
         check_sources(snap)
         return 0
-    print_table(snap, free_only=args.free_only, provider=args.provider)
+    print_table(snap, free_only=args.free_only, provider=args.provider,
+                credits=args.credits)
     return 0
 
 
