@@ -54,18 +54,35 @@ def test_unknown_provider_falls_back_instead_of_raising():
     assert row["credits_badge"] == "N/A"
 
 
+def db_rows():
+    """Annotate the rows the database itself declares.
+
+    build() shells out to "ocx models live" and then reads
+    ~/.codex/cc-switch-model-catalog.json, so on a checkout with neither --
+    CI, a fresh clone -- snap["models"] is empty and every credits assertion
+    lands on an empty set instead of on the data. These questions are about
+    the annotation, not the picker, so read the rows straight from the database.
+    """
+    rows = [free_models.annotate(DB, *key.split("/", 1))
+            for key in DB["models"]]
+    rows += [free_models.annotate(DB, name, "__unknown-model__")
+             for name in DB["providers"]]
+    return rows
+
+
 def test_credits_counts_partition_every_row():
-    snap = free_models.build()
-    counted = sum(snap["credits_counts"].values())
-    assert counted == len(snap["models"])
-    assert set(snap["credits_counts"]) <= set(free_models.CREDITS_KINDS)
+    rows = db_rows()
+    counted = {}
+    for row in rows:
+        counted[row["credits"]] = counted.get(row["credits"], 0) + 1
+    assert sum(counted.values()) == len(rows)
+    assert set(counted) <= set(free_models.CREDITS_KINDS)
 
 
 def test_client_credits_are_the_billable_ones():
     """client rows are the ones that can exhaust an account; own rows cannot."""
-    snap = free_models.build()
     by_kind = {}
-    for row in snap["models"]:
+    for row in db_rows():
         by_kind.setdefault(row["credits"], set()).add(row["provider"])
     assert "trae" in by_kind.get("limit", set())
     assert "tokendance" in by_kind.get("own", set())
@@ -74,7 +91,6 @@ def test_client_credits_are_the_billable_ones():
 
 
 def test_credits_filter_selects_only_requested_kind():
-    snap = free_models.build()
-    rows = [r for r in snap["models"] if r["credits"] == "client"]
+    rows = [r for r in db_rows() if r["credits"] == "client"]
     assert rows, "expected at least one client-credits row"
     assert {r["credits"] for r in rows} == {"client"}
