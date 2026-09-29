@@ -126,3 +126,5 @@ monthly_points / reward_points / topup_points`）一个都没动。
 - 核验侧：verdict 记 `CHANNEL_BLOCKED`（状态面板红色），不会被算成"弱模型"的 UNCLEAR
 
 新增签名往 `MARKERS` 里加，并补 `tools/test_upstream_errors.py` 的用例。
+
+- 流式 500 / 渠道校验（11128）死循环 / Trae 登录态找不到：见 [2026-09-29-stream-500-and-channel-retry.md](./2026-09-29-stream-500-and-channel-retry.md)

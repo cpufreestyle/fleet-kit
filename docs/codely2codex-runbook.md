@@ -101,3 +101,5 @@ token in cache or LiteLLM_VerificationTokenTable`。
 - 账号 web API 正常：/api/teams → <你的团队> has_key:true；/api/user/usage/summary → 剩余 <你的点数>。
 - 官方 CLI（@unity-china/codely-cli bundle/gemini.js）走同网关同签名（BASE key 406f00f7…）同样被挡 → 与桥无关，纯账号 onboarding 门禁。
 - 修复路径：用户登录 codely.tuanjie.cn 网页端完成首次激活。
+
+- 流式 500 / 渠道校验（11128）死循环 / Trae 登录态找不到：见 [2026-09-29-stream-500-and-channel-retry.md](./2026-09-29-stream-500-and-channel-retry.md)

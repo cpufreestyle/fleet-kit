@@ -61,3 +61,5 @@ curl -s http://127.0.0.1:8792/health                             # 健康检查
 ~/lingxi2codex/login_helper.py                         # 重新登录（浏览器）
 codex exec -c model_provider=lingxi -m "lingxi/lingxi-deepseek-flash" "..."   # 官方 CLI
 ```
+
+- 流式 500 / 渠道校验（11128）死循环 / Trae 登录态找不到：见 [2026-09-29-stream-500-and-channel-retry.md](./2026-09-29-stream-500-and-channel-retry.md)
