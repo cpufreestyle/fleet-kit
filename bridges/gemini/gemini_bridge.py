@@ -2,7 +2,7 @@
 # gemini2codex: Google One / Gemini Pro -> OpenAI-compatible bridge (port 8794)
 # Channel A: cloudcode-pa.googleapis.com v1internal (OAuth consumer client, auto-refresh)
 # Channel B: gemini.google.com web StreamGenerate (cookie fallback)
-import json, os, re, sys, time, uuid
+import json, os, re, socket, sys, threading, time, uuid
 import urllib.request, urllib.parse, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -21,6 +21,99 @@ ST = {'at': None, 'exp': 0.0, 'project': None, 'tier': None, 'client_ok': None, 
 
 class UpstreamError(Exception):
     pass
+
+# 单次 chat 的总时限。原先 call_a(180s) 失败后再 call_b(180s)，最坏要 6 分钟
+# 才想起来回 502；客户端（Codex / 探测脚本）远早于此就超时断开，于是 502 写回
+# 管道时只剩 BrokenPipeError，健康检查也把这座桥误判成 BRIDGE_DOWN。
+CHAT_BUDGET = float(os.environ.get('GEMINI_CHAT_BUDGET') or '60')
+# 预算烧完之后，兜底通道仍能拿到的最低时限。它只负责别把 0/负数交给
+# urllib，不足以再变成一次完整超时——那正是 180s + 180s 的由来。
+FALLBACK_FLOOR = float(os.environ.get('GEMINI_FALLBACK_FLOOR') or '1.0')
+
+# urlopen() hands the same timeout to every address getaddrinfo() returns, and
+# cloudcode-pa.googleapis.com resolves to 16 of them (8 IPv6 first). Measured
+# 2026-09-29 behind this VPN: a 20s timeout cost 40s on oauth2.googleapis.com's
+# two addresses, so a 60s CHAT_BUDGET could turn into 16 x 60s before IPv4 was
+# even tried. Every connect attempt is therefore capped at the time left on the
+# current request's deadline, which bounds the whole call. The deadline is
+# thread-local: each request runs in its own thread under ThreadingHTTPServer,
+# so concurrent requests cannot clobber one another.
+_tls = threading.local()
+_real_create_connection = socket.create_connection
+
+
+def _arm_deadline(when):
+    _tls.deadline = when
+
+
+def _disarm_deadline():
+    _tls.deadline = None
+
+
+def _budgeted_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                                source_address=None, **kwargs):
+    """socket.create_connection that charges every address to the deadline.
+
+    The stdlib hands each address getaddrinfo() returns the same timeout, so
+    one blocked urlopen() costs N x timeout -- and cloudcode-pa.googleapis.com
+    resolves to 16 of them (8 IPv6 first). Measured 2026-09-29 behind this VPN:
+    a 20s timeout cost 40s on oauth2.googleapis.com's two addresses, which is
+    how a 60s CHAT_BUDGET still produced a 90s request. Walk the addresses here
+    and cap each attempt at the time that is actually left, so the total -- not
+    just the first connect -- stays inside the budget.
+    """
+    deadline = getattr(_tls, 'deadline', None)
+    if deadline is None:
+        return _real_create_connection(address, timeout, source_address, **kwargs)
+    host, port = address[:2]
+    try:
+        infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    except OSError:
+        infos = []
+    requested = None if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
+    last = None
+    for af, socktype, proto, _canon, sa in infos:
+        left = deadline - time.time()
+        if left <= 0:
+            last = OSError('request budget exhausted')
+            break
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            sock.settimeout(left if requested is None else min(requested, left))
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sa)
+            return sock
+        except OSError as exc:
+            if sock is not None:
+                sock.close()
+            last = exc
+    if last is not None:
+        raise last
+    # getaddrinfo itself failed; resolution surfaces immediately, so let the
+    # stdlib raise the familiar error.
+    return _real_create_connection(address, timeout, source_address, **kwargs)
+
+
+socket.create_connection = _budgeted_create_connection
+
+
+def _left(deadline, default):
+    """Wall clock left before the deadline, never below FALLBACK_FLOOR.
+
+    deadline=None means "no budget was handed down", so the caller keeps its
+    historical timeout -- that is what the out-of-request paths (smoke test,
+    health) expect.
+    """
+    if deadline is None:
+        return default
+    return max(FALLBACK_FLOOR, deadline - time.time())
+
+
+def _spent(deadline):
+    return deadline is not None and time.time() >= deadline
+
 
 def http_json(url, payload, headers=None, method='POST', timeout=90):
     hdrs = {'User-Agent': UA, 'Content-Type': 'application/json;charset=UTF-8', 'Accept-Encoding': 'identity'}
@@ -66,16 +159,19 @@ def write_token_file(d):
         json.dump(d, f, indent=2)
     os.replace(tmp, TOKEN_FILE)
 
-def do_refresh():
+def do_refresh(deadline=None):
     d = read_token_file()
     rt = d.get('token', {}).get('refresh_token')
     if not rt:
         raise UpstreamError('no refresh_token in ' + TOKEN_FILE + ' (run: gemini login)')
     last = None
     for cid, csec in CLIENT_CANDIDATES:
+        if _spent(deadline):
+            break
         payload = {'client_id': cid, 'client_secret': csec, 'refresh_token': rt, 'grant_type': 'refresh_token'}
         try:
-            raw, _ = http_json('https://oauth2.googleapis.com/token', payload, timeout=30)
+            raw, _ = http_json('https://oauth2.googleapis.com/token', payload,
+                               timeout=_left(deadline, 30.0))
             j = json.loads(raw)
             ST['at'] = j['access_token']
             ST['exp'] = time.time() + j.get('expires_in', 3600) - 60
@@ -92,7 +188,7 @@ def do_refresh():
             continue
     raise UpstreamError('refresh failed for all clients: ' + str(last))
 
-def get_access():
+def get_access(deadline=None):
     try:
         mt = os.path.getmtime(TOKEN_FILE)
         if mt > ST.get('file_mtime', 0.0):
@@ -111,15 +207,15 @@ def get_access():
         pass
     if ST['at'] and time.time() < ST['exp']:
         return ST['at']
-    return do_refresh()
+    return do_refresh(deadline)
 
-def load_code_assist():
+def load_code_assist(deadline=None):
     if ST['project'] is not None:
         return
-    at = get_access()
+    at = get_access(deadline)
     body = {'metadata': {'ideType': 'GEMINI_CLI', 'pluginType': 'GEMINI', 'platform': 'PLATFORM_UNSPECIFIED'}}
     raw, _ = http_json('https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist', body,
-                       headers={'Authorization': 'Bearer ' + at}, timeout=30)
+                       headers={'Authorization': 'Bearer ' + at}, timeout=_left(deadline, 30.0))
     j = json.loads(raw)
     ST['project'] = j.get('cloudaicompanionProject') or ''
     tier = j.get('currentTier') or {}
@@ -142,9 +238,9 @@ def to_contents(msgs):
         contents = [{'role': 'user', 'parts': [{'text': 'ping'}]}]
     return contents, ({'parts': sys_parts} if sys_parts else None)
 
-def call_a(model, msgs, stream, timeout=180):
-    at = get_access()
-    load_code_assist()
+def call_a(model, msgs, stream, timeout=180, deadline=None):
+    at = get_access(deadline)
+    load_code_assist(deadline)
     contents, sysinst = to_contents(msgs)
     inner = {'contents': contents, 'generationConfig': {'temperature': 0.7}}
     if sysinst:
@@ -154,10 +250,12 @@ def call_a(model, msgs, stream, timeout=180):
         body['project'] = ST['project']
     if stream:
         url = 'https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse'
-        raw, _ = http_json(url, body, headers={'Authorization': 'Bearer ' + at}, timeout=timeout)
+        raw, _ = http_json(url, body, headers={'Authorization': 'Bearer ' + at},
+                           timeout=_left(deadline, timeout))
         return parse_sse(raw)
     raw, _ = http_json('https://cloudcode-pa.googleapis.com/v1internal:generateContent', body,
-                       headers={'Authorization': 'Bearer ' + at}, timeout=timeout)
+                       headers={'Authorization': 'Bearer ' + at},
+                       timeout=_left(deadline, timeout))
     return text_from_gemini(json.loads(raw))
 
 def text_from_gemini(j):
@@ -205,7 +303,12 @@ def call_b(prompt, timeout=180):
     if not ck:
         raise UpstreamError('web cookie missing (run extract_cookies.py)')
     hdrs = {'User-Agent': UA, 'Cookie': ck}
-    raw, _ = http_json('https://gemini.google.com/app', None, headers=hdrs, method='GET', timeout=30)
+    # This page fetch used to carry its own hardcoded 30s timeout, so a blocked
+    # upstream cost 30s on top of whatever channel A had already burned --
+    # more than the whole CHAT_BUDGET. Charge the budget for it as well.
+    page_timeout = min(30.0, max(1.0, timeout))
+    raw, _ = http_json('https://gemini.google.com/app', None, headers=hdrs,
+                       method='GET', timeout=page_timeout)
     html = raw.decode('utf-8', 'ignore')
     m = re.search(r'SNlM0e[\",: ]{2,6}([A-Za-z0-9_-]{6,})', html)
     if not m:
@@ -244,14 +347,22 @@ class H(BaseHTTPRequestHandler):
 
     def _send(self, code, obj, hdrs=None):
         b = obj.encode() if isinstance(obj, str) else obj
-        self.send_response(code)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(b)))
-        if hdrs:
-            for k, v in hdrs.items():
-                self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(b)
+        try:
+            self.send_response(code)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(b)))
+            if hdrs:
+                for k, v in hdrs.items():
+                    self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(b)
+        except (BrokenPipeError, ConnectionResetError):
+            # The caller already timed out and hung up. Nothing to report to
+            # anyone, and a traceback here just buries the real error.
+            # end_headers() writes the header block through wfile as well, so
+            # it has to be inside this guard too -- see the 60KB of
+            # BrokenPipeError tracebacks it produced on 2026-09-29.
+            pass
 
     def do_GET(self):
         if self.path.startswith('/v1/models'):
@@ -276,15 +387,21 @@ class H(BaseHTTPRequestHandler):
         msgs = req.get('messages', [])
         cid = 'chatcmpl-' + uuid.uuid4().hex[:24]
         text, channel, err = '', None, None
+        deadline = time.time() + CHAT_BUDGET
+        _arm_deadline(deadline)
         try:
-            text = call_a(model, msgs, stream)
-            channel = 'code-assist'
-        except Exception as e1:
             try:
-                text = call_b(prompt_from_messages(msgs))
-                channel = 'gemini-web'
-            except Exception as e2:
-                err = {'code_assist': str(e1)[:300], 'web': str(e2)[:300]}
+                text = call_a(model, msgs, stream, deadline=deadline)
+                channel = 'code-assist'
+            except Exception as e1:
+                left = max(FALLBACK_FLOOR, deadline - time.time())
+                try:
+                    text = call_b(prompt_from_messages(msgs), timeout=left)
+                    channel = 'gemini-web'
+                except Exception as e2:
+                    err = {'code_assist': str(e1)[:300], 'web': str(e2)[:300]}
+        finally:
+            _disarm_deadline()
         if err:
             self._send(502, json.dumps({'error': {'message': err, 'type': 'upstream_error'}}))
             return

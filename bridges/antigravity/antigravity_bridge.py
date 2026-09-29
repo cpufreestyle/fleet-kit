@@ -3,7 +3,7 @@
 # Upstream: cloudcode-pa.googleapis.com v1internal (Antigravity OAuth client, auto-refresh)
 # Catalog extracted from /Applications/Antigravity.app/Contents/Resources/bin/language_server
 # Token: ~/.gemini/jetski-standalone-oauth-token (shared with gemini2codex)
-import json, os, sys, time, uuid
+import json, os, socket, sys, threading, time, uuid
 import urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -70,6 +70,79 @@ ST = {'at': None, 'exp': 0.0, 'project': None, 'tier': None, 'client_ok': None,
 
 class UpstreamError(Exception):
     pass
+
+# 单次 chat 的总时限。call_model 会依次试 model_variants × IDE_TYPES，每次都带
+# timeout=180，加上 get_access() 里的多客户端 refresh，最坏能挂好几分钟；客户端
+# 远早于此就断开，只剩 BrokenPipeError，健康检查于是误判 BRIDGE_DOWN。
+CHAT_BUDGET = float(os.environ.get('ANTIGRAVITY_CHAT_BUDGET') or '60')
+# 同上：预算烧完后的最低时限，只为避免把 0/负数当 timeout 交给上游。
+FALLBACK_FLOOR = float(os.environ.get('ANTIGRAVITY_FALLBACK_FLOOR') or '1.0')
+
+# Same rule as the gemini bridge: urlopen() gives every address getaddrinfo()
+# returns the full timeout (cloudcode-pa.googleapis.com resolves to 16), so a
+# blackholed address family turns one 180s timeout into 16 of them. Cap each
+# connect attempt at the time left on this request's deadline. Thread-local so
+# concurrent requests under ThreadingHTTPServer stay independent.
+_tls = threading.local()
+_real_create_connection = socket.create_connection
+
+
+def _arm_deadline(when):
+    _tls.deadline = when
+
+
+def _disarm_deadline():
+    _tls.deadline = None
+
+
+def _budgeted_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                                source_address=None, **kwargs):
+    """socket.create_connection that charges every address to the deadline.
+
+    The stdlib hands each address getaddrinfo() returns the same timeout, so
+    one blocked urlopen() costs N x timeout -- and cloudcode-pa.googleapis.com
+    resolves to 16 of them (8 IPv6 first). Measured 2026-09-29 behind this VPN:
+    a 20s timeout cost 40s on oauth2.googleapis.com's two addresses, which is
+    how a 60s CHAT_BUDGET still produced a 90s request. Walk the addresses here
+    and cap each attempt at the time that is actually left, so the total -- not
+    just the first connect -- stays inside the budget.
+    """
+    deadline = getattr(_tls, 'deadline', None)
+    if deadline is None:
+        return _real_create_connection(address, timeout, source_address, **kwargs)
+    host, port = address[:2]
+    try:
+        infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    except OSError:
+        infos = []
+    requested = None if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
+    last = None
+    for af, socktype, proto, _canon, sa in infos:
+        left = deadline - time.time()
+        if left <= 0:
+            last = OSError('request budget exhausted')
+            break
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            sock.settimeout(left if requested is None else min(requested, left))
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sa)
+            return sock
+        except OSError as exc:
+            if sock is not None:
+                sock.close()
+            last = exc
+    if last is not None:
+        raise last
+    # getaddrinfo itself failed; resolution surfaces immediately, so let the
+    # stdlib raise the familiar error.
+    return _real_create_connection(address, timeout, source_address, **kwargs)
+
+
+socket.create_connection = _budgeted_create_connection
+
 
 def http_json(url, payload, headers=None, method='POST', timeout=90):
     hdrs = {'User-Agent': UA, 'Content-Type': 'application/json;charset=UTF-8', 'Accept-Encoding': 'identity'}
@@ -245,24 +318,49 @@ def call_upstream(model, msgs, stream, timeout=180, ide=None):
         raise UpstreamError('codeassist error: ' + json.dumps(j['error'])[:300])
     return text_from_codeassist(j)
 
-def call_model(model, msgs, stream, timeout=180):
-    # 1) model-id alias fallback (@default form vs bare id)
+def call_model(model, msgs, stream, budget=None):
+    """Try each variant, but never longer than one overall budget.
+
+    Every attempt used to carry timeout=180, so a blocked upstream turned into
+    a multi-minute hang whose only visible trace was a BrokenPipeError when the
+    client gave up. The deadline bounds the whole fallback chain instead.
+    """
+    budget = CHAT_BUDGET if budget is None else budget
+    deadline = time.time() + budget
+    _arm_deadline(deadline)
+
+    def left():
+        return max(FALLBACK_FLOOR, deadline - time.time())
+
+    def spent():
+        return time.time() >= deadline
+
+    try:
+        return _walk_variants(model, msgs, stream, left, spent)
+    finally:
+        _disarm_deadline()
+
+
+def _walk_variants(model, msgs, stream, left, spent):
     first = None
+    # 1) model-id alias fallback (@default form vs bare id)
     for variant in model_variants(model):
         try:
-            out = call_upstream(variant, msgs, stream, timeout)
+            out = call_upstream(variant, msgs, stream, left())
             ST['last_model'] = variant
             ST['last_ok'] = True
             return out
         except UpstreamError as e:
             if first is None:
                 first = e
-            if not looks_like_model_error(e):
+            if not looks_like_model_error(e) or spent():
                 break
     # 2) ide metadata fallback (ANTIGRAVITY -> GEMINI_CLI)
     for ide in IDE_TYPES[1:]:
+        if spent():
+            break
         try:
-            out = call_upstream(model, msgs, stream, timeout, ide=ide)
+            out = call_upstream(model, msgs, stream, left(), ide=ide)
             ST['last_model'] = model
             ST['last_ok'] = True
             return out
@@ -287,14 +385,21 @@ class H(BaseHTTPRequestHandler):
 
     def _send(self, code, obj, hdrs=None):
         b = obj.encode() if isinstance(obj, str) else obj
-        self.send_response(code)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(b)))
-        if hdrs:
-            for k, v in hdrs.items():
-                self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(b)
+        try:
+            self.send_response(code)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(b)))
+            if hdrs:
+                for k, v in hdrs.items():
+                    self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(b)
+        except (BrokenPipeError, ConnectionResetError):
+            # The caller already timed out and hung up; a traceback here only
+            # buries the real upstream error in the log. end_headers() writes
+            # the header block through wfile too, so it belongs inside this
+            # guard -- that is where the BrokenPipeError actually surfaced.
+            pass
 
     def do_GET(self):
         if self.path.startswith('/v1/models'):
