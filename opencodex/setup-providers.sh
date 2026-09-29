@@ -56,11 +56,31 @@ if ! command -v ocx >/dev/null 2>&1; then
   exit 1
 fi
 
+# Mask every --api-key argument. A dry run echoes its plan, and that plan once
+# carried the fleet's real keys into terminal scrollback and screenshots; the
+# plan does not need the secret to prove what it would run.
+mask_args() {
+  local out="" arg skip=0
+  for arg in "$@"; do
+    if [ "$skip" = "1" ]; then
+      out="$out ***"
+      skip=0
+    else
+      case "$arg" in
+        --api-key) out="$out $arg"; skip=1 ;;
+        --api-key=*) out="$out --api-key=***" ;;
+        *) out="$out $arg" ;;
+      esac
+    fi
+  done
+  printf '%s' "${out# }"
+}
+
 run() {
   if [ "$DRY_RUN" = "1" ]; then
-    echo "  [dry-run] $*"
+    echo "  [dry-run] $(mask_args "$@")"
   else
-    "$@" || echo "  [warn] command failed: $*" >&2
+    "$@" || echo "  [warn] command failed: $(mask_args "$@")" >&2
   fi
 }
 
@@ -83,6 +103,24 @@ PROVIDERS=(
 
 echo "opencodex provider setup (port base ${PORT_BASE})"
 run ocx service
+# The launchd service above starts the proxy at boot, but `codex` can still be
+# launched before that job has run; `ocx status` then answers "Restart safety:
+# AT RISK after restart (custom local gateway lifecycle is not managed by
+# opencodex)" together with "Codex autostart shim is not installed". The shim
+# makes the codex binary ensure the proxy itself on launch and closes that gap;
+# it is reversible with `ocx codex-shim uninstall`.
+# The shim wraps the first `codex` on PATH. Desktop Codex puts its own bundled
+# binary on that PATH (.../ChatGPT.app/Contents/Resources/codex); wrapping that
+# would rename a file inside a running app bundle, so refuse and say why. The
+# launchd service above still autostarts the proxy in that case.
+codex_on_path="$(command -v codex || true)"
+case "$codex_on_path" in
+  *".app/Contents/Resources/"*)
+    echo "  (skipping codex-shim: first codex on PATH is ${codex_on_path},"
+    echo "   inside an app bundle; 'ocx service' still autostarts the proxy)"
+    ;;
+  *) run ocx codex-shim install ;;
+esac
 
 # Read one KEY out of any installed service definition, on any platform.
 # macOS keeps launchd plists, Windows/Linux keep the generated wrapper; both are

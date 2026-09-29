@@ -472,6 +472,19 @@ pick_key() {
   echo "$value"
 }
 
+# pick_key mints a placeholder when the operator never set one, which is right
+# for a local bridge key (any string works) but wrong for an upstream API key:
+# a fabricated Qwen credential would 401 on every chat call. Keep it empty.
+pick_optional() {
+  local want="$1" value=""
+  if [ -n "$EXISTING" ]; then
+    value="$(echo "$EXISTING" | grep -m1 "^${want}=" | cut -d= -f2- | tr -d '"' || true)"
+  fi
+  echo "$value"
+}
+
+QWEN_API_KEY="$(pick_optional QWEN_API_KEY)"
+
 CODEBUDDY2OPENAI_KEY="$(pick_key CODEBUDDY2OPENAI_KEY)"
 QODER2CODEX_KEY="$(pick_key QODER2CODEX_KEY)"
 CODELY2CODEX_KEY="$(pick_key CODELY2CODEX_KEY)"
@@ -487,21 +500,21 @@ ZCODE2CODEX_KEY="$(pick_key ZCODE2CODEX_KEY)"
 
 # Antigravity google oauth client pair is never committed to git (push protection
 # rejects it) and every install ships it in its own binary, so read it from there.
-pick_agy_oauth() {
-  local want="$1" value=""
-  if [ -n "$EXISTING" ]; then
-    value="$(echo "$EXISTING" | grep -m1 "^${want}=" | cut -d= -f2- | tr -d '"' || true)"
-  fi
-  echo "$value"
-}
-
-ANTIGRAVITY_OAUTH_CLIENT_ID="$(pick_agy_oauth ANTIGRAVITY_OAUTH_CLIENT_ID)"
-ANTIGRAVITY_OAUTH_CLIENT_SECRET="$(pick_agy_oauth ANTIGRAVITY_OAUTH_CLIENT_SECRET)"
-ANTIGRAVITY_LEGACY_CLIENTS="$(pick_agy_oauth ANTIGRAVITY_LEGACY_CLIENTS)"
+# Same "operator-owned, never minted" rule for the Antigravity google oauth
+# client pair: it is deliberately not committed to git (push protection rejects
+# it), so the only source is the previous fleet.env.
+ANTIGRAVITY_OAUTH_CLIENT_ID="$(pick_optional ANTIGRAVITY_OAUTH_CLIENT_ID)"
+ANTIGRAVITY_OAUTH_CLIENT_SECRET="$(pick_optional ANTIGRAVITY_OAUTH_CLIENT_SECRET)"
+ANTIGRAVITY_LEGACY_CLIENTS="$(pick_optional ANTIGRAVITY_LEGACY_CLIENTS)"
 
 if [ -z "$ANTIGRAVITY_OAUTH_CLIENT_ID" ] || [ -z "$ANTIGRAVITY_OAUTH_CLIENT_SECRET" ]; then
   AGY_BIN="${AGY_BIN:-/Applications/Antigravity.app/Contents/Resources/bin/language_server}"
-  AGY_LINES="$(python3 "${KIT_DIR}/bridges/antigravity/extract_client.py" --verify "$AGY_BIN" 2>/dev/null || true)"
+  # --verify refreshes the jetski token against oauth2.googleapis.com, once per
+  # candidate pair with a 25s timeout each. A dry run is a plan, not a probe:
+  # behind a blocking network it turns a 1s local scan into minutes of hang.
+  AGY_VERIFY="--verify"
+  if [ "$DRY_RUN" = "1" ]; then AGY_VERIFY=""; fi
+  AGY_LINES="$(python3 "${KIT_DIR}/bridges/antigravity/extract_client.py" $AGY_VERIFY "$AGY_BIN" 2>/dev/null || true)"
   if [ -z "$AGY_LINES" ]; then
     AGY_LINES="$(python3 "${KIT_DIR}/bridges/antigravity/extract_client.py" "$AGY_BIN" 2>/dev/null || true)"
   fi
@@ -545,6 +558,10 @@ GEMINI2CODEX_KEY="${GEMINI2CODEX_KEY}"
 CATPAW2CODEX_KEY="${CATPAW2CODEX_KEY}"
 ANTIGRAVITY2CODEX_KEY="${ANTIGRAVITY2CODEX_KEY}"
 QWEN2CODEX_KEY="${QWEN2CODEX_KEY}"
+# Optional: real Qwen Cloud key. Empty means the bridge has no upstream key at
+# all: /v1/models serves the static fallback catalog and every chat call fails
+# locally with qwen_key_missing until a real key is set here.
+QWEN_API_KEY="${QWEN_API_KEY}"
 CLINE2CODEX_KEY="${CLINE2CODEX_KEY}"
 ZCODE2CODEX_KEY="${ZCODE2CODEX_KEY}"
 ANTIGRAVITY_OAUTH_CLIENT_ID="${ANTIGRAVITY_OAUTH_CLIENT_ID}"
@@ -609,6 +626,9 @@ for row in "${BRIDGES[@]}"; do
     if [ -n "$ANTIGRAVITY_LEGACY_CLIENTS" ]; then
       extraenv="${extraenv};ANTIGRAVITY_LEGACY_CLIENTS=${ANTIGRAVITY_LEGACY_CLIENTS}"
     fi
+  fi
+  if [ "$name" = "qwen" ] && [ -n "$QWEN_API_KEY" ]; then
+    extraenv="${extraenv};QWEN_API_KEY=${QWEN_API_KEY}"
   fi
   label="${LABEL_PREFIX}.${labelsuffix}"
   scriptpath="${FLEET_HOME}/bridges/${bridgedir}/${script}"
