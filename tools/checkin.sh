@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # FleetKit auto check-in control (daily points for subscription platforms).
 #
-# Wraps tools/checkin.py (task registry; currently xhx SenseTime Raccoon).
-# The WorkBuddy "Buddy 加油站" check-in is bridge-integrated (account pool,
-# dashboard) and is NOT handled here.
+# Wraps tools/checkin.py (task registry: xhx SenseTime Raccoon, and the
+# WorkBuddy "Buddy 加油站" whose claim runs inside the bridge itself -- this
+# script only confirms that bridge is reachable and keyed).
 #
 # Usage: checkin.sh <command> [--home DIR]
 #   status             show today state and balances (no network)
@@ -97,7 +97,13 @@ case "$CMD" in
     ;;
   install-timer)
     mkdir -p "$LAUNCH_DIR" "$CHECKIN_HOME" "$LOG_DIR"
-    fleet_timer_daily "$CHECKIN_LABEL" "09:00" "$PY" "$CHECKIN_PY" "--daemon"
+    # The timer used to run `python checkin.py --daemon` directly, with the
+    # environment captured at install time: a bridge key rotated in fleet.env
+    # afterwards never reached it and every 09:00 run failed with HTTP 401
+    # "invalid api key" (measured 2026-09-28/29). Run through this wrapper so
+    # every fire re-sources fleet.env and picks up the current key.
+    fleet_timer_daily "$CHECKIN_LABEL" "09:00" \
+      "$(command -v bash || echo /bin/bash)" "$SCRIPT_DIR/checkin.sh" "run-now"
     echo "installed ${CHECKIN_LABEL}: daily 09:00 CST, state ${CHECKIN_HOME}, log ${LOG_DIR}/${CHECKIN_LABEL}.log"
     ;;
   uninstall-timer)

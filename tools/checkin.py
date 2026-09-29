@@ -38,6 +38,16 @@ CST = timezone(timedelta(hours=8))  # 国内平台按北京时间记“今日”
 WORKBUDDY_HEALTH_URL = os.environ.get("WORKBUDDY_HEALTH_URL") or "http://127.0.0.1:8788/health"
 WORKBUDDY_KEY = os.environ.get("CODEBUDDY2OPENAI_KEY", "")
 
+# A loopback health check must never inherit HTTP_PROXY. Measured 2026-09-29:
+# under a shell with HTTP_PROXY set, the bridge call failed with
+# httpx.ConnectError("All connection attempts failed") while the bridge answered
+# fine on 127.0.0.1 -- httpx routed the loopback request through the proxy.
+# httpx mounts with a None transport disable proxy use for those hosts only;
+# every other host still honours the operator's proxy settings.
+# ("all://::1" is not a valid httpx pattern; the bracketed form is.)
+LOOPBACK_MOUNTS = {pattern: None for pattern in (
+    "all://127.0.0.1", "all://localhost", "all://[::1]")}
+
 
 def log(msg: str) -> None:
     HOME.mkdir(parents=True, exist_ok=True)
@@ -153,6 +163,34 @@ async def task_xhx(client: httpx.AsyncClient) -> dict:
 
 # ---------------- WorkBuddy（Buddy 加油站）自动签到健康确认 ----------------
 
+def workbuddy_bridge_key() -> str:
+    """The live CODEBUDDY2OPENAI_KEY: env first, then the service definition.
+
+    The daily timer runs with the environment captured when it was installed,
+    so a key rotated in fleet.env afterwards never reaches it -- measured
+    2026-09-28/29: every 09:00 run failed with HTTP 401 "invalid api key"
+    while manual runs (which source fleet.env) succeeded. The bridge's own
+    service definition always carries the live key, so read it from there when
+    the environment has none.
+    """
+    if WORKBUDDY_KEY:
+        return WORKBUDDY_KEY
+    key = os.environ.get("CODEBUDDY2OPENAI_KEY", "")
+    if key:
+        return key
+    try:
+        # tools/ is sys.path[0] only when run as a script; tests import this
+        # module by file path, so make the sibling helper importable either way.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from fleet_platform import service_keys
+        for label, svc_key in service_keys().items():
+            if "workbuddy2codex" in label:
+                return svc_key
+    except Exception:
+        pass
+    return ""
+
+
 async def task_workbuddy(client: httpx.AsyncClient) -> dict:
     """Confirm the bridge is up; its startup worker owns idempotent auto-claim.
 
@@ -161,7 +199,8 @@ async def task_workbuddy(client: httpx.AsyncClient) -> dict:
     this task records whether that service is reachable instead of duplicating
     credentials or bypassing dashboard authentication.
     """
-    headers = {"Authorization": f"Bearer {WORKBUDDY_KEY}"} if WORKBUDDY_KEY else {}
+    key = workbuddy_bridge_key()
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
     r = await client.get(WORKBUDDY_HEALTH_URL, headers=headers)
     if r.status_code != 200:
         return {"ok": False, "detail": f"bridge health http {r.status_code}: {r.text[:120]}"}
@@ -181,7 +220,7 @@ async def run_tasks(names: list[str]) -> int:
     state = load_state()
     date = today()
     rc = 0
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=60, mounts=LOOPBACK_MOUNTS) as client:
         for name in names:
             task = TASKS[name]
             prev = (state.get(name) or {})
