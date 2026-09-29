@@ -77,6 +77,7 @@ while IFS='|' read -r name labelsuffix offset keyenv; do
   port=$((PORT_BASE + offset))
 
   state="$(fleet_service_status "$label" 2>/dev/null || echo missing)"
+  if [ "$name" = "qwen" ]; then QWEN_PORT="$port"; fi
   case "$state" in
     running) agent=up ;;
     ready)   agent=idle ;;
@@ -96,7 +97,9 @@ while IFS='|' read -r name labelsuffix offset keyenv; do
   else
     count="$(curl -s -m 15 "http://127.0.0.1:$port/v1/models" 2>/dev/null | grep -o '"id"' | wc -l | tr -d ' ' || true)"
   fi
-  kmd5="$(md5short "$key")"
+  # An empty key used to hash the empty string, which prints a plausible
+  # looking fingerprint for a bridge that has no key at all.
+  if [ -n "$key" ]; then kmd5="$(md5short "$key")"; else kmd5="-"; fi
   printf '%-14s %-6s %-7s %-7s %-10s %-16s %s
 ' "$name" "$port" "$agent" "$listen" "models=$count" "$kmd5" "$label"
 done <<'ROWS'
@@ -119,13 +122,32 @@ echo
 if ls "$LOG_DIR"/*.log >/dev/null 2>&1; then
   echo "logs: $LOG_DIR/<bridge>.log (older agents may use <bridge>-bridge.log)"
 fi
-echo "hint: models=0 means the bridge session is missing/expired. Re-finish with:"
-echo "      bash \"$FLEET_HOME/bridges/finish.sh\" <name>"
+echo "hint: models=0 means the bridge cannot list its catalog: the session"
+echo "      expired (re-finish: bash \"$FLEET_HOME/bridges/finish.sh\" <name>)"
+echo "      or the upstream key was refused (qwen: set a real QWEN_API_KEY)."
+# qwen answers /v1/models with a static fallback catalog while it has no
+# upstream key, so its row can look populated while every chat call fails with
+# qwen_key_missing. /health is the only truthful source for that state, so ask
+# the bridge itself instead of guessing from fleet.env.
+if [ -n "${QWEN_PORT:-}" ]; then
+  QHEALTH="$(curl -s -m 10 "http://127.0.0.1:${QWEN_PORT}/health" 2>/dev/null || true)"
+  if printf '%s' "$QHEALTH" | grep -q '"has_api_key":false'; then
+    echo "note: qwen has no QWEN_API_KEY -- its rows are a static fallback;"
+    echo "      chat calls fail with qwen_key_missing until a key is set."
+  fi
+fi
 echo
 
 if command -v ocx >/dev/null 2>&1; then
   echo "opencodex:"
   ocx status 2>&1 | sed 's/^/  /' | head -20
+  # "Restart safety: AT RISK ... custom local gateway" is about the external
+  # model_provider that owns ~/.codex/config.toml -- opencodex preserves that
+  # provider instead of injecting its own, and its local gateway is not
+  # opencodex's to manage. It says nothing about the fleet bridges above:
+  # those are launchd/Task-Scheduler-managed and come back on their own.
+  echo "  note: AT RISK refers to that external gateway's lifecycle, not to"
+  echo "        the fleet bridges; each bridge row above is service-managed."
 else
   echo "opencodex: not installed (npm install -g @bitkyc08/opencodex)"
 fi

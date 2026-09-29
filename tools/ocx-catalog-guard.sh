@@ -80,8 +80,13 @@ log() {
   echo "$(date "+%Y-%m-%d %H:%M:%S") $*" >>"$LOG_FILE" 2>/dev/null || true
 }
 
-# Count the slash-prefixed bridge models in the catalog that model_catalog_json names.
-# Prints a number, or a non-numeric reason when the count cannot be taken.
+# Count the slash-prefixed bridge models in the catalog that model_catalog_json
+# names, plus how many slash rows catalog_filter.py hid on purpose. Prints
+# "<count> <hidden>", or "<reason> 0" when the count cannot be taken.
+#
+# The second number is what keeps this guard from fighting the filter: the
+# filter hides rows for bridges verified not REAL, and healing that would
+# re-add every broken row for the filter to hide again 300s later.
 catalog_bridge_count() {
   python3 - "$CODEX_HOME" <<PY
 import json, os, sys
@@ -98,15 +103,23 @@ try:
 except OSError:
     pass
 if not name:
-    print("no-catalog-declared")
+    print("no-catalog-declared 0")
     sys.exit(0)
 
 path = name if os.path.isabs(name) else os.path.join(home, name)
+hidden = 0
+try:
+    with open(os.path.join(os.path.dirname(path),
+                           ".catalog-filter-hidden.json"),
+              encoding="utf-8") as fh:
+        hidden = int(json.load(fh).get("slash_rows_hidden") or 0)
+except Exception:
+    hidden = 0
 try:
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
 except Exception:
-    print("catalog-unreadable")
+    print("catalog-unreadable 0")
     sys.exit(0)
 
 models = data.get("models") or []
@@ -118,7 +131,8 @@ def slug(m):
     return ""
 
 
-print(len([s for s in (slug(m) for m in models) if "/" in s]))
+print("%d %d" % (len([s for s in (slug(m) for m in models) if "/" in s]),
+                 hidden))
 PY
 }
 
@@ -130,7 +144,14 @@ cmd_run() {
     return 0
   fi
 
-  count="$(catalog_bridge_count || echo unknown)"
+  if ! printf "%s" "$MIN_MODELS" | grep -q "^[0-9][0-9]*$"; then
+    log "skip: --min-models is not a number ($MIN_MODELS)"
+    return 0
+  fi
+
+  counts="$(catalog_bridge_count || true)"
+  count="${counts%% *}"
+  hidden="${counts##* }"
   if ! printf "%s" "$count" | grep -q "^[0-9][0-9]*$"; then
     log "skip: cannot count bridge models ($count)"
     return 0
@@ -140,6 +161,15 @@ cmd_run() {
     if [ "${OCX_GUARD_VERBOSE:-0}" = "1" ]; then
       log "ok: $count bridge models in catalog"
     fi
+    return 0
+  fi
+
+  # Short only because the filter hid verified-not-REAL rows: the catalog is
+  # not stripped, and healing it would re-add rows that fail on pick. Only a
+  # shortfall the filter cannot explain is worth an ocx sync.
+  if [ "$hidden" -gt 0 ] 2>/dev/null \
+     && [ $((count + hidden)) -ge "$MIN_MODELS" ]; then
+    log "ok: $count bridge models + $hidden hidden by the filter = $((count + hidden)); not healing"
     return 0
   fi
 
@@ -180,9 +210,11 @@ cmd_uninstall_timer() {
 
 cmd_status() {
   label="${LABEL_PREFIX}.ocx-catalog-guard"
-  count="$(catalog_bridge_count || echo unknown)"
+  counts="$(catalog_bridge_count || echo "unknown 0")"
+  count="${counts%% *}"
+  hidden="${counts##* }"
   echo "codex home  : ${CODEX_HOME}"
-  echo "bridge models in catalog: ${count} (heal below ${MIN_MODELS})"
+  echo "bridge models in catalog: ${count} (+${hidden} hidden by the filter; heal below ${MIN_MODELS})"
   echo "log         : ${LOG_FILE}"
   # Verify the real schedule, not just that a definition file exists. A launchd
   # plist with only RunAtLoad looks installed but fires once at login and never
