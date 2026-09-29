@@ -28,7 +28,9 @@ jobs:
       # bounding backup growth) are covered here rather than found live.
       - name: tools unit tests
         run: |
-          python3 -m pip install --quiet pytest httpx fastapi
+          # Bridge tests import their bridges; the bridges pull in an ASGI
+          # server and the websocket client (clline_bridge, workbuddy/core).
+          python3 -m pip install --quiet pytest httpx fastapi uvicorn websockets
           python3 -m pytest tools -q
 
       - name: secret and PII leak scan
