@@ -19,6 +19,7 @@ WITH_OCX_GUARD=1
 SMOKE=0
 UPDATE=0
 BRIDGES="workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode"
+BRIDGE_COUNT=$(printf '%s\n' $BRIDGES | wc -l | tr -d ' ')
 
 usage() {
   cat <<USAGE
@@ -88,7 +89,7 @@ port_of() {
 echo "FleetKit deploy"
 echo "  kit   : $KIT_DIR"
 echo "  home  : $FLEET_HOME"
-echo "  ports : $PORT_BASE..$((PORT_BASE + 12))"
+echo "  ports : $PORT_BASE..$((PORT_BASE + 13))"
 
 # [1/6] preflight
 echo "[1/6] preflight"
@@ -173,7 +174,7 @@ done
 # bridges that are up and report the rest so they can be fixed individually.
 unreachable="$pending"
 if [ -z "$unreachable" ]; then
-  echo "all 11 bridges listening on $PORT_BASE..$((PORT_BASE + 11))"
+  echo "all $BRIDGE_COUNT bridges listening on $PORT_BASE..$((PORT_BASE + 13))"
 else
   up=""
   for name in $BRIDGES; do
@@ -188,7 +189,7 @@ else
     echo "check logs: bash $FLEET_HOME/tools/status.sh --home $FLEET_HOME" >&2
     exit 1
   fi
-  echo "bridges up:$up (port range $PORT_BASE..$((PORT_BASE + 11)))"
+  echo "bridges up:$up (port range $PORT_BASE..$((PORT_BASE + 13)))"
   echo "[warn] unreachable (offline / needs VPN or login):$unreachable"
   echo "       inspect logs in $LOG_DIR, then: bash $FLEET_HOME/bridges/finish.sh <name>"
 fi
@@ -242,7 +243,7 @@ for name in $BRIDGES; do
     *) up_count=$((up_count + 1)) ;;
   esac
 done
-echo "deploy summary: bridges $up_count/11 up | finalized $ok/$up_count | login needed:${failed:- none}"
+echo "deploy summary: bridges $up_count/$BRIDGE_COUNT up | finalized $ok/$up_count | login needed:${failed:- none}"
 if [ -n "$failed" ]; then
   echo "next: log in per README, then bash $FLEET_HOME/bridges/finish.sh <name>"
 fi

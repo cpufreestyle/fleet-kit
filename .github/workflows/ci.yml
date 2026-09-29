@@ -23,6 +23,14 @@ jobs:
       - name: python syntax check
         run: python3 -m compileall -q bridges tools opencodex
 
+      # The catalog tools decide which model rows get hidden, so their safety
+      # gates (stale-snapshot refusal, never dropping a bridged provider,
+      # bounding backup growth) are covered here rather than found live.
+      - name: tools unit tests
+        run: |
+          python3 -m pip install --quiet pytest httpx
+          python3 -m pytest tools -q
+
       - name: secret and PII leak scan
         run: |
           hits=0

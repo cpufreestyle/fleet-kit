@@ -19,7 +19,6 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import base64
 import hashlib
@@ -29,15 +28,13 @@ import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 import _platform
+import _common
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
-
 import httpx
-import uvicorn
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse, Response
 
 BRIDGE_VERSION = "0.3.0"
 
@@ -48,12 +45,37 @@ BRIDGE_KEY = os.environ.get("CODELY2CODEX_KEY") or ""
 POLL_INTERVAL = float(os.environ.get("CODELY_DEVICE_POLL_INTERVAL") or "4")
 DEVICE_TIMEOUT = float(os.environ.get("CODELY_DEVICE_TIMEOUT") or "900")
 
-# 官方 CLI 未登录时 `--cmd "/model list"` 实测到的 8 个模型（`/health` 与无凭据降级用）
+# 2026-09-28 实测：该团队密钥只允许 alias-only-proxy-models。
+# 原始模型名（DeepSeek-V4.1-Flash / GLM-5.3-FLASH / KIMI-K3）会被网关 401
+# team_model_access_denied 拒绝，只有 5 个 codely-* 别名真实可调用，全部已验证。
 FALLBACK_MODELS = [
     "codely-core", "codely-flash", "codely-air", "codely-basic", "codely-vl",
-    "DeepSeek-V4.1-Flash", "GLM-5.3-FLASH", "KIMI-K3",
 ]
 CATALOG_PREFIX = "codely/"
+
+# 网关策略：团队密钥仅允许 alias-only-proxy-models。任何出现在这里之外的名字
+# （例如原始模型名 DeepSeek-V4.1-Flash）都会 401 team_model_access_denied，
+# 不能进目录误导用户。
+DENIED_MODELS = {"DeepSeek-V4.1-Flash", "GLM-5.3-FLASH", "KIMI-K3"}
+
+# 压缩兜底：会话历史里可能仍写着早已禁用的模型名，请求会因此在网关 401，
+# 把整个压缩流程卡死。压缩请求统一改走 codely-core。
+COMPACTION_FALLBACK = "codely-core"
+LEGACY_DENIED = {
+    "DeepSeek-V4.1-Flash": COMPACTION_FALLBACK,
+    "GLM-5.3-FLASH": COMPACTION_FALLBACK,
+    "KIMI-K3": COMPACTION_FALLBACK,
+}
+
+# 官方 CLI / opencodex 用的短别名 → 完整别名。白名单解析前先归一化，
+# 否则别名的桥请求写法会被误拒。
+ALIAS_TO_MODEL = {
+    "core": "codely-core",
+    "fl": "codely-flash",
+    "air": "codely-air",
+    "basic": "codely-basic",
+    "vl": "codely-vl",
+}
 
 # 官方 CLI 逆向出的 LiteLLM 网关签名参数（HMAC-SHA256 双层派生）：
 #   inner = HMAC-SHA256(BASE_KEY, "codely-signing-v1")
@@ -101,18 +123,11 @@ def sign_gateway_headers(cli_key: str, path: str) -> dict:
     digest = base64.urlsafe_b64encode(hmac.new(key, payload, hashlib.sha256).digest()).rstrip(b"=").decode()
     return {"X-Codely-Signature": f"v1.{ts}.{digest}"}
 
-app = FastAPI(title="codely2codex", version=BRIDGE_VERSION)
+client = _common.make_client_getter(**_common.client_kwargs(DEFAULT_TIMEOUT))
 
-_http: Optional[httpx.AsyncClient] = None
+app = _common.make_app("codely2codex", BRIDGE_VERSION)
 _creds_lock = asyncio.Lock()
 _device: dict = {}  # auth_request_token -> {"started": ts, "status": str}
-
-
-def client() -> httpx.AsyncClient:
-    global _http
-    if _http is None or _http.is_closed:
-        _http = httpx.AsyncClient(timeout=httpx.Timeout(DEFAULT_TIMEOUT, connect=15))
-    return _http
 
 
 def cli_home() -> Path:
@@ -147,20 +162,21 @@ def save_creds(creds: dict) -> None:
     tmp.replace(p)
 
 
-def check_bridge_auth(request: Request) -> None:
-    if not BRIDGE_KEY:
-        return
-    auth = request.headers.get("authorization") or ""
-    if auth != f"Bearer {BRIDGE_KEY}":
-        raise HTTPException(status_code=401, detail="invalid bridge key")
+check_bridge_auth = _common.make_auth_checker(BRIDGE_KEY)
+
+# 把 Codex 侧带 codely/ 前缀的模型名还原成 Tuanjie 网关原生模型名。
+remap_model = _common.make_model_remapper(
+    CATALOG_PREFIX, double_prefix="codely-codely", double_strip="codely-")
 
 
-def remap_model(model: Optional[str]) -> Optional[str]:
-    """把 Codex 侧带 `codely/` 前缀的模型名还原成 Tuanjie 网关原生模型名。"""
-    if not model:
-        return model
-    if model.startswith(CATALOG_PREFIX):
-        return model[len(CATALOG_PREFIX):]
+def _strip_provider_prefix(model: str) -> str:
+    """去掉 Codex 侧可能带来的 provider 前缀。
+
+    opencodex 的 codely provider 有 alias `cdl`，请求常以 `cdl/<model>` 到达；
+    不剥的话白名单会把整个串当成未知模型拒掉。"""
+    for prefix in ("cdl/", "codely/", "codely-"):
+        if model.startswith(prefix):
+            return model[len(prefix):]
     if model.startswith("codely-codely"):
         return model[len("codely-"):]
     return model
@@ -291,6 +307,27 @@ async def get_gateway_key(allow_refresh: bool = True) -> str:
         return await fetch_cli_api_key(force=True)
 
 
+async def remint_gateway_key() -> str:
+    """Re-mint the LiteLLM virtual key after the gateway rejected it.
+
+    实测（2026-09-29）：账号改订阅/改组后，网关会吊销旧虚拟密钥——
+    GET /v1/models 返回 401 "Unable to find token in cache or
+    LiteLLM_VerificationTokenTable"，而 cli_api_key 端点为同一个 access_token
+    重新发一个不同的有效 sk- key。所以「网关 401」要的是重发虚拟密钥，
+    不是刷新 access token：后者需要 refresh_token，而官方 CLI 的凭据里
+    从不写这一项（薄封装和 bridge 一样都没有），走 refresh 只会 401。
+
+    只有重发端点自己也拒绝时，才说明 access_token 本身过期，需要刷新。
+    """
+    try:
+        return await fetch_cli_api_key(force=True)
+    except HTTPException as e:
+        if e.status_code != 401:
+            raise
+        await refresh_access_token()
+        return await fetch_cli_api_key(force=True)
+
+
 # ---------------- OpenAI 兼容 API ----------------
 
 @app.get("/health")
@@ -340,13 +377,32 @@ async def list_models(request: Request):
     check_bridge_auth(request)
     try:
         key = await get_gateway_key()
-        gpath = f"{GATEWAY_BASE}/models"
         r = await client().get(
             f"{GATEWAY_BASE}/models",
             headers=gateway_headers(key, "/v1/models"),
         )
+        if r.status_code == 401:
+            # The gateway revoked the cached virtual key. Without this retry
+            # the bridge would serve the 5-row fallback catalog forever, even
+            # though /api/api-token/cli-api-key mints a working key on demand.
+            await r.aclose()
+            key = await remint_gateway_key()
+            _rotate_session()
+            r = await client().get(
+                f"{GATEWAY_BASE}/models",
+                headers=gateway_headers(key, "/v1/models"),
+            )
         if r.status_code == 200:
-            return Response(content=r.content, media_type="application/json")
+            try:
+                payload = r.json()
+                allowed = [m for m in payload.get("data", [])
+                           if (m.get("id") or "").split("/", 1)[-1] not in DENIED_MODELS]
+                if len(allowed) != len(payload.get("data", [])):
+                    payload["data"] = allowed
+                content = json.dumps(payload, ensure_ascii=False)
+            except Exception:
+                content = r.content.decode("utf-8", "replace")
+            return Response(content=content, media_type="application/json")
         detail = r.text[:200]
     except HTTPException as e:
         detail = e.detail
@@ -358,7 +414,11 @@ async def list_models(request: Request):
             for m in FALLBACK_MODELS
         ],
     }
-    return JSONResponse(data, headers={"X-Codely-Models-Fallback": detail if isinstance(detail, str) else "1"})
+    # The upstream body carries newlines; h11 aborts the whole response if one
+    # reaches a header value, so the fallback would turn into an empty reply.
+    return JSONResponse(data, headers={
+        "X-Codely-Models-Fallback": _common.safe_header_value(detail)
+        if isinstance(detail, str) and detail else "1"})
 
 
 @app.post("/v1/chat/completions")
@@ -369,6 +429,23 @@ async def chat_completions(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="invalid json body")
     body["model"] = remap_model(body.get("model"))
+    body["model"] = _strip_provider_prefix(str(body["model"] or ""))
+    # 短别名归一化，别名表缺的保持原样，让下面白名单给出统一拒绝提示。
+    body["model"] = ALIAS_TO_MODEL.get(body["model"], body["model"])
+    # 历史模型名兜底：会话创建时写进历史的模型名（DeepSeek-V4.1-Flash 等）
+    # 对当前团队密钥已永久失效。请求经 opencodex 代理转换后可能丢掉压缩标记，
+    # 所以这里不再判断请求形态，只要模型名命中就改走 codely-core，
+    # 否则压缩流程会被网关 401 或上面的白名单 400 卡死。
+    if str(body["model"] or "") in LEGACY_DENIED:
+        body["model"] = LEGACY_DENIED[body["model"]]
+    # 服务端白名单：团队密钥仅允许 codely-* 别名。未知名直接拦截，
+    # 避免 alias-only 网关返回误导性的 401 team_model_access_denied。
+    if str(body["model"] or "") not in FALLBACK_MODELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"model '{body['model']}' is not allowed for this team key. "
+                   f"Allowed models (alias-only): {', '.join(FALLBACK_MODELS)}",
+        )
     stream = bool(body.get("stream"))
 
     key = await get_gateway_key()
@@ -387,50 +464,41 @@ async def chat_completions(request: Request):
     resp = await once(headers)
     if resp.status_code == 401:
         await resp.aclose()
-        # 令牌失效：刷新 + 重取虚拟密钥，重试一次
-        try:
-            await refresh_access_token()
-            key = await fetch_cli_api_key(force=True)
-            _rotate_session()
-        except HTTPException:
-            pass
+        # Token invalid: re-mint the virtual key first, then retry once.
+        # The old order ran refresh_access_token() first, which needs a
+        # refresh_token the official CLI never writes; its HTTPException was
+        # swallowed by "except HTTPException: pass", so the retry went out with
+        # the same dead key and failed again.
+        key = await remint_gateway_key()
+        _rotate_session()
         headers = _hdrs(key)
         resp = await once(headers)
 
     if resp.status_code != 200:
-        text = (await resp.aread()).decode("utf-8", "replace")[:500]
+        text = (await resp.aread()).decode("utf-8", "replace")
         await resp.aclose()
-        return Response(content=json.dumps({"error": {"message": f"gateway {resp.status_code}: {text}",
-                                                    "type": "codely_upstream_error"}}),
-                        media_type="application/json", status_code=resp.status_code)
+        return _common.upstream_error_response(
+            resp.status_code, text, "gateway", "codely_upstream_error",
+            max_chars=500)
 
     if stream:
-        passthrough = {k: v for k, v in resp.headers.items() if k.lower() in ("content-type",)}
-        sgen = StreamingResponse(_sse_pump(resp), media_type=passthrough.get("content-type", "text/event-stream"))
-        return sgen
+        return StreamingResponse(_sse_pump(resp), media_type=resp.headers.get(
+            "content-type", "text/event-stream"))
     content = await resp.aread()
     ctype = resp.headers.get("content-type", "application/json")
     await resp.aclose()
     return Response(content=content, media_type=ctype)
 
 
-async def _sse_pump(resp: httpx.Response):
-    try:
-        async for chunk in resp.aiter_raw():
-            if chunk:
-                yield chunk
-    finally:
-        await resp.aclose()
+_sse_pump = _common.sse_pump
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8790)
-    args = ap.parse_args()
-    print(f"[codely2codex] v{BRIDGE_VERSION} on http://{args.host}:{args.port}  gateway={GATEWAY_BASE}", flush=True)
-    print(f"[codely2codex] creds: {creds_path()}  bridge_key={'set' if BRIDGE_KEY else 'OPEN (no key)'}", flush=True)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=True)
+    _common.serve(
+        app, 8790,
+        f"[codely2codex] v{BRIDGE_VERSION} on http://%s:%s  gateway={GATEWAY_BASE}\n"
+        f"[codely2codex] creds: {creds_path()}  "
+        f"bridge_key={'set' if BRIDGE_KEY else 'OPEN (no key)'}")
 
 
 if __name__ == "__main__":

@@ -39,6 +39,14 @@ HIDE_ENABLED=0
 REPORT_ONLY=0
 PROXY_BASE="${FLEET_PROXY_BASE:-http://127.0.0.1:10100}"
 LOG_FILE="${CATALOG_FILTER_LOG:-${HOME}/Library/Logs/catalog-filter.log}"
+# Defined before anything sources platform.sh: platform.sh lives beside this
+# script, and `set -u` turns a use-before-definition into an immediate exit.
+# Resolve without dirname for the same reason as ocx-catalog-guard.sh: a
+# Task Scheduler action inherits a PATH with no Git for Windows coreutils.
+case "$0" in
+  */*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
+  *) SCRIPT_DIR="$(pwd)" ;;
+esac
 # Platform abstraction: launchd / Task Scheduler / Linux supervisor.
 if [ -f "${SCRIPT_DIR}/platform.sh" ]; then
   # shellcheck source=platform.sh
@@ -54,7 +62,6 @@ LABEL_PREFIX="${FLEET_LABEL_PREFIX:-com.local}"
 DRY_RUN=0
 ACTION=run
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FILTER="${CATALOG_FILTER_PY:-${SCRIPT_DIR}/catalog_filter.py}"
 
 usage() {

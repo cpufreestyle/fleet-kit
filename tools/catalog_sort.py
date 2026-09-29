@@ -20,11 +20,28 @@ Usage:
   catalog_sort.py            reorder the catalog in place
   catalog_sort.py --dry-run  report the new order, change nothing
 
+--drop-unreachable hides rows from providers the snapshot calls dead, but
+only while that snapshot is fresh (--max-reach-age, default 24h). An older
+snapshot still orders the rows; it just stops being allowed to delete them,
+because bridges recover and a stale verdict would hide working models.
+
+Deletion is also limited to providers no bridge serves at all. A provider
+with a bridge gets re-probed on every refresh and can come back on its own,
+and a single upstream 503 is enough to mark one dead for a whole cycle, so
+the probe alone is not a safe authority to erase a row the status panel may
+still be verifying as REAL. Those rows are only reordered, never dropped.
+
 The picker also sorts on each entry's "priority" field, so reordering the
 list alone is not enough: this tool rewrites priority as well. Native
 Codex rows keep their 105 marker; fleet rows get 0..N by reachability rank.
+
+Each write drops a .bak-<timestamp> next to the catalog and, when rows are
+mirrored into models_cache.json, next to that cache as well. Older backups
+are pruned down to --keep-backups (default 5), since the 5 minute timers
+would otherwise accumulate them without bound.
 """
 import argparse
+import datetime
 import json
 import os
 import shutil
@@ -200,6 +217,22 @@ def provider_of(slug):
     return slug.split("/", 1)[0] if "/" in slug else None
 
 
+def bridged_providers():
+    """Providers a bridge can answer for, from the shared platform table.
+
+    Returns None when the table cannot be read, and the caller then treats
+    every provider as bridged: refusing to delete is the safe failure here.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    try:
+        from fleet_platform import PORT_OFFSETS
+        return set(PORT_OFFSETS)
+    except Exception:
+        return None
+
+
 def slug_of(model):
     return model.get("slug") or model.get("id") or ""
 
@@ -240,6 +273,58 @@ def write_json(path, data):
     return len(check.get("models") or [])
 
 
+def snapshot_age_seconds(reach):
+    """Age of a reach snapshot in seconds, or None when unmeasurable.
+
+    A snapshot with no readable measured_at is treated as unmeasurable, and
+    the caller decides what that means for deletion.
+    """
+    stamp = reach.get("measured_at")
+    if not stamp:
+        return None
+    try:
+        when = datetime.datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return max(0.0, (datetime.datetime.now(when.tzinfo) - when).total_seconds())
+
+
+def prune_backups(path, keep):
+    """Keep the newest `keep` .bak-<timestamp> files beside the catalog.
+
+    The 5 minute timers rewrite the catalog all day, and each write leaves a
+    timestamped backup. Without a bound those pile up forever (89 files,
+    99MB in one measured case), so trim to the newest few after a write.
+    """
+    if keep < 0:
+        return []
+    directory = os.path.dirname(path) or "."
+    base = os.path.basename(path) + ".bak-"
+    found = []
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    for name in names:
+        if name.startswith(base):
+            full = os.path.join(directory, name)
+            try:
+                found.append((os.path.getmtime(full), full))
+            except OSError:
+                continue
+    found.sort(reverse=True)
+    removed = []
+    for _mtime, full in found[keep:]:
+        try:
+            os.unlink(full)
+            removed.append(full)
+        except OSError:
+            continue
+    return removed
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reach", default=os.environ.get("FLEET_REACH_FILE", ""))
@@ -249,6 +334,14 @@ def main():
                     help="model families listed first, in this order "
                          "(default: %s)" % ",".join(FAMILY_ORDER))
     ap.add_argument("--drop-unreachable", action="store_true")
+    ap.add_argument("--max-reach-age", type=float,
+                    default=float(os.environ.get("FLEET_REACH_MAX_AGE", 86400)),
+                    help="stale after this many seconds the snapshot may order "
+                         "rows but not delete them (default: 86400)")
+    ap.add_argument("--keep-backups", type=int,
+                    default=int(os.environ.get("FLEET_KEEP_BACKUPS", 5)),
+                    help="how many .bak files to keep beside the catalog "
+                         "(default: 5, negative keeps all)")
     ap.add_argument("--strict-coverage", action="store_true",
                     help="fail instead of warn when the snapshot misses providers")
     ap.add_argument("--dry-run", action="store_true")
@@ -302,6 +395,44 @@ def main():
     good = set(reach.get("reachable") or [])
     bad = set(reach.get("unreachable") or [])
     verified = reach.get("verified_models") or {}
+
+    # Deletion is the one irreversible action here, so it needs a verdict
+    # that is still current. A stale snapshot keeps ordering rows (harmless)
+    # but stops deleting them: bridges recover, and the probe timer only runs
+    # every 30 minutes, so an aged "unreachable" is not trustworthy enough to
+    # erase a provider the user may be using.
+    drop_unreachable = args.drop_unreachable
+    drop_providers = set()
+    bridged = bridged_providers()
+    reach_age = snapshot_age_seconds(reach)
+    if drop_unreachable:
+        if reach_age is None:
+            drop_unreachable = False
+            reason = "snapshot has no readable measured_at"
+        elif reach_age > args.max_reach_age:
+            drop_unreachable = False
+            reason = ("snapshot is %.1fh old (limit %.1fh)"
+                      % (reach_age / 3600.0, args.max_reach_age / 3600.0))
+        else:
+            reason = None
+        if reason:
+            print("fleet-sort: not dropping unreachable rows: %s" % reason,
+                  file=sys.stderr)
+        if bridged is None:
+            print("fleet-sort: cannot read the bridge table; dropping nothing",
+                  file=sys.stderr)
+            drop_unreachable = False
+        else:
+            # A bridged provider is re-probed every cycle and the panel can
+            # still call it REAL, so a single failed probe is not authority to
+            # erase its rows. Only bridge-less providers (dead keys nobody can
+            # re-verify) are dropped.
+            drop_providers = bad - bridged
+            reorder_only = sorted(bad & bridged)
+            if reorder_only:
+                print("fleet-sort: only reordering (not dropping) bridged "
+                      "providers the probe called dead: %s"
+                      % ", ".join(reorder_only), file=sys.stderr)
     order = [p.strip() for p in args.order.split(",") if p.strip()]
     families = tuple(f.strip().lower() for f in args.families.split(",")
                      if f.strip())
@@ -316,7 +447,11 @@ def main():
     catalog_providers = {provider_of(m.get("slug") or m.get("id") or "")
                          for m in (data.get("models") or [])}
     catalog_providers.discard(None)
-    covered = good | bad
+    # A provider the probe deliberately skips (zcode needs a per-call captcha)
+    # is accounted for, not unmeasured: without this every strict sort refuses
+    # forever on that one bridge and the ordering silently stops being applied.
+    skipped = set((reach.get("skipped") or {}).keys())
+    covered = good | bad | skipped
     missing = sorted(catalog_providers - covered)
     if missing:
         summary_note = ("snapshot covers %d/%d catalog providers; missing: %s"
@@ -373,7 +508,7 @@ def main():
         pos = order.index(prov) if prov in order else len(order)
         proven = 0 if slug in proven_candidates(verified.get(prov), prov) else 1
         model["priority"] = _rank_i * 1000 + priority_for(slug, tier, pos) + proven
-        if args.drop_unreachable and prov in bad:
+        if drop_unreachable and prov in drop_providers:
             dropped.setdefault(prov, []).append(slug)
         else:
             kept.append(model)
@@ -386,6 +521,11 @@ def main():
         "measured_at": reach.get("measured_at"),
         "reachable": sorted(good),
         "unreachable": sorted(bad),
+        "reach_age_seconds": None if reach_age is None else round(reach_age),
+        "dropped_enabled": drop_unreachable,
+        "skipped_providers": sorted(skipped & catalog_providers),
+        "dropped_providers": sorted(drop_providers),
+        "reordered_not_dropped": sorted(bad & (bridged or set())),
         "dropped_by_provider": {k: len(v) for k, v in sorted(dropped.items())},
         "first20": [m.get("slug") or m.get("id") for m in kept[:20]],
     }
@@ -416,22 +556,27 @@ def main():
     summary["family_heads"] = [f for f in families
                                if any(family_of(slug_of(m)) == f for m in kept)]
 
-    before_slugs = [m.get("slug") for m in models]
     after_slugs = [m.get("slug") for m in kept]
     after_prio = [m.get("priority") for m in kept]
     before_slugs = [m.get("slug") for m in original]
     before_prio = [m.get("priority") for m in original]
     changed = before_slugs != after_slugs or before_prio != after_prio
-    # the picker reads models_cache.json too, so a stale cache counts as a change
+    # The picker reads models_cache.json as well as the catalog, so a row
+    # dropped from one but left in the other stays visible: treat a cache that
+    # disagrees on the row set or the order as a change, and mirror both.
     cache = os.path.join(os.path.dirname(path), "models_cache.json")
+    cache_models = None
+    cache_before = 0
     if cache != path and os.path.exists(cache):
         try:
-            cmods = json.load(open(cache, encoding="utf-8")).get("models") or []
-            cprio = [m.get("priority") for m in cmods]
-            cslugs = [m.get("slug") for m in cmods]
-            idx = {m.get("slug"): m for m in kept}
-            want = [idx.get(s, {}).get("priority") for s in cslugs]
-            if cprio != want:
+            cache_models = json.load(open(cache, encoding="utf-8"))
+            cmods = cache_models.get("models") or []
+            cache_before = len(cmods)
+            # Compare slugs, not priorities: priorities travel with their row,
+            # so a cache holding the right rows in the wrong order still has
+            # matching priorities and would read as "already in order".
+            want_slugs = [m.get("slug") for m in kept]
+            if [m.get("slug") for m in cmods] != want_slugs:
                 changed = True
         except Exception:
             pass
@@ -451,20 +596,31 @@ def main():
             summary["backup"] = bak
         data["models"] = kept
         summary["written"] = write_json(path, data)
-        # Codex reads models_cache.json, not just the catalog config points at
-        cache = os.path.join(os.path.dirname(path), "models_cache.json")
-        if os.path.exists(cache) and cache != path:
+        pruned = prune_backups(path, args.keep_backups)
+        if pruned:
+            summary["backups_pruned"] = [os.path.basename(p) for p in pruned]
+        if cache_models is not None and cache != path:
             try:
-                cdata = json.load(open(cache, encoding="utf-8"))
-                cmodels = cdata.get("models") or []
-                if cmodels:
-                    idx = {m.get("slug"): m for m in kept}
-                    cdata["models"] = [idx.get(x.get("slug"), x) for x in
-                                        sorted(cmodels, key=lambda y: idx.get(
-                                            y.get("slug"), {}).get(
-                                            "priority", 10**9))]
-                    write_json(cache, cdata)
-                    summary["cache_written"] = len(cdata["models"])
+                idx = {m.get("slug"): m for m in kept}
+                # Drop rows the catalog no longer has, refresh the survivors,
+                # then order exactly like the catalog: the cache alone is not
+                # proof a row was removed, so this is what actually hides it.
+                # Codex writes this second file too, so it gets the same
+                # rescue copy and the same bound on its backups.
+                if not args.no_backup:
+                    cache_bak = cache + time.strftime(".bak-%Y%m%d-%H%M%S")
+                    shutil.copy2(cache, cache_bak)
+                    summary["cache_backup"] = cache_bak
+                cache_models["models"] = [idx[m.get("slug")] for m in kept
+                                          if m.get("slug") in idx]
+                write_json(cache, cache_models)
+                summary["cache_written"] = len(cache_models["models"])
+                summary["cache_dropped"] = cache_before - len(
+                    cache_models["models"])
+                pruned = prune_backups(cache, args.keep_backups)
+                if pruned:
+                    summary["cache_backups_pruned"] = [
+                        os.path.basename(p) for p in pruned]
             except Exception as exc:
                 summary["cache_error"] = str(exc)[:80]
 

@@ -61,6 +61,14 @@ FleetKit 里有两座 WorkBuddy 桥，分别打国内版和海外版，端口固
 | `workbuddy` | 8787 | 国内版 `copilot.tencent.com` | `runtime/bridges/workbuddy-cn/` | 文件账号池 `runtime/bridges/workbuddy-cn/auths/` |
 | `workbuddy-gpt` | 8788 | 海外版 `www.workbuddy.ai` | `runtime/bridges/workbuddy-gpt/` | 桌面端 `~/.workbuddy-ai/local_storage`；池 `runtime/bridges/workbuddy-gpt/auths/` |
 
+两座桥的代码几乎完全相同，共享实现放在 `bridges/workbuddy/`（`core.py` 承载 99% 逻辑，
+外加 `netpin.py` DNS 固定和 6 个账号/签到/脱敏模块）。`workbuddy-cn/converter.py` 与
+`workbuddy-gpt/converter.py` 只是几十行入口，靠 `WORKBUDDY_PROVIDER=cn|gpt` 选一套
+provider 表（上游地址、模型名、是否 DNS 固定、uvicorn 参数等），`WORKBUDDY_BRIDGE_DIR`
+让各自的 `auths/`、`bridge-settings.json`、`assets/` 仍落在自己的桥目录里。改 WorkBuddy
+逻辑只改 `bridges/workbuddy/core.py`，两座桥同步生效；`install.sh` 会把
+`workbuddy-cn` / `workbuddy-gpt` 里遗留的共享模块副本清掉（`prune_shared_workbuddy`）。
+
 两座桥共用同一个本地 key `CODEBUDDY2OPENAI_KEY`（值在 `runtime/fleet.env`）。Codex 侧模型名带桥名前缀：
 `workbuddy/<model>` 与 `workbuddy-gpt/<model>`（例如 `workbuddy/hy4-preview`、`workbuddy-gpt/hy4-preview`）。
 
@@ -611,9 +619,11 @@ Plan API 后不受影响。
         requirements.txt      Python 依赖
         README.md             本文
         bridges/              13 座桥源码 + finish.sh（含 cline/ 第十二桥、zcode/ 第十三桥）
+                              _common.py 是 8 座 FastAPI 桥共享的外壳（鉴权/SSE/uvicorn 入口）
+                              workbuddy/ 是两座 WorkBuddy 桥共享的实现（cn/gpt 只留入口）
         opencodex/            setup-providers.sh（ocx provider 注册）
         free-windows.json     免费模型标注数据（官网信息 + 时段，改这里不改代码）
-        tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / verify_real_calls.py / fleet_split.py / free_models.py / short_aliases.py / catalog_filter.py / catalog-filter.sh
+        tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / verify_real_calls.py / fleet_split.py / free_models.py / short_aliases.py / catalog_filter.py / catalog-filter.sh（test_*.py 由 CI 跑 pytest）
         docs/                 各桥 runbook + stepfun/tokundance 官方 API runbook + 全量实测报告
       runtime/                运行根（install.sh --home 的默认值）
         fleet.env             桥 API key + FLEET_HOME/PORT_BASE（600，不入库）

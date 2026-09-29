@@ -17,3 +17,7 @@ venv/
 
 # os
 .DS_Store
+
+# generated probe output / local tool backups
+tools/fleet-reach.json
+*.bak*

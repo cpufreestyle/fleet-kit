@@ -82,6 +82,40 @@ def hub_ready() -> bool:
     return bool(d.get("url")) and bool(d.get("authToken"))
 
 
+_CLINE_APP = "/Applications/Cline.app"
+_LAST_LAUNCH_ATTEMPT = 0.0
+
+
+def ensure_hub(attempts: int = 12, delay: float = 2.0) -> bool:
+    """Make sure the Cline hub daemon is up before a request is served.
+
+    Codex surfaces a 503 the moment the discovery file is missing, because the
+    hub daemon only exists while Cline.app runs. Launching it here turns a hard
+    error into a self-healing wait, which matters for a long-running bridge that
+    outlives the app being closed. Rate limited so a burst of requests cannot
+    spawn a process per call."""
+    global _LAST_LAUNCH_ATTEMPT
+    import os
+    import subprocess
+    import time
+
+    for i in range(attempts):
+        if hub_ready():
+            return True
+        if i == 0 and not os.path.isdir(_CLINE_APP):
+            return False
+        if i == 0 and time.monotonic() - _LAST_LAUNCH_ATTEMPT > 30:
+            _LAST_LAUNCH_ATTEMPT = time.monotonic()
+            try:
+                subprocess.Popen(["open", "-a", "Cline"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                log("hub not ready; launched Cline.app")
+            except Exception as exc:
+                log("Cline launch failed:", exc)
+        time.sleep(delay)
+    return hub_ready()
+
+
 app = FastAPI(title="cline2codex")
 
 
@@ -208,17 +242,23 @@ async def health():
 @app.get("/v1/models")
 async def list_models(request: Request):
     check_auth(request)
-    detail = ""
-    if not hub_ready():
-        detail = "hub daemon not running; start Cline once (open -a Cline)"
     # Bare upstream ids, no prefix: a prefixed id gets double-namespaced by ocx.
+    if not hub_ready():
+        # Advertising rows while the hub is down offers models that cannot
+        # answer a single prompt, so the picker keeps a dead provider. Report
+        # the same 503 the chat route uses; discovery then hides the bridge.
+        # The error envelope carries no "data" row, so a caller that greps for
+        # model ids (tools/status.sh) counts 0 rather than a phantom 14.
+        return JSONResponse(
+            {"error": {"message": "Cline hub daemon unreachable; run: open -a Cline",
+                       "type": "hub_unavailable"}},
+            status_code=503)
     return JSONResponse({
         "object": "list",
         "data": [
             {"id": m, "object": "model", "created": 0, "owned_by": "cline"}
             for m in FREE_MODELS
         ],
-        **({"detail": detail} if detail else {}),
     })
 
 
@@ -262,6 +302,9 @@ async def chat_completions(request: Request):
         return JSONResponse({"error": {"message": "no prompt"}}, status_code=400)
 
     hub = read_hub()
+    if not hub.get("url"):
+        if ensure_hub():
+            hub = read_hub()
     if not hub.get("url"):
         return JSONResponse(
             {"error": {"message": "Cline hub daemon unreachable; run: open -a Cline",

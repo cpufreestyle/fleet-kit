@@ -34,6 +34,7 @@ Options:
   --keep P[,P...]    providers to keep even when unavailable
   --only P[,P...]    only consider these providers for removal
   --no-backup        skip the timestamped backup
+  --keep-backups N   keep only the newest N .bak-* files (default 5, -1 keeps all)
   --no-restore       do not run ocx sync to bring back a verified-REAL provider
   --no-hide-junk     keep non-chat junk rows (TTS/OCR/embedding/video/web tools)
   --timeout SEC      status panel and subprocess timeout (default 20)
@@ -56,6 +57,7 @@ import urllib.request
 BACKUP_TEMPLATE = ".bak-%Y%m%d-%H%M%S"
 STATE_FILE = ".catalog-filter-restore-state.json"
 STATE_COOLDOWN = 3600
+KEEP_BACKUPS = 5
 
 # Rows that are never a usable chat model when picked in Codex. The substrings are
 # only ones unique to the junk class, so real rows survive: "seedream" hides image
@@ -236,7 +238,42 @@ def write_state(codex_home, state):
     os.replace(tmp, state_path(codex_home))
 
 
-def write_catalog(path, data, keepers, summary, no_backup):
+def prune_backups(path, keep):
+    """Keep the newest `keep` .bak-* files beside the catalog.
+
+    The 5 minute timer rewrites the catalog all day and every write leaves a
+    timestamped backup, so without a bound they pile up forever. `keep < 0`
+    keeps everything.
+    """
+    if keep < 0:
+        return []
+    directory = os.path.dirname(path) or "."
+    base = os.path.basename(path) + ".bak-"
+    found = []
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    for name in names:
+        if name.startswith(base):
+            full = os.path.join(directory, name)
+            try:
+                found.append((os.path.getmtime(full), full))
+            except OSError:
+                continue
+    found.sort(reverse=True)
+    removed = []
+    for _mtime, full in found[keep:]:
+        try:
+            os.unlink(full)
+            removed.append(full)
+        except OSError:
+            continue
+    return removed
+
+
+def write_catalog(path, data, keepers, summary, no_backup,
+                  keep_backups=KEEP_BACKUPS):
     """Back up, atomically replace the catalog with keepers, then verify.
 
     Re-serialising must round-trip byte for byte, or the write would reformat a file
@@ -290,6 +327,9 @@ def write_catalog(path, data, keepers, summary, no_backup):
         summary["error"] = "write left the wrong model count"
         return False
     summary["verified_after_write"] = True
+    pruned = prune_backups(path, keep_backups)
+    if pruned:
+        summary["backups_pruned"] = [os.path.basename(p) for p in pruned]
     return True
 
 
@@ -306,6 +346,9 @@ def main(argv=None):
     parser.add_argument("--keep", default="")
     parser.add_argument("--only", default="")
     parser.add_argument("--no-backup", action="store_true")
+    parser.add_argument("--keep-backups", type=int, default=int(
+        os.environ.get("FLEET_KEEP_BACKUPS", KEEP_BACKUPS)),
+        help="keep only the newest N catalog .bak-* files (-1 keeps all)")
     parser.add_argument("--no-restore", action="store_true")
     parser.add_argument("--restore-cooldown", type=int, default=STATE_COOLDOWN)
     parser.add_argument("--timeout", type=float, default=20.0)
@@ -374,7 +417,8 @@ def main(argv=None):
         if args.dry_run:
             summary["dry_run"] = True
         elif len(keepers) != original_count:
-            if not write_catalog(path, data, keepers, summary, args.no_backup):
+            if not write_catalog(path, data, keepers, summary, args.no_backup,
+                                 args.keep_backups):
                 return 5
         print(json.dumps(summary, indent=2, ensure_ascii=False))
         return code

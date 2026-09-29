@@ -64,7 +64,7 @@ md5short() {
   fi
 }
 
-echo "FleetKit status (home $FLEET_HOME, ports $PORT_BASE..$((PORT_BASE + 8)))"
+echo "FleetKit status (home $FLEET_HOME, ports $PORT_BASE..$((PORT_BASE + 13)))"
 printf '%-14s %-6s %-7s %-7s %-10s %-16s %s
 ' BRIDGE PORT AGENT LISTEN MODELS KEY-MD5 LABEL
 printf '%.0s-' $(seq 1 96)
@@ -87,7 +87,10 @@ while IFS='|' read -r name labelsuffix offset keyenv; do
   else
     listen=no
   fi
-  eval "key=\$$keyenv"
+  # :- guards against a key the operator removed from fleet.env. Under set -u a
+  # bare expansion aborted the whole table, so one stale install hid every row
+  # after the missing key instead of just reporting that bridge as keyless.
+  eval "key=\${$keyenv:-}"
   if [ -n "$key" ]; then
     count="$(curl -s -m 15 -H "Authorization: Bearer $key" "http://127.0.0.1:$port/v1/models" 2>/dev/null | grep -o '"id"' | wc -l | tr -d ' ' || true)"
   else

@@ -1,5 +1,54 @@
 # zcode2codex（智谱 Z.AI Coding / ZCode）反代理 runbook
 
+# 2026-09-28 CLI 路线打通记录（关键结论）
+
+## 签名矩阵（逆向自 zcode.cjs byte 3711950）
+
+    cRs({access, baseURL}):
+      start-plan / off-peak           -> 不签名（直接可调）
+      individual/team-coding-plan     -> V4 签名（X-Client-Sig/Pow/Nonce）
+      zhipu-coding-plan-api-key       -> V4 签名
+
+## 实测结论（本机, 2026-09-28 20:00-20:30）
+
+1. **CLI 路线无 3012**：同一个请求，桥直连被 ESA 边缘 3012 拦，走
+   zcode.cjs app-server 一样的 URL 直接到达应用层（3007 → 1005）。
+   指纹差异在客户端 transport，不在 URL/头。
+2. **captcha 票池有效**：CLI 请求带 x-aliyun-captcha-verify-param 后
+   3007 消失，到达配额层（1005 exceed quota limit）。
+   票据指纹绑定问题只影响「跨上下文搬票给直连 HTTP」这条路线。
+3. **当前配额状态（硬事实，非代码问题）**：
+   - start-plan: 1005 exceed quota limit（Weekend Build 免费额度耗尽）
+   - team-coding-plan: 1113 Insufficient balance（V4 签名已通过，无余额）
+   - billing/current: {"plans":[]} 证实套餐不在有效期
+4. **V4 签名协议**（team-coding-plan 用）：
+   - credential: <apiKeyId>.<secret>（credentials.json 里
+     account-provider:coding-plan:...:api-key，恰好一个点）
+   - handshake: POST /api/paas/c1f3a7e2/v2/client {apiKey, nonce, sig, ts}
+   - 业务请求头: X-Client-Ts/Version/Sig/Nonce/App-Id/Pow + X-Session-Id
+   - 握手失败 failOpen（sendUnsigned）；verify 两次被拒进 bypassSigning
+5. **错误码语义**（zcode.cjs byte 4016776）：
+   - 1005 = 配额耗尽（I4s 集合：不重试，换 provider）
+   - 1113 = 余额不足
+   - 3007 = captcha 被拒（start-plan 会自动 captcha-retry 重拿 headers）
+
+## 桥内实现（Route A / Route B）
+
+    /v1/chat/completions
+      -> Route A: cli_backend.ask() 经官方 CLI（start-plan -> team 依次试）
+      -> 配额全耗尽: 503 PLAN_EXHAUSTED（明确报套餐问题，不烧票不降级）
+      -> Route B 降级: 原有 HTTP 直连（3012 风险仍在，仅兜底）
+
+文件：kit/bridges/zcode/{cli_client,cli_backend,zcode_bridge}.py
+      （kit 与 runtime 双份，md5 必须一致）
+
+## captcha minter 环境
+
+- 系统无 playwright 的解释器调 minter 会静默挂起：cli_client._mint_ticket
+  现在按 /usr/bin/python3（Xcode CLT, 有 playwright）优先，ZCAP_PY 可覆盖。
+- mint 成功率间歇（traceless 卡 F001/F015），--serve 模式维持池子比
+  每请求现场 mint 更稳；失败重试可成。
+
 链路：Codex -> 本桥(:8800) -> https://zcode.z.ai/api/v1/zcode-plan/anthropic
       -> GLM-5.3-Flash / GLM-5.3（Start Plan 免费额度）
 
@@ -214,3 +263,4 @@ xue(e){return e==="zai"||e===Ne} = shouldClearZcodeJwtOnLogout，登出即删）
   ZCODE_BUILTIN_PROVIDER_CONFIG_FILE / ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE /
   ZCODE_PERSONAL_PROVIDER_CONFIG_FILE / ZCODE_DATA_BASE_DIR，
   否则 registry 里一个 provider 都没有。
+

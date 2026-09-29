@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """zcode2codex - 把本机 ZCode 免费模型暴露成标准 OpenAI 兼容 API。
 
-链路：Codex -> 本桥(:8800) -> https://zcode.z.ai/api/v1/zcode-plan/anthropic
+链路（两条，CLI 优先，HTTP 直连降级）：
+  A. Codex -> 本桥 -> node zcode.cjs app-server（官方 CLI，无 3012 指纹问题）
+       -> https://zcode.z.ai/api/v1/zcode-plan/anthropic
+  B. 降级：Codex -> 本桥 -> https://zcode.z.ai/api/v1/zcode-plan/anthropic 直连
       -> GLM-5.3 / GLM-5.3-Flash (Start Plan / Weekend Build 免费额度)
+
+CLI 路线 2026-09-28 实测：3007 captcha 已由票池解决，可稳定到达配额层
+(1005)。直连路线会被 ESA 边缘 3012 unusual activity 拦截。
 
 凭证来源（全部本机解密，无需手填）：
   ~/.zcode/v2/credentials.json 的 zcodejwttoken（safeStorage AES-256-GCM，
@@ -28,7 +34,7 @@ prefix no8xfe）。captchaVerifyParam 是一次性的，过期后由 captcha-rel
 
 from __future__ import annotations
 
-import argparse
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -37,23 +43,47 @@ import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 import _platform
+import _common
 import platform
 import re
-import sys
 import time
 import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
 
-import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import Request
 from fastapi.responses import JSONResponse, StreamingResponse
+
+LINE_BREAK_2 = chr(10) * 2
 
 BRIDGE_VERSION = "0.1.0"
 CATALOG_PREFIX = "zcode/"
 
 UPSTREAM = "https://zcode.z.ai/api/v1/zcode-plan/anthropic"
+
+# ---- CLI (route A) -------------------------------------------------------
+# zcode.cjs's own transport passes the ESA edge (no 3012) and its captcha
+# retry path consumes our ticket pool. Start-plan needs no V4 signing, so it
+# is the primary provider; team coding plan is a signed fallback.
+CLI_ENABLED = os.environ.get("ZCODE_CLI_BACKEND", "1").strip().lower() not in ("0", "false", "no", "off")
+CLI_TIMEOUT = float(os.environ.get("ZCODE_CLI_TIMEOUT") or "180")
+CLI_PROVIDERS = [p for p in (
+    os.environ.get("ZCODE_CLI_PROVIDER"),
+    "account:zai-start-plan",
+    "account:zai-team-coding-plan",
+) if p]
+_CLI_BACKEND = None      # lazy import, see _cli_ask()
+
+
+def _cli_module():
+    """Import cli_backend lazily: it pulls in subprocess/node machinery."""
+    global _CLI_BACKEND
+    if _CLI_BACKEND is None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import cli_backend
+        _CLI_BACKEND = cli_backend
+    return _CLI_BACKEND
 BILLING_URL = "https://zcode.z.ai/api/v1/zcode-plan/billing/current"
 CONFIGS_URL = ("https://zcode.z.ai/api/v1/client/configs"
                "?app_version=3.14.3&platform=" + _platform.client_platform("darwin-arm64"))
@@ -504,11 +534,12 @@ def entitlements(token: str) -> dict:
     return out
 
 
-app = FastAPI(title="zcode2codex")
+app = _common.make_app("zcode2codex")
 
 
-def check_auth(request: Request) -> None:
-    return
+# The zcode bridge is loopback-only and always left auth disabled (same policy
+# as the gemini/catpaw/antigravity bridges); keep that explicit here.
+check_bridge_auth = _common.make_auth_checker("")
 
 
 @app.get("/health")
@@ -528,7 +559,7 @@ async def health():
 
 @app.get("/v1/models")
 async def list_models(request: Request):
-    check_auth(request)
+    check_bridge_auth(request)
     # NOTE: no top-level "detail" key -- ocx's discovery parser treats an
     # unexpected key as a malformed payload and drops the provider.
     # Health / readiness signals live on /health instead.
@@ -541,10 +572,9 @@ async def list_models(request: Request):
     })
 
 
-def strip_prefix(model: str) -> str:
-    if model.startswith(CATALOG_PREFIX):
-        return model[len(CATALOG_PREFIX):]
-    return model
+# Codex sends zcode/<id>; peel the catalog prefix (in a loop, to survive ocx's
+# double-namespaced "zcode/zcode-<model>" slugs).
+strip_prefix = _common.make_prefix_stripper(CATALOG_PREFIX)
 
 
 def _to_openai(reply: dict, model: str) -> dict:
@@ -570,6 +600,22 @@ def _to_openai(reply: dict, model: str) -> dict:
             "total_tokens": (usage.get("input_tokens") or 0)
                            + (usage.get("output_tokens") or 0),
         },
+    }
+
+
+def _to_openai_text(text: str, model: str) -> dict:
+    """chat.completion built from plain CLI text (route A)."""
+    return {
+        "id": "chatcmpl-" + uuid.uuid4().hex[:24],
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": text or ""},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
 
@@ -608,9 +654,61 @@ def _anthropic_payload(body: dict, model: str) -> dict:
     return payload
 
 
+def _cli_ask_all(model: str, payload_messages):
+    """Route A: try every configured CLI provider, return OpenAI text.
+
+    Returns (text, "") on success, ("", reason) when the CLI route cannot
+    serve this call. Quota exhaustion on every provider is a hard stop:
+    retrying with a direct POST would only burn a captcha ticket and hit
+    3012 on top.
+    """
+    if not CLI_ENABLED:
+        return "", "cli backend disabled (ZCODE_CLI_BACKEND=0)"
+    msgs = []
+    for m in (payload_messages or []):
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role") or "user"
+        text = m.get("content") if isinstance(m.get("content"), str) else "".join(
+            str(c.get("text") or "") for c in (m.get("content") or [])
+            if isinstance(c, dict))
+        if role == "system" or not text:
+            continue
+        msgs.append(text)
+    prompt = msgs[-1] if msgs else ""
+    if not prompt:
+        return "", "empty prompt for cli backend"
+    cb = _cli_module()
+    last = ""
+    quota_hits = []
+    for pid in CLI_PROVIDERS:
+        try:
+            text = cb.ask(model=model, prompt=prompt, provider=pid,
+                          timeout=CLI_TIMEOUT,
+                          log_path=os.environ.get("ZCODE_CLI_LOG"))
+            if text:
+                return text, ""
+            last = "cli returned no text (%s)" % pid
+        except cb.QuotaError as q:
+            quota_hits.append("%s (%s)" % (pid, q.code))
+            last = "quota %s on %s: %s" % (q.code, pid, q)
+            continue
+        except Exception as exc:  # noqa: BLE001 - route B still has a chance
+            last = "cli failed on %s: %s" % (pid, _err(exc))
+            continue
+    if quota_hits and len(quota_hits) == len(CLI_PROVIDERS):
+        # Both plans are out of free invocations. Falling back to a direct
+        # POST would only burn a captcha ticket and end in 3012, so stop
+        # here with an actionable message instead.
+        return "", ("PLAN_EXHAUSTED: " + "; ".join(quota_hits)
+                    + ". Start Plan 配额耗尽(1005)且 Coding Plan 无余额"
+                      "(1113)：等套餐额度恢复或充值后再试。")
+    return "", (last or "cli route exhausted")
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
-    check_auth(request)
+    check_bridge_auth(request)
     try:
         body = await request.json()
     except Exception as exc:
@@ -634,6 +732,32 @@ async def chat_completions(request: Request):
             status_code=503)
 
     payload = _anthropic_payload(body, model)
+
+    # Route A: official CLI process (no 3012 fingerprint, captcha retry
+    # built in). On success we skip the direct-HTTP route entirely.
+    # Route A blocks for minutes (session polling); never run it on the
+    # event loop or /health and every other request freezes behind it.
+    loop = asyncio.get_event_loop()
+    cli_text, cli_why = await loop.run_in_executor(
+        None, lambda: _cli_ask_all(model, payload.get("messages") or []))
+    if cli_text:
+        out = _to_openai_text(cli_text, model)
+        if body.get("stream"):
+            return StreamingResponse(
+                _stream_chunks(out["choices"][0]["message"]["content"], model),
+                media_type="text/event-stream")
+        return JSONResponse(out)
+    log("cli route skipped:", cli_why)
+    if cli_why.startswith("PLAN_EXHAUSTED"):
+        # Both plans rejected the call for quota. Nothing route B can do:
+        # a direct POST spends a captcha ticket and gets 3012 anyway.
+        return JSONResponse(
+            {"error": {"message": cli_why,
+                       "hint": "zcode 桥接链路已打通；当前是上游套餐额度问题，"
+                               "不是代码问题。额度恢复后无需改任何配置。",
+                       "checked_at": time.strftime("%Y-%m-%d %H:%M:%S")}},
+            status_code=503)
+
     last_upstream = ""
     for _attempt in range(max(1, CAPTCHA_RETRIES)):
         # 一次性票据：取用即销毁，池空现场 mint；过期票不再往上游送。
@@ -715,6 +839,23 @@ async def chat_completions(request: Request):
     return JSONResponse(_to_openai(reply, model))
 
 
+def _stream_chunks(content: str, model: str):
+    created = int(time.time())
+    chunk = {
+        "id": "chatcmpl-" + uuid.uuid4().hex[:24],
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": {"content": content},
+                     "finish_reason": None}],
+    }
+    yield "data: " + json.dumps(chunk, ensure_ascii=False) + LINE_BREAK_2
+    chunk["choices"][0]["delta"] = {}
+    chunk["choices"][0]["finish_reason"] = "stop"
+    yield "data: " + json.dumps(chunk, ensure_ascii=False) + LINE_BREAK_2
+    yield "data: [DONE]" + LINE_BREAK_2
+
+
 async def _stream(reply: dict, model: str):
     result = _to_openai(reply, model)
     content = result["choices"][0]["message"]["content"]
@@ -754,10 +895,6 @@ async def entitlements_endpoint(request: Request):
 
 def main():
     global DEVICE_MID
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8800)
-    args = ap.parse_args()
 
     if not DEVICE_MID:
         try:
@@ -771,15 +908,20 @@ def main():
             DEVICE_MID = "bf259545-1315-48c6-af67-dd9beebcdeac"
 
     token = read_token()
-    log("zcode2codex %s on http://%s:%d" % (BRIDGE_VERSION, args.host, args.port))
     _auth = auth_state()
-    log("  logged in :", "yes" if _auth["logged_in"] else
-        "NO (jwt missing, api_key=%s) -> %s" % (_auth["api_key"],
-                                                ZCODE_LOGIN_HINT))
-    log("  captcha   :", read_captcha()[:24] + "..."
-        if read_captcha() else "MISSING -> open " + CAPTCHA_RELAY)
-    log("  models    :", ", ".join(ordered_models()))
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    cap = read_captcha()
+
+    def diag(args) -> None:
+        log("zcode2codex %s on http://%s:%d"
+            % (BRIDGE_VERSION, args.host, args.port))
+        log("  logged in :", "yes" if _auth["logged_in"] else
+            "NO (jwt missing, api_key=%s) -> %s" % (_auth["api_key"],
+                                                    ZCODE_LOGIN_HINT))
+        log("  captcha   :", cap[:24] + "..." if cap
+            else "MISSING -> open " + CAPTCHA_RELAY)
+        log("  models    :", ", ".join(ordered_models()))
+
+    _common.serve(app, 8800, None, log_level="warning", on_args=diag)
 
 
 if __name__ == "__main__":

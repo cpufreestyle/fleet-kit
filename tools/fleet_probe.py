@@ -5,11 +5,14 @@ Writes a reachability snapshot consumed by catalog_sort.py:
 
   {"reachable": [...], "unreachable": [...],
    "measured_at": "2026-09-27T17:10:00+08:00",
+   "skipped": {"zcode": "upstream requires per-call Aliyun captcha"},
    "evidence": {"workbuddy": "glm-5.2 -> E2E_OK", ...}}
 
 A bridge counts as reachable only when a real chat call returns the expected
 nonce echo. A listening port, a /v1/models listing, or a fast canned 200 all
 count as NOT reachable, because the picker is what the user actually feels.
+skipped lists bridges the sweep does not call on purpose, so a strict sorter
+can tell them apart from a bridge a truncated run never reached.
 
 Usage:
   fleet_probe.py            write ~/.codex/fleet-reach.json
@@ -304,11 +307,17 @@ def main():
     env = load_env(args.env)
     reachable, unreachable, evidence, ports = [], [], {}, {}
     verified_models = {}
+    skipped = {}
     names = [n.strip() for n in args.only.split(",") if n.strip()]
     every = sorted(set(PORTS) | set(GATEWAY))
     for name in (names or every):
         if name in NO_PROBE and not names:
             print("SKIP", name, NO_PROBE[name], flush=True)
+            # Record the skip in the snapshot. A bridge the sweep deliberately
+            # does not call (zcode needs a per-call captcha) is otherwise
+            # indistinguishable from a truncated run's missing bridge, and
+            # catalog_sort.py --strict-coverage refuses every sort on it.
+            skipped[name] = NO_PROBE[name]
             continue
         port = plist_port(name) or PORTS.get(name) or GATEWAY_PORT
         ports[name] = port
@@ -327,6 +336,7 @@ def main():
     snap = {
         "reachable": sorted(reachable),
         "unreachable": sorted(unreachable),
+        "skipped": skipped,
         "measured_at": datetime.datetime.now(tz).isoformat(
             timespec="seconds"),
         "ports": ports,
@@ -354,8 +364,12 @@ def main():
                             set(snap["reachable"]))
             bad = sorted((set(prev.get("unreachable") or []) |
                            set(snap["unreachable"])) - set(good))
+            sk = dict(prev.get("skipped") or {})
+            sk.update(snap.get("skipped") or {})
+            for name in set(good) | set(bad):
+                sk.pop(name, None)
             snap = dict(snap, reachable=good, unreachable=bad,
-                       evidence=ev, ports=pr)
+                       evidence=ev, ports=pr, skipped=sk)
             print("merged with", args.out)
         except Exception as exc:
             print("merge skipped:", exc)

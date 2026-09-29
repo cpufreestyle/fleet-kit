@@ -21,18 +21,21 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Optional
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
+
 import httpx
-import uvicorn
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse, Response
+
+import _common
 
 BRIDGE_VERSION = "0.1.0"
 
@@ -75,25 +78,15 @@ def api_base() -> str:
     return f"{saas_api_base()}/api/v1"
 
 
-app = FastAPI(title="lingxi2codex", version=BRIDGE_VERSION)
-_http: Optional[httpx.AsyncClient] = None
+client = _common.make_client_getter(**_common.client_kwargs(
+    CALL_TIMEOUT, headers={"User-Agent": "lingxi2codex/%s" % BRIDGE_VERSION}))
+
+app = _common.make_app("lingxi2codex", BRIDGE_VERSION)
 _lock = asyncio.Lock()
 _cache: dict = {"models": [], "ts": 0.0, "account": ""}
 
 
-def client() -> httpx.AsyncClient:
-    global _http
-    if _http is None or _http.is_closed:
-        _http = httpx.AsyncClient(timeout=httpx.Timeout(CALL_TIMEOUT, connect=15),
-                                  headers={"User-Agent": "lingxi2codex/%s" % BRIDGE_VERSION})
-    return _http
-
-
-def check_bridge_auth(request: Request) -> None:
-    if not BRIDGE_KEY:
-        return
-    if (request.headers.get("authorization") or "") != f"Bearer {BRIDGE_KEY}":
-        raise HTTPException(status_code=401, detail="invalid bridge key")
+check_bridge_auth = _common.make_auth_checker(BRIDGE_KEY)
 
 
 # ---------------- 登录态（灵犀官方 auth.json，不覆盖 IDE/CLI 语义，只在其失效时刷新并回写） ----------------
@@ -199,11 +192,8 @@ async def get_models(force: bool = False) -> list[str]:
         return _cache["models"]
 
 
-def remap_model(model: Optional[str]) -> Optional[str]:
-    # 循环剥离：兼容 ocx 发现的双前缀 slug（如 lingxi/lingxi-deepseek-flash）
-    while model and model.startswith(CATALOG_PREFIX):
-        model = model[len(CATALOG_PREFIX):]
-    return model
+# 循环剥离：兼容 ocx 发现的双前缀 slug（如 lingxi/lingxi-deepseek-flash）
+remap_model = _common.make_prefix_stripper(CATALOG_PREFIX)
 
 
 # ---------------- 路由 ----------------
@@ -283,23 +273,14 @@ async def chat_completions(request: Request):
     return Response(content=body, media_type="application/json")
 
 
-async def _pump(resp: httpx.Response):
-    try:
-        async for chunk in resp.aiter_bytes():
-            yield chunk
-    finally:
-        await resp.aclose()
+_pump = _common.sse_pump
 
 
 def main():
-    global BRIDGE_KEY
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8792)
-    args = ap.parse_args()
-    print(f"[lingxi2codex] v{BRIDGE_VERSION} on http://{args.host}:{args.port} "
-          f"api={api_base()} key={'set' if BRIDGE_KEY else 'OPEN'}", flush=True)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=True)
+    _common.serve(
+        app, 8792,
+        f"[lingxi2codex] v{BRIDGE_VERSION} on http://%s:%s "
+        f"api={api_base()} key={'set' if BRIDGE_KEY else 'OPEN'}")
 
 
 if __name__ == "__main__":

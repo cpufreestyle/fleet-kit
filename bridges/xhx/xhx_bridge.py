@@ -23,18 +23,21 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Optional
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
+
 import httpx
-import uvicorn
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse, Response
+
+import _common
 
 BRIDGE_VERSION = "0.1.0"
 
@@ -57,25 +60,15 @@ def auth_file() -> Path:
     return Path(root) / "auth.json"
 
 
-app = FastAPI(title="xhx2codex", version=BRIDGE_VERSION)
-_http: Optional[httpx.AsyncClient] = None
+client = _common.make_client_getter(**_common.client_kwargs(
+    CALL_TIMEOUT, headers={"User-Agent": f"xhx2codex/{BRIDGE_VERSION}"}))
+
+app = _common.make_app("xhx2codex", BRIDGE_VERSION)
 _lock = asyncio.Lock()
 _cache: dict = {"models": {}, "ts": 0.0}   # model_id -> {name, context_window, max_tokens, ...}
 
 
-def client() -> httpx.AsyncClient:
-    global _http
-    if _http is None or _http.is_closed:
-        _http = httpx.AsyncClient(timeout=httpx.Timeout(CALL_TIMEOUT, connect=15),
-                                  headers={"User-Agent": f"xhx2codex/{BRIDGE_VERSION}"})
-    return _http
-
-
-def check_bridge_auth(request: Request) -> None:
-    if not BRIDGE_KEY:
-        return
-    if (request.headers.get("authorization") or "") != f"Bearer {BRIDGE_KEY}":
-        raise HTTPException(status_code=401, detail="invalid bridge key")
+check_bridge_auth = _common.make_auth_checker(BRIDGE_KEY)
 
 
 # ---------------- 登录态（~/.box-agent/config/auth.json，与桌面端共享） ----------------
@@ -181,11 +174,8 @@ async def get_catalog(force: bool = False) -> dict:
         return _cache["models"]
 
 
-def remap_model(model: Optional[str]) -> Optional[str]:
-    # 循环剥离：兼容 ocx 发现的双前缀 slug（如 xhx/xhx-sn-glm-5-3-flash）
-    while model and model.startswith(CATALOG_PREFIX):
-        model = model[len(CATALOG_PREFIX):]
-    return model
+# 循环剥离：兼容 ocx 发现的双前缀 slug（如 xhx/xhx-sn-glm-5-3-flash）
+remap_model = _common.make_prefix_stripper(CATALOG_PREFIX)
 
 
 # ---------------- 路由 ----------------
@@ -255,23 +245,14 @@ async def chat_completions(request: Request):
     return Response(content=body, media_type="application/json")
 
 
-async def _pump(resp: httpx.Response):
-    try:
-        async for chunk in resp.aiter_bytes():
-            yield chunk
-    finally:
-        await resp.aclose()
+_pump = _common.sse_pump
 
 
 def main():
-    global BRIDGE_KEY
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8793)
-    args = ap.parse_args()
-    print(f"[xhx2codex] v{BRIDGE_VERSION} on http://{args.host}:{args.port} "
-          f"api={API_BASE} key={'set' if BRIDGE_KEY else 'OPEN'}", flush=True)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=True)
+    _common.serve(
+        app, 8793,
+        f"[xhx2codex] v{BRIDGE_VERSION} on http://%s:%s "
+        f"api={API_BASE} key={'set' if BRIDGE_KEY else 'OPEN'}")
 
 
 if __name__ == "__main__":

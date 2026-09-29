@@ -21,27 +21,24 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import base64
 import hashlib
-import hmac
 import json
 import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 import _platform
-import secrets
+import _common
 import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
 import httpx
-import uvicorn
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
 BRIDGE_VERSION = "0.1.0"
 
@@ -77,25 +74,15 @@ CALL_TIMEOUT = float(os.environ.get("TRAE_CALL_TIMEOUT") or "300")
 CREDS_DIR = Path(os.environ.get("TRAE2CODEX_HOME") or (Path.home() / ".trae2codex"))
 CREDS_FILE = CREDS_DIR / "creds.json"
 
-app = FastAPI(title="trae2codex", version=BRIDGE_VERSION)
-_http: Optional[httpx.AsyncClient] = None
+client = _common.make_client_getter(**_common.client_kwargs(
+    CALL_TIMEOUT, headers={"User-Agent": "Mozilla/5.0"}))
+
+app = _common.make_app("trae2codex", BRIDGE_VERSION)
 _state_lock = asyncio.Lock()
 _catalog: dict = {"models": {}, "ts": 0.0}   # model_id -> {"function": fn, "name": str}
 
 
-def client() -> httpx.AsyncClient:
-    global _http
-    if _http is None or _http.is_closed:
-        _http = httpx.AsyncClient(timeout=httpx.Timeout(CALL_TIMEOUT, connect=15),
-                                  headers={"User-Agent": "Mozilla/5.0"})
-    return _http
-
-
-def check_bridge_auth(request: Request) -> None:
-    if not BRIDGE_KEY:
-        return
-    if (request.headers.get("authorization") or "") != f"Bearer {BRIDGE_KEY}":
-        raise HTTPException(status_code=401, detail="invalid bridge key")
+check_bridge_auth = _common.make_auth_checker(BRIDGE_KEY)
 
 
 # ---------------- storage.json 解密（dsh-connect-trae 算法，逐字段对齐） ----------------
@@ -401,11 +388,8 @@ async def get_catalog(force: bool = False) -> dict:
         return _catalog["models"]
 
 
-def remap_model(model: Optional[str]) -> Optional[str]:
-    # 循环剥离：兼容 ocx 发现的双前缀 slug（如 trae/trae-glm-5.2）
-    while model and model.startswith(CATALOG_PREFIX):
-        model = model[len(CATALOG_PREFIX):]
-    return model
+# 循环剥离：兼容 ocx 发现的双前缀 slug（如 trae/trae-glm-5.2）
+remap_model = _common.make_prefix_stripper(CATALOG_PREFIX)
 
 
 def build_chat_body(payload: dict, model: str, fn: str) -> dict:
@@ -730,13 +714,10 @@ async def _sse_pump(resp: httpx.Response, model: str):
 
 
 def main():
-    global BRIDGE_KEY
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8791)
-    args = ap.parse_args()
-    print(f"[trae2codex] v{BRIDGE_VERSION} on http://{args.host}:{args.port} key={'set' if BRIDGE_KEY else 'OPEN'}", flush=True)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=True)
+    _common.serve(
+        app, 8791,
+        f"[trae2codex] v{BRIDGE_VERSION} on http://%s:%s "
+        f"key={'set' if BRIDGE_KEY else 'OPEN'}")
 
 
 if __name__ == "__main__":

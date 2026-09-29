@@ -13,25 +13,23 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 import _platform
+import _common
 import re
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-import uvicorn
 
 BRIDGE_VERSION = "0.1.0"
 # The npm-installed CLI lives under a platform-tagged node directory on macOS;
@@ -54,7 +52,7 @@ FALLBACK_MODELS = [
 CALL_TIMEOUT = int(os.environ.get("QODER_CALL_TIMEOUT") or "300")
 API_KEY = os.environ.get("QODER2CODEX_KEY", "")
 
-app = FastAPI(title="qoder2codex", version=BRIDGE_VERSION)
+app = _common.make_app("qoder2codex", BRIDGE_VERSION)
 
 _models_cache: dict = {"models": FALLBACK_MODELS, "fetched_at": 0.0, "source": "fallback"}
 _models_lock = threading.Lock()
@@ -203,10 +201,13 @@ def _extract_usage(payload: dict) -> Optional[dict]:
             "total_tokens": prompt + completion}
 
 
+# "auto"/"default" (and an empty model) fall back to DEFAULT_MODEL; anything
+# else keeps the qoder/ prefix stripped exactly once.
+_strip_qoder = _common.make_model_remapper("qoder/")
+
+
 def _clean_model(model: str) -> str:
-    name = (model or "").strip()
-    if name.lower().startswith("qoder/"):
-        name = name.split("/", 1)[1]
+    name = (_strip_qoder((model or "").strip()) or "").strip()
     if not name or name.lower() in ("auto", "default"):
         name = DEFAULT_MODEL
     return name
@@ -355,17 +356,24 @@ async def _stream(body: str, base_args: list[str], model: str, payload: dict):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Qoder CN → OpenAI 兼容转换器")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8789)
-    parser.add_argument("--api-key", default=os.environ.get("QODER2CODEX_KEY", ""))
-    args = parser.parse_args()
+    def banner(args) -> None:
+        global API_KEY
+        # The installer passes the key through the plist environment, but a
+        # hand-run bridge uses --api-key. Without this the flag parsed cleanly
+        # and was then ignored, so the bridge stayed open.
+        if getattr(args, "api_key", ""):
+            API_KEY = args.api_key
+        print(f"qoder2codex v{BRIDGE_VERSION}")
+        print(f"CLI : {[c for c in CLI_CANDIDATES if c and Path(c).exists()]}")
+        print(f"Auth: {_auth_state()} key={'set' if API_KEY else 'OPEN'}")
 
-    print(f"qoder2codex v{BRIDGE_VERSION}")
-    print(f"CLI : {[c for c in CLI_CANDIDATES if c and Path(c).exists()]}")
-    print(f"Auth: {_auth_state()}")
-    print(f"Listen: http://{args.host}:{args.port}", flush=True)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    _common.serve(
+        app, 8789,
+        "Listen: http://%s:%s",
+        log_level="warning",
+        description="Qoder CN → OpenAI 兼容转换器",
+        extra_args=[("--api-key", {"default": os.environ.get("QODER2CODEX_KEY", "")})],
+        on_args=banner)
 
 
 if __name__ == "__main__":
