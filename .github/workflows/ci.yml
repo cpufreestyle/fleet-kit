@@ -107,16 +107,30 @@ jobs:
           # to classify it from outside.
           "$(fleet_system_python)" - <<'PY'
           import os
-          import shlex
           import socket
           import subprocess
           import sys
 
-          def helper(port):
-              # a workspace path can hold spaces, so quote before sourcing
-              src = shlex.quote(os.path.join(
-                  os.environ.get("GITHUB_WORKSPACE", "."), "tools", "platform.sh"))
-              return ". {}; fleet_port_in_use {}".format(src, port)
+          def bash_binary():
+              # On Windows the `bash` that wins PATH lookup is wsl.exe's
+              # launcher, which cannot run a POSIX script at all; the step
+              # itself runs under Git for Windows bash, so ask for that one.
+              if sys.platform.startswith("win"):
+                  roots = [os.environ.get("ProgramFiles", r"C:\Program Files"),
+                           os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")]
+                  for root in roots:
+                      cand = os.path.join(root, "Git", "bin", "bash.exe")
+                      if os.path.exists(cand):
+                          return cand
+              return "bash"
+
+          def verdict(port):
+              # Relative source path from inside the workspace: a checkout
+              # path can hold spaces and backslashes alike.
+              script = ". ./tools/platform.sh; fleet_port_in_use {}".format(port)
+              return subprocess.call(
+                  [bash_binary(), "-c", script],
+                  cwd=os.environ.get("GITHUB_WORKSPACE", "."))
 
           port = 18923
           holder = socket.socket()
@@ -125,16 +139,15 @@ jobs:
           holder.listen(1)
 
           try:
-              rc = subprocess.call(["bash", "-c", helper(port)])
+              busy = verdict(port)
           finally:
               holder.close()
 
-          if rc != 0:
+          if busy != 0:
               print("port probe missed a listening port held by this step")
               sys.exit(1)
 
-          probe = subprocess.call(["bash", "-c", helper(18924)])
-          if probe == 0:
+          if verdict(18924) == 0:
               print("port probe reported a free port as busy")
               sys.exit(1)
 
