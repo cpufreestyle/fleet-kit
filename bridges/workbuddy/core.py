@@ -909,16 +909,27 @@ def _account_service() -> WorkBuddyAccountService:
     return service
 
 
+def _run_coro(coro):
+    """Run a coroutine from synchronous code without leaking its event loop.
+
+    The old shape called asyncio.new_event_loop().run_until_complete() and never
+    closed the loop, so every call left one more selector -- with its socketpair
+    and pipes -- alive until the process exited.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def _auto_checkin_background() -> None:
     """Best-effort auto-claim for any account that has not claimed today."""
-    import threading
-
     def _run() -> None:
         try:
-            import asyncio
             svc = CONFIG.get("checkin_service")
             if isinstance(svc, WorkBuddyCheckinService):
-                result = asyncio.new_event_loop().run_until_complete(svc.claim_all())
+                result = _run_coro(svc.claim_all())
                 _log(f"[checkin] auto-claim: {result.get('claimed_accounts')} accounts, +{result.get('claimed_total')} credits")
         except Exception as exc:
             _log(f"[checkin] auto-claim skipped: {exc}")
@@ -1158,8 +1169,8 @@ async def dashboard_import_current(request: Request):
     service = CONFIG.get("account_service")
     if isinstance(service, WorkBuddyAccountService):
         service.clear_quotas()
-    return {"status": "ok", "account": account, "account_pool": pool.summary()}
     _auto_checkin_background()
+    return {"status": "ok", "account": account, "account_pool": pool.summary()}
 
 
 @app.post("/ui/accounts/primary", include_in_schema=False)
@@ -1192,8 +1203,8 @@ async def dashboard_remove_account(request: Request):
     service = CONFIG.get("account_service")
     if isinstance(service, WorkBuddyAccountService):
         service.clear_quotas()
-    return {"status": "ok", "account_pool": pool.summary()}
     _auto_checkin_background()
+    return {"status": "ok", "account_pool": pool.summary()}
 
 
 @app.post("/ui/accounts/refresh", include_in_schema=False)
@@ -1235,7 +1246,7 @@ async def dashboard_checkin_status(request: Request):
     _check_dashboard_management(request)
     service = CONFIG.get("checkin_service")
     if not isinstance(service, WorkBuddyCheckinService):
-        raise HTTPException(status_code=503, detail="Buddy 鍔犳娊绔欏～链嶅姟灏氭湭鍒濆鍖?")
+        raise HTTPException(status_code=503, detail="Buddy 签到助手服务尚未初始化")
     try:
         return await service.status()
     except (httpx.HTTPError, RuntimeError, ValueError) as exc:
@@ -1247,7 +1258,7 @@ async def dashboard_checkin_claim(request: Request):
     _check_dashboard_management(request)
     service = CONFIG.get("checkin_service")
     if not isinstance(service, WorkBuddyCheckinService):
-        raise HTTPException(status_code=503, detail="Buddy 鍔犳娊绔欏～链嶅姟灏氭湭鍒濆鍖?")
+        raise HTTPException(status_code=503, detail="Buddy 签到助手服务尚未初始化")
     payload = await request.json()
     ref = str(payload.get("ref") or "") if isinstance(payload, dict) else ""
     try:
@@ -2716,10 +2727,13 @@ def _is_channel_error(raw) -> bool:
 
 def _account_failure(status: int, raw: bytes) -> tuple[str, int] | None:
     text = raw.decode("utf-8", "replace").lower()
-    if status in {401, 403} or "token" in text and ("expired" in text or "invalid" in text):
-        return "登录态失效，等待重新认证或刷新", 600
+    # 11128 是上游来源风控（非官方客户端），既不是登录态问题也不是限流。它必须排在
+    # 401/403 之前：放在后面，一次渠道校验就会被记成「登录态失效」，账号直接进 600 秒
+    # 冷却（比应有的 20 秒长 30 倍），而 /health 与面板还会顺势提示重新登录。
     if "11128" in text or "unapproved channel" in text:
         return "上游渠道校验未通过", 20
+    if status in {401, 403} or "token" in text and ("expired" in text or "invalid" in text):
+        return "登录态失效，等待重新认证或刷新", 600
     if status == 429 or "rate limit" in text or "too many requests" in text:
         return "账号触发限流", 60
     if status == 402 or any(marker in text for marker in ("credit", "balance", "quota", "积分", "余额")):
@@ -2738,6 +2752,10 @@ async def _headers_for_candidate(pool: AccountPool, candidate, rid: str) -> dict
         return None
 
 
+class _ChannelRetry(Exception):
+    """上游渠道校验（11128）拒绝：原地重发同一账号，不计入账号冷却。"""
+
+
 async def _collect_with_pool(url: str, pool: AccountPool, body: dict,
                              model_name: str, rid: str) -> dict:
     candidates = pool.candidates()
@@ -2748,11 +2766,11 @@ async def _collect_with_pool(url: str, pool: AccountPool, body: dict,
         }})
     last_status = 502
     last_raw = b"all WorkBuddy accounts failed"
+    channel_tries = 0
     for candidate in candidates:
         headers = await _headers_for_candidate(pool, candidate, rid)
         if headers is None:
             continue
-        channel_tries = 0
         try:
             async with httpx.AsyncClient(timeout=300) as client:
                 async with client.stream("POST", url, headers=headers, json=body) as response:
@@ -3072,13 +3090,12 @@ def main():
     CONFIG["account_service"] = WorkBuddyAccountService(pool, BRIDGE_VERSION)
     CONFIG["checkin_service"] = WorkBuddyCheckinService(pool)
 
-    # Buddy 鍔犳娊绔欏～: 鍚姩鏃朵竴娆¤嚟璐﹀彿姹犲凡锷ㄦ€佹晳鍙栧綋澶╀粖棰濓紙宸叉互棰濇棤浣滃亣锛?
+    # Buddy 签到助手: 启动时兜一轮，把账号池已完成当天签到的额度全部取出（失败只记日志，不影响启动）
     def _auto_checkin_startup() -> None:
         try:
-            import asyncio
             svc = CONFIG.get("checkin_service")
             if isinstance(svc, WorkBuddyCheckinService):
-                result = asyncio.new_event_loop().run_until_complete(svc.claim_all())
+                result = _run_coro(svc.claim_all())
                 _log(f"[checkin] startup auto-claim: {result.get('claimed_accounts')} accounts, +{result.get('claimed_total')} credits")
         except Exception as exc:
             _log(f"[checkin] startup auto-claim skipped: {exc}")
