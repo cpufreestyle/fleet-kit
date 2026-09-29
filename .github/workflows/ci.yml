@@ -28,7 +28,7 @@ jobs:
       # bounding backup growth) are covered here rather than found live.
       - name: tools unit tests
         run: |
-          python3 -m pip install --quiet pytest httpx
+          python3 -m pip install --quiet pytest httpx fastapi
           python3 -m pytest tools -q
 
       - name: secret and PII leak scan
@@ -91,13 +91,23 @@ jobs:
         run: |
           # shellcheck source=tools/platform.sh
           . tools/platform.sh
-          "$(fleet_system_python)" -m http.server 18923 --bind 127.0.0.1 >/dev/null 2>&1 &
+          log="$(mktemp)"
+          "$(fleet_system_python)" -m http.server 18923 --bind 127.0.0.1 >"$log" 2>&1 &
           server=$!
           for _ in $(seq 1 30); do
             "$(fleet_system_python)" -c 'import socket,sys; s=socket.socket(); s.settimeout(.3); sys.exit(0 if s.connect_ex(("127.0.0.1",18923))==0 else 1)' && break
             sleep 0.3
           done
-          fleet_port_in_use 18923 || { echo "port probe missed a listening port"; exit 1; }
+          if ! fleet_port_in_use 18923; then
+            # The probe is the unit under test, so a miss needs the evidence
+            # that says whether the listener came up at all on this runner.
+            echo "port probe missed a listening port"
+            echo "--- listener log ---"; cat "$log"
+            echo "--- listener process ---"; ps -o pid,stat,command -p "$server" || true
+            echo "--- lsof ---"; lsof -nP -iTCP:18923 || true
+            kill "$server" >/dev/null 2>&1 || true
+            exit 1
+          fi
           fleet_port_in_use 18924 && { echo "port probe reported a free port as busy"; exit 1; }
           kill "$server" >/dev/null 2>&1 || true
           echo "port probe ok"
