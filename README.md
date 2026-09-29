@@ -155,9 +155,11 @@ FleetKit 设计为可整体搬走：`kit/`（源码）与 `runtime/`（运行根
                [--no-start] [--skip-deps] [--dry-run]
                [--with-checkin] [--with-ui] [--no-ocx-guard] [-h]
 
-- `--home DIR`：安装根目录，默认 "<PRJ>/runtime"
+- `--home DIR`：安装根目录，默认 `~/FleetKit/runtime`。本仓库是 `kit/` 与
+  `runtime/` 同级布局，所以示例命令一律显式写 `--home "<PRJ>/runtime"`；
+  不传的话 dry-run 也会照着 `~/FleetKit` 报计划
 - `--port-base N`：起始端口，13 座桥依次占用 N .. N+13（offset 9 留空），默认 8787
-- `--with-checkin`：装每日 09:00 CST 签到 timer（当前只有 xhx 任务）
+- `--with-checkin`：装每日 09:00 CST 签到 timer（xhx  SenseTime 积分 + workbuddy 桥存活确认）
 - `--with-ui`：装本地状态面板 launchd 常驻服务，端口 N+9（默认 8796）
 - `--no-ocx-guard`：关掉反代理模型 catalog 看门狗（默认随 opencodex 一起装）
 - `--no-opencodex`：跳过 ocx provider 注册（之后可手动跑 bash "<PRJ>/runtime/opencodex/setup-providers.sh）"
@@ -194,7 +196,7 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
 |------|------|
 | `--home DIR` | 安装根目录，默认 "<PRJ>/runtime" |
 | `--port-base N` | 起始端口，默认 8787 |
-| `--with-checkin` | 装每日 09:00 CST 签到 timer |
+| `--with-checkin` | 装每日 09:00 CST 签到 timer（xhx + workbuddy 两项任务）|
 | `--with-ui` | 装本地状态面板 launchd 常驻服务（端口 N+9） |
 | `--no-ocx-guard` | 跳过反代理模型 catalog 看门狗 timer（默认随 opencodex 装） |
 | `--no-opencodex` | 跳过 ocx provider 注册 |
@@ -405,8 +407,9 @@ docs/stepfun2codex-runbook.md。
   架构预览」对应 HF `Qwen/Qwen3.8-Flash-Next`（架构名 Qwen4ExpForConditionalGeneration，
   gated: false 开放权重；NVFP4 版约 124GB，无 DGX Spark 跑不动），**生产可用版是托管
   `qwen3.8-flash`**（同为 Qwen4 架构、1M 上下文[输入 991K / 输出 131K]、OpenAI+Anthropic
-  双协议、官网明示支持 Codex）。无 key 时桥返回静态兜底目录（qwen3.8-flash /
-  qwen3.8-max）；到 qwencloud.com 注册拿 key 写入 `fleet.env` 的 `QWEN2CODEX_KEY` 后
+  双协议、官网明示支持 Codex）。无上游 key 时桥返回静态兜底目录（qwen3.8-flash /
+  qwen3.8-max）且 chat 报 503 `qwen_key_missing`；到 qwencloud.com 注册拿 key 写入
+  `fleet.env` 的 **`QWEN_API_KEY`**（不是本地桥 key `QWEN2CODEX_KEY`，两者别混用）后
   `bash bridges/finish.sh qwen` 透传上游全量目录。细节见 docs/qwen2codex-runbook.md。
 - **qoder**（2026-09-26 修复）：桥（8789）一直有 15 个模型，但从未注册进 ocx
   （live = 0）。已执行 `ocx provider add qoder --adapter openai-chat --base-url
@@ -467,7 +470,9 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 - 无斜杠前缀的「原生模型」没有桥可判定，默认保留；只有 --hide-native-when-pool-down 显式探测确认账号池不可用时才隐藏（见下）。
 - 垃圾行清理先于桥判定执行（只看 slug），面板挂了也照删；`--no-hide-junk` 关闭。
 - 权威源是 `http://127.0.0.1:8796/api/status` 的 `verify.real`（不是 `bridges[].probe.ok`）。
-- 写前做 byte 级 round-trip 校验，不符即拒绝落库（exit 5）；面板不可达（3）或 real 为空（4）一概不删，防止误清空。
+- 判据快照超过 24h（`--max-verify-age`）不删行，只清垃圾行（exit 6）：`verify_real_calls.py` 是按需跑的，快照隔天很正常，凭旧判据删行会把已恢复的桥一直藏掉。同理，面板不可达（3）或 real 为空（4）也一概不删。
+- 写前做 byte 级 round-trip 校验：先探明文件正在用的序列化布局（缩进 / 行尾换行 / `ensure_ascii`），按同一布局回写；认不出的布局才拒绝落库（exit 5），并说明原因。2026-09-29 修：此前只认 `indent=2`+行尾换行，而在写的布局是 `indent=1` 无换行，于是每次写入都被拒且一声不响，包装脚本又把失败记成 `ok:`——一个从没真正过滤过的过滤器健康地跑了好几天。
+- 所有本地 HTTP 调用（面板、原生池探测）都绕过系统代理：`urllib` 默认会走 macOS 系统代理，判据就成了代理的而不是桥的，代理一挂整棵过滤器跟着挂。
 - REAL 但 catalog 缺失的桥会 `ocx sync` 补回（带 1h cooldown，避免和 guard 打架）。
 - `--keep P[,P]` 临时保留某 provider；`--only P[,P]` 只处理指定 provider。
 
@@ -475,11 +480,11 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 
 ### 原生模型（无前缀行）与账号池
 
-选择器里没有 `vendor/` 前缀的行（gpt-5.5 / gpt-5.6-* / gpt-6-* / step-3.7-flash）不是反代理模型，而是走 ocx 内置 openai provider 的 Codex 账号池模型（`codexAccountMode: pool`）。它们没有桥，所以 `verify.real` 永远覆盖不到，`catalog_filter` 默认也不动它们。
+选择器里没有 `vendor/` 前缀的行（gpt-5.5 / gpt-5.6-* / gpt-6-* / step-3.7-flash）不是反代理模型，而是走本地账号池/网关的模型（配置里写 ocx 内置 openai provider `codexAccountMode: pool`；当前 `~/.codex/config.toml` 的 `model_provider=custom` 指向 CC Switch 网关 `http://127.0.0.1:15721`，由它路由）。它们没有桥，所以 `verify.real` 永远覆盖不到，`catalog_filter` 默认也不动它们。
 
 账号池空了（未登录 ChatGPT、或 `~/.codex/auth.json` 里的 key 失效）时，这些行是选择器里最坏的一种失败：**看得见、选得动，一提交就 401**。`OpenAI account pool has no usable account credential` 就是这么来的。
 
-`--hide-native-when-pool-down` 用一次最小请求（`gpt-5.5` + 16 token）探测 `http://127.0.0.1:10100/v1/responses`：只有明确读到「池无可用凭据」的 401 才判定不可用；其余任何结果（成功、其它 4xx/5xx、代理不可达）都按「可用」处理，探测失败不会误清空选择器。探测为不可用时隐藏这些行，池恢复后下个周期自动加回。
+`--hide-native-when-pool-down` 用一次最小请求探测 `config.toml` 里 `model_provider` 指向的网关（未设 `FLEET_PROXY_BASE` 时；默认 ocx `http://127.0.0.1:10100`）。请求体必须是 `input` 列表 + `stream:true`，否则网关在到达账号池之前就回 400（`Input must be a list` / `Stream must be set to true`），这个探测要看的 401 永远等不到；模型名按 catalog 里的原生行依次试，网关不认的名字（404）说明不了账号池的事，换下一个。只有明确读到「池无可用凭据」的 401 才判定不可用；其余任何结果（成功、其它 4xx/5xx、网关不可达）都按「可用」处理，探测失败不会误清空选择器。探测为不可用时隐藏这些行，池恢复后下个周期自动加回。
 
     bash "<PRJ>/runtime/tools/catalog-filter.sh" run --hide-native-when-pool-down --dry-run
 
@@ -490,7 +495,7 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
     ocx account list openai   # 看账号池里到底还有没有账号
 
 
-与 `ocx-catalog-guard` 互补：guard 在桥模型数 < 60 时 `ocx sync` 加回，filter 再剔除非 REAL。当前 REAL 桥：workbuddy、workbuddy-gpt、qoder、codely、trae、lingxi、xhx；连同 tokendance/stepfun 与原生行，清理后选择器 149 行，远高于 guard 阈值，两者不互踩。
+与 `ocx-catalog-guard` 互补：guard 在桥模型数 < 60 时 `ocx sync` 加回，filter 再剔除非 REAL。两者会互踩——filter 藏掉的行正好让 guard 计数掉到阈值以下，于是 `ocx sync` 把坏行全部加回来，下个周期再被藏掉，300s 一轮永远对打。所以 filter 每轮把「比舰队自报少多少斜杠行」写进 `~/.codex/.catalog-filter-hidden.json`（按 bridge 自己的模型数与 catalog 存活行数相减，不猜 slug），guard 读它：缺口能被 filter 解释就不补，`66 + 62 hidden = 128; not healing`；只有在岗桥的行也丢了（真被 CC Switch 冲掉）才 `ocx sync`。当前 REAL 桥：workbuddy、qoder、codely、trae、lingxi、xhx；连同 tokendance/stepfun 与原生行，清理后选择器 74 行（斜杠 66 + 原生 8），仍高于 guard 阈值但只剩 6 行余量，这道解释逻辑就是那时的安全带。
 
 改完磁盘 catalog 后**需重启 Codex/ChatGPT** 才会刷新选择器。
 
@@ -588,6 +593,11 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
    individuals/AI Pro/Ultra 档（含 Gemini CLI 登录），该档本就是个人账号免费档
    （60 次/分、1000 次/天，AI Pro 只抬限额不单独计费）。需迁移 Antigravity 或改
    AI Studio key；详见 docs/free-models-runbook.md「Gemini 档位定性」。
+   上游不可达时 chat 在 `GEMINI_CHAT_BUDGET`（默认 60s）内回 502，不再挂 6 分钟，
+   客户端断开也不再伪装成 BRIDGE_DOWN。2026-09-29 修的是两层：预算要贯穿
+   token 刷新／`loadCodeAssist`，并且要在 `socket.create_connection` 层按剩余时间
+   给**每个解析地址**封顶——`cloudcode-pa.googleapis.com` 解析出 16 个地址
+   （前 8 个 IPv6，本机 VPN 全部黑洞），不封的话一次调用就能吃满 16 份 timeout。
 4. catpaw：需要美团内网/VPN，否则 catpaw.sankuai.com 不可达（Tunnel 503）。
    连上 VPN 后执行：launchctl kickstart -k gui/$(id -u)/com.local.catpaw2codex
 5. **antigravity**（第十桥）：代码/凭据/catalog/ocx 注册全部就绪，12 个模型已进
@@ -597,16 +607,22 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
    换能放行 Google 全域的节点后
    `launchctl kickstart -k gui/$(id -u)/com.local.antigravity2codex` 再
    `python3 tools/verify_real_calls.py --only antigravity`。细节见
-   docs/antigravity2codex-runbook.md。
+   docs/antigravity2codex-runbook.md。上游挂起时 chat 在
+   `ANTIGRAVITY_CHAT_BUDGET`（默认 60s）内收口，不会再拖到几分钟；连接层同样按
+   剩余时间给每个解析地址封顶（16 个地址的域名不封就是 16 份 timeout）。
 6. trae：桥 8791 上游曾挂（先 401 鉴权失效，后 502「param invalid」），已不是
   默认路线。经 CC Switch 对外表现为
   `503 所有供应商已熔断，无可用渠道`——看到这个报错先确认默认模型是不是又
  指回了死掉的桥；现默认为 stepfun 官方直连，实测 200。
-7. **qwen**（第十一桥）：代码/catalog/ocx 注册全部就绪，8798 桥在跑；无 key 时
-   `/v1/models` 只有静态兜底两个模型（qwen3.8-flash / qwen3.8-max），
-   `verify_real_calls.py` 判非 REAL，catalog_filter 随之隐藏——属设计行为，不会污染
-   选择器。到 qwencloud.com 注册并创建 API key 写入 `runtime/fleet.env` 的
-  `QWEN2CODEX_KEY`，然后 `bash bridges/finish.sh qwen` 即透传上游全量目录。
+7. **qwen**（第十一桥）：代码/catalog/ocx 注册全部就绪，8798 桥在跑。两个 key 别混：
+   `QWEN2CODEX_KEY` 是**本地**桥 key（任意字符串），上游 Qwen Cloud key 要写
+   `QWEN_API_KEY`——写错的话桥把本地 key 当上游 key 发出去，chat 全 401。
+   （2026-09-29 起上游 401/403 时 `/v1/models` 直接回 401 +
+   `upstream_auth_error`，不再返回假的静态目录；网络错误/5xx 仍给
+   `qwen3.8-flash` / `qwen3.8-max` 兜底目录。）
+   到 qwencloud.com 注册拿 key 写入 `runtime/fleet.env` 的 `QWEN_API_KEY`，
+   再 `bash bridges/finish.sh qwen` 即透传上游全量目录。细节见
+   docs/qwen2codex-runbook.md。
 8. ~~cline（未接入）~~ **已接入（第十二桥，2026-09-26 21:20）**：`api.cline.bot`
    没有可用的 OpenAI 兼容推理端点（全局 auth 中间件把非白名单路径一律挡成 401），
    但本机 hub daemon 可以直连：`ws://127.0.0.1:25463/hub`，凭据在
