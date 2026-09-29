@@ -2902,11 +2902,11 @@ async def _stream_upstream(url: str, pool: AccountPool, body: dict,
     last_status = 502
     last_error = b"all WorkBuddy accounts failed"
     completed = False
+    channel_attempts = 0  # 与 _collect_with_pool 一致：按请求计，不按账号计
     for candidate in candidates:
         headers = await _headers_for_candidate(pool, candidate, rid)
         if headers is None:
             continue
-        channel_attempts = 0
         for attempt in range(4):
             started = False
             retry_candidate = False
@@ -2920,15 +2920,20 @@ async def _stream_upstream(url: str, pool: AccountPool, body: dict,
                             last_status, last_error = response.status_code, error
                             if _is_channel_error(error) and channel_attempts < 3:
                                 channel_attempts += 1
-                                channel_retry = True
                                 _log(f"{prefix}↻ channel check rejected, "
                                      f"retry {channel_attempts}/3 | {model_name}")
                                 await asyncio.sleep(1.5 * channel_attempts)
-                                break
+                                # 必须在异步 with 内部用 continue：break 在这里会连
+                                # 同外层 for attempt 一起退出，等于放弃该账号换下一个，
+                                # 与上面 “原地重试” 的日志相反。
+                                continue
                             failure = _account_failure(response.status_code, error)
                             _log(f"{prefix}✗ HTTP {response.status_code} | account={candidate.ref} | {model_name} | {_truncate(error.decode('utf-8','replace'),200)}")
                             if failure:
                                 pool.mark_failure(candidate.ref, failure[0], failure[1])
+                                # 能走到这里说明重发预算已用完（否则上面就己级取了），同一账号再试只会重复写盘。
+                                if _is_channel_error(error):
+                                    break
                                 continue
                             yield _err_event(error, response.status_code)
                             return

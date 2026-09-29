@@ -92,3 +92,64 @@
   预算按请求而非按候选、普通 429 原样透出。
 
 另：`xhx2codex` 此次同步到带 `usage_ledger` 计量的新版（`_metered` 包住 SSE 中继，流式也记账）。
+
+## 根因 6：`_stream_upstream` 的 `break` 把「原地重发」变成了「换号重试」
+
+流式路径的渠道校验分支原来这样收尾：
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream("POST", url, ...) as response:
+            if response.status_code != 200:
+                if _is_channel_error(error) and channel_attempts < 3:
+                    channel_attempts += 1
+                    channel_retry = True
+                    _log(f"... retry {channel_attempts}/3 | {model_name}")
+                    await asyncio.sleep(1.5 * channel_attempts)
+                    break
+
+`break` 在两层 `async with` 之内、`for attempt in range(4)` 之中。Python 的 `break`
+会先退出两个 `async with`（干净关掉 response 和 client），然后退出的是**最内层 for**，
+不是「再试一次」。单独一个最小复现就能证实：
+
+    for attempt in range(4):
+        async with CM("client"):
+            async with CM("stream"):
+                if attempt == 0 and stmt == "break":
+                    break
+    # break    -> 轨迹止于 attempt 0，attempt 1 从未进入
+    # continue -> attempt 1 正常进入
+
+后果与日志完全相反：日志写着 `retry 1/3`，实际只发一次请求就换下一个账号。
+而 `channel_retry = True` 这一行是死代码 —— `break` 已经离场，没有谁再读它。
+`_is_channel_error()` 的文档字符串写着 "Transient and self-clearing, so a resend is
+worth trying"，说的正是原地重发。
+
+单账号池（`-gpt` 变体的常态）下，一次自愈型 11128 的直接结果是：
+1 次请求而非 3 次、`mark_failure` 一次都不记、客户端立刻拿到 502。
+
+修复：`break` 改成 `continue`（上下文管理器照样会关），删掉死代码 `channel_retry = True`，
+并留注释说明这个坑 —— 同样的形状下次很容易再写错。
+
+## 根因 7：流式路径的重试预算按账号计，非流式按请求计
+
+`channel_attempts = 0` 写在 `for candidate in candidates:` 循环体里，等于每个账号各发
+一份 3 次预算。非流式的 `_collect_with_pool` 早就把 `channel_tries` 提到了函数作用域
+（一次请求一个预算），`test_workbuddy_channel_retry.py` 里
+`test_channel_budget_is_per_request_not_per_candidate` 明确钉住了这个契约，
+而那条测试的文档字符串还写着「the same contract `_stream_with_pool` already had」。
+
+也就是说流式路径一直是那个契约的例外。10 个账号的池子遇到持续 11128，
+一次用户请求会打 40 次上游、睡 90 秒。
+
+修复：把 `channel_attempts = 0` 提到 `for candidate` 之前，与非流式对齐。
+顺带补一条：重试预算耗尽的渠道错误不要再对同一账号重打 —— `mark_failure` 会写盘并
+累计 `failures` 计数，重复调用只是浪费，所以这种情形 `break` 换下一个账号。
+
+## 新守卫
+
+- `test_workbuddy_stream_channel_retry.py`（3 条）：假 `httpx.AsyncClient` 记下每个 attempt
+  实际使用的 `Authorization`，从而直接断言「重发的是同一个账号」；
+  钉住 4 次请求 `["Bearer A"] * 4`、退避 `[1.5, 3.0, 4.5]`、冷却 `("上游渠道校验未通过", 20)`、
+  双账号下预算是请求级而非账号级、以及 11128 后紧跟干净 SSE 时能恢复输出。
+  反向对照已验证：把两个缺陷重新注入，3 条全红；还原后全绿。
+
