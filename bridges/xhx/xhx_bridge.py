@@ -32,12 +32,15 @@ from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
+# the usage ledger ships beside this bridge
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import httpx
 from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import _common
+import usage_ledger
 
 BRIDGE_VERSION = "0.1.0"
 
@@ -237,12 +240,61 @@ async def chat_completions(request: Request):
                             status_code=r.status_code)
 
     if stream:
-        return StreamingResponse(_pump(r), media_type="text/event-stream")
+        return StreamingResponse(_metered(r, model), media_type="text/event-stream")
 
     await r.aread()
     body = r.content
     await r.aclose()
+    usage = None
+    try:
+        usage = (json.loads(body) or {}).get("usage")
+    except ValueError:
+        pass
+    usage_ledger.record(model, usage, stream=False)
     return Response(content=body, media_type="application/json")
+
+
+async def _metered(resp, model):
+    """Relay the SSE body, then count the call.
+
+    llm/v2 bills nothing, so the local ledger is the only usage record this
+    fleet has -- see bridges/xhx/usage_ledger.py. A stream only carries
+    usage when the client asked for it (stream_options.include_usage), so
+    a call without it still counts, with zero tokens.
+    """
+    started = time.time()
+    seen = ""
+    usage = None
+    try:
+        async for chunk in _pump(resp):
+            if usage is None and chunk:
+                seen += chunk.decode("utf-8", "ignore")
+                usage = _usage_from_sse(seen)
+                if len(seen) > 65536:
+                    seen = seen[-8192:]
+            yield chunk
+    finally:
+        usage_ledger.record(model, usage, stream=True,
+                            seconds=time.time() - started)
+
+
+def _usage_from_sse(buffer):
+    """The usage object of the last complete SSE event that carries one."""
+    found = None
+    for event in buffer.split("\n\n"):
+        for line in event.split("\n"):
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if not payload or payload == "[DONE]":
+                continue
+            try:
+                data = json.loads(payload)
+            except ValueError:
+                continue
+            if isinstance(data, dict) and isinstance(data.get("usage"), dict):
+                found = data["usage"]
+    return found
 
 
 _pump = _common.sse_pump

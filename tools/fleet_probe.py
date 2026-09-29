@@ -117,6 +117,11 @@ def try_call(port, headers, model, timeout=20.0, budget=60):
     # Flash greets instead) is still reachable. What must not count as a pass:
     # an empty body, a canned error surfaced as text, or a stub.
     text = content.strip()
+    # An upstream channel refusal arrives as a 200 with error text in the
+    # message body; without this check it reads as a real answer and the
+    # bridge stays "reachable" in the picker while it can never respond.
+    if is_error_body(text):
+        return False, "upstream refused: " + (matched_marker(text) or "?")
     if NONCE in text:
         return True, text[:60]
     if len(text) >= 8 and not text.lower().startswith(("error", "sorry, i can",
@@ -186,6 +191,9 @@ def probe_gateway(name, model_prefix, timeout=20.0, tries=3):
                     content = (d2.get("choices") or [{}])[0].get(
                         "message", {}).get("content", "")
                     text = content.strip()
+                    if is_error_body(text):
+                        return False, "%s: upstream refused (%s)" % (
+                            model, matched_marker(text)), None
                     usage = d2.get("usage") or {}
                     details = (usage.get("completion_tokens_details") or {})
                     spent = usage.get("completion_tokens") or 0
@@ -253,6 +261,8 @@ def probe(name, port, key, tries=3, timeout=20.0):  # -> (ok, why, model)
 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from upstream_errors import is_error_body, matched_marker
 
 
 def plist_port(name):

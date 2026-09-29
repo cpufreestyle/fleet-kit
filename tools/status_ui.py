@@ -82,11 +82,13 @@ OCX_TTL_SECONDS = 30.0
 _OCX_CACHE = {"at": 0.0, "value": None}
 _OCX_LOCK = threading.Lock()
 
-VERDICT_RANK = {"REAL": 0, "ECHO/MIRROR": 1, "CANNED/MOCK": 2, "UNCLEAR": 3,
-                "AUTH_EXPIRED": 4, "UPSTREAM_DOWN": 5, "BRIDGE_DOWN": 6, "GATE": 7}
+VERDICT_RANK = {"REAL": 0, "STREAM_BROKEN": 1, "ECHO/MIRROR": 1, "CANNED/MOCK": 2,
+                "CHANNEL_BLOCKED": 3, "UNCLEAR": 3, "PLAN_BLOCKED": 4, "AUTH_EXPIRED": 5,
+                "UPSTREAM_DOWN": 6, "BRIDGE_DOWN": 7, "GATE": 8}
 VERDICT_KIND = {"REAL": "ok", "ECHO/MIRROR": "warn", "CANNED/MOCK": "warn",
                 "UNCLEAR": "warn", "AUTH_EXPIRED": "bad", "UPSTREAM_DOWN": "bad",
-                "BRIDGE_DOWN": "bad", "GATE": "bad"}
+                "BRIDGE_DOWN": "bad", "GATE": "bad", "PLAN_BLOCKED": "warn",
+                "STREAM_BROKEN": "bad", "CHANNEL_BLOCKED": "bad"}
 
 
 # --------------------------------------------------------------------------- #
@@ -95,6 +97,15 @@ VERDICT_KIND = {"REAL": "ok", "ECHO/MIRROR": "warn", "CANNED/MOCK": "warn",
 
 def now_str():
     return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# Every address this panel probes is on loopback -- the bridge ports and the
+# local gateways. Plain urlopen follows the system proxy, so those requests
+# travel through it and the panel reports the proxy's verdict as the bridge's
+# (a 503 of its own shows up as a bridge failure), while a proxy that is down
+# takes every probe with it. verify_real_calls.py and fleet_probe.py already
+# open loopback without a proxy for the same reason.
+NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def md5_short(value):
@@ -128,7 +139,7 @@ def http_get(url, key=None, timeout=PROBE_TIMEOUT):
         request.add_header("Authorization", "Bearer " + key)
     started = time.time()
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with NO_PROXY.open(request, timeout=timeout) as response:
             return {"ok": 200 <= response.status < 300, "http": response.status,
                     "ms": round((time.time() - started) * 1000),
                     "body": response.read().decode("utf-8", "replace"),
@@ -340,6 +351,56 @@ def checkin_state(homes, today):
     return {"home": homes[0] if homes else None, "found": False, "tasks": []}
 
 
+_USAGE_LEDGER_CACHE = {}
+
+
+def _load_usage_ledger(home):
+    """The xhx bridge's usage ledger, loaded by path (it ships in bridges/)."""
+    path = os.path.join(home, "bridges", "xhx", "usage_ledger.py")
+    if not os.path.isfile(path):
+        return None
+    cached = _USAGE_LEDGER_CACHE.get(path)
+    if cached is not None:
+        return cached
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("xhx_usage_ledger", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception:
+        return None
+    _USAGE_LEDGER_CACHE[path] = module
+    return module
+
+
+def xhx_usage(cfg):
+    """What Codex spent on 小浣熊 models, counted by the bridge itself.
+
+    llm/v2 settles no points (measured: a 528-token call on a multiplier-1
+    model left every points field untouched), so the official balance can
+    never show this usage. The ledger the bridge writes is the only number.
+    """
+    path = (os.environ.get("XHX_USAGE_FILE")
+            or os.path.join(cfg["home"], "xhx-usage.jsonl"))
+    result = {"found": os.path.isfile(path), "path": path,
+              "day": dt.date.today().isoformat(), "calls": 0, "with_usage": 0,
+              "total_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0,
+              "models": [], "note": "llm/v2 不结算积分；以下为桥本地计数"}
+    module = _load_usage_ledger(cfg["home"])
+    if module is None:
+        result["note"] = "usage_ledger.py 未部署（%s/bridges/xhx）" % cfg["home"]
+        return result
+    try:
+        summary = module.summarize(path=path)
+    except Exception as exc:              # a ledger must never break the panel
+        result["note"] = "账本读取失败：%s" % exc
+        return result
+    for key in ("day", "calls", "with_usage", "total_tokens",
+                "completion_tokens", "reasoning_tokens", "models"):
+        result[key] = summary.get(key, result[key])
+    return result
+
+
 def collect_bridge(cfg, spec):
     name, suffix, offset, keyenv = spec
     port = cfg["port_base"] + offset
@@ -369,6 +430,7 @@ def collect(cfg):
     checkin = checkin_state(cfg["checkin_candidates"], today)
     free = free_models()
     verify = verify_snapshot(cfg)
+    xhx = xhx_usage(cfg)
 
     warnings = list(cfg["warnings"])
     for bridge in bridges:
@@ -391,11 +453,13 @@ def collect(cfg):
         "checkin_total": len(checkin["tasks"]),
         "verify_real": len(verify["real"]),
         "verify_at": verify["generated_at"],
+        "xhx_calls_today": xhx["calls"],
+        "xhx_tokens_today": xhx["total_tokens"],
     }
     return {"generated_at": now_str(), "elapsed_ms": round((time.time() - started) * 1000),
             "config": cfg["public"], "summary": summary, "warnings": warnings,
 "bridges": bridges, "ocx": ocx, "checkin": checkin, "free": free, "verify": verify,
-            "actions": snapshot_actions()}
+            "xhx_usage": xhx, "actions": snapshot_actions()}
 
 
 FREE_TTL_SECONDS = 30.0
@@ -410,7 +474,8 @@ def free_models():
         if cached is not None and (time.time() - _FREE_CACHE["at"]) < FREE_TTL_SECONDS:
             return cached
     value = {"available": False, "error": "", "counts": {}, "models": [],
-             "gaps": [], "live_by_provider": {}, "picker_by_provider": {},
+             "credits_counts": {}, "legend": {}, "gaps": [],
+             "live_by_provider": {}, "picker_by_provider": {},
              "catalog_total": 0, "db_updated": "?"}
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "free_models.py")
     try:
@@ -483,12 +548,33 @@ _COLLECT_LOCK = threading.Lock()
 _COLLECT_CACHE = {"at": 0.0, "value": None}
 
 
+def refresh_keys(cfg):
+    """Re-read fleet.env so a rotated bridge key reaches the panel.
+
+    build_config ran once at startup and its keys were frozen there. An
+    operator who added or rotated a key in fleet.env kept seeing the old md5,
+    and for a key the startup-time file did not have at all the panel probed
+    without an Authorization header, got the bridge's 401, and warned "key 未
+    读取到 - 登录后执行 finish.sh" -- measured 2026-09-29 on qwen, whose key
+    reached fleet.env two minutes after the daemon started, sending the
+    operator after a session problem that did not exist.
+    """
+    path = cfg.get("env_file")
+    if not path or not os.path.isfile(path):
+        return
+    try:
+        cfg["keys"] = parse_env_file(path)
+    except OSError:
+        pass
+
+
 def collect_cached(cfg):
     """Coalesce concurrent /api/status polls into a single probe round."""
     with _COLLECT_LOCK:
         cached = _COLLECT_CACHE["value"]
         if cached is not None and (time.time() - _COLLECT_CACHE["at"]) < COLLECT_TTL_SECONDS:
             return cached
+        refresh_keys(cfg)
         result = collect(cfg)
         _COLLECT_CACHE["at"] = time.time()
         _COLLECT_CACHE["value"] = result
@@ -875,6 +961,13 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
       <tbody id="ck-rows"></tbody></table>
       <pre id="ck-out" style="margin-top:8px"></pre>
     </div>
+    <div class="panel">
+      <h2>小浣熊用量（本地计数，llm/v2 不结算积分）</h2>
+      <div class="row"><span class="meta" id="xhx-path"></span></div>
+      <table><thead><tr><th>模型</th><th>次数</th><th>总 tokens</th><th>输出</th><th>推理</th><th>最近一次</th></tr></thead>
+      <tbody id="xhx-rows"></tbody></table>
+      <pre id="xhx-note" style="margin-top:8px"></pre>
+    </div>
   </div>
   <div class="panel">
     <h2>真实调用核验（随机运算题抗伪造，真计费 · 一轮约 3 分钟）</h2>
@@ -888,11 +981,13 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
     <pre id="vf-out" style="margin-top:8px"></pre>
   </div>
   <div class="panel">
-    <h2>免费模型标注（官网信息，更新于 <span id="free-updated">?</span>）</h2>
+    <h2>模型标注：免费状态 + 是否走客户端积分（官网信息，更新于 <span id="free-updated">?</span>）</h2>
     <label class="meta" style="font-weight:400;margin-left:10px"><input type="checkbox" id="free-hide" checked onchange="renderFree()"> 隐藏不可用</label>
+    <label class="meta" style="font-weight:400;margin-left:10px"><input type="checkbox" id="free-credits-only" onchange="renderFree()"> 只看走客户端积分</label>
     <span class="meta" id="free-hidden"></span>
     <div class="row"><span class="meta" id="free-meta"></span></div>
-    <table><thead><tr><th>模型（选择器名）</th><th>免费</th><th>时段 / 说明</th><th>在选择器</th></tr></thead>
+    <div class="row"><span class="meta" id="free-credits-legend"></span></div>
+    <table><thead><tr><th>模型（选择器名）</th><th>免费</th><th>客户端积分</th><th>时段 / 说明</th><th>在选择器</th></tr></thead>
     <tbody id="free-rows"></tbody></table>
     <div class="row" style="margin-top:8px"><span class="meta" id="free-gaps"></span></div>
   </div>
@@ -942,6 +1037,7 @@ function render(){
              ['端口监听',sum.listening+' / '+sum.bridges,'127.0.0.1 LISTEN'],
              ['模型总数',sum.models,'/v1/models 汇总'],
              ['今日签到',sum.checkin_ok_today+' / '+sum.checkin_total,'tasks ok today'],
+             ['小浣熊今日',(sum.xhx_calls_today||0)+' 次 / '+(sum.xhx_tokens_today||0)+' tok','本地计数·积分不结算'],
              ['真实调用',sum.verify_real+' / '+sum.bridges,'上次 '+(sum.verify_at||'未核验')]];
   document.getElementById('cards').innerHTML = cards.map(function(c){
     return '<div class="card"><div class="k">'+esc(c[0])+'</div><div class="v">'+esc(c[1])+
@@ -974,6 +1070,15 @@ function render(){
           (t.ok_today?pill('ok','今天'):pill('warn','未签'))+'<td>'+esc(t.points)+'</td>'+
           '<td class="dim">'+esc(t.at)+'</td><td class="dim">'+esc(t.detail)+'</td></tr>';}).join('')
     : '<tr><td colspan="5" class="dim">暂无记录</td></tr>';
+  var xu=s.xhx_usage||{};
+  document.getElementById('xhx-path').textContent = xu.path||'';
+  document.getElementById('xhx-note').textContent = xu.note||'';
+  document.getElementById('xhx-rows').innerHTML = (xu.models||[]).length
+    ? xu.models.map(function(m){
+        return '<tr><td><b>'+esc(m.model)+'</b></td><td>'+m.calls+'</td><td>'+m.total_tokens+
+          '</td><td>'+m.completion_tokens+'</td><td>'+m.reasoning_tokens+
+          '</td><td class="dim">'+esc(m.last)+'</td></tr>';}).join('')
+    : '<tr><td colspan="6" class="dim">今日暂无记录</td></tr>';
   var chk=s.actions.checkin;
   document.getElementById('ck-out').textContent = chk
     ? ((chk.running?'[running] ':'')+'checkin @ '+chk.started_at+' force='+chk.force+
@@ -999,6 +1104,13 @@ function freeKind(f){
   if(f==='unknown'){return 'warn';}
   return 'idle';
 }
+var CREDITS_BADGE={client:'客户端积分',limit:'仅限额',own:'独立Key',unknown:'N/A'};
+function creditsKind(c){
+  if(c==='client'){return 'warn';}
+  if(c==='limit'){return 'ok';}
+  if(c==='own'){return 'idle';}
+  return 'warn';
+}
 function unavailProvider(name){
   var b=null,i;
   for(i=0;i<(SNAP.bridges||[]).length;i++){if(SNAP.bridges[i].name===name){b=SNAP.bridges[i];break;}}
@@ -1018,30 +1130,38 @@ function renderFree(){
   var live=0;for(var k in (f.live_by_provider||{})){live+=f.live_by_provider[k];}
   var pick=0;for(var k2 in (f.picker_by_provider||{})){pick+=f.picker_by_provider[k2];}
   var cnt=[];for(var c in (f.counts||{})){cnt.push(f.counts[c]+' '+c);}
+  var ccnt=[];for(var c in (f.credits_counts||{})){ccnt.push(f.credits_counts[c]+' '+(CREDITS_BADGE[c]||c));}
+  var clg=document.getElementById('free-credits-legend');
+  if(clg){clg.textContent='客户端积分口径：'+(f.legend&&f.legend.credits?Object.keys(f.legend.credits).map(function(k){
+    return (CREDITS_BADGE[k]||k)+'='+f.legend.credits[k];}).join('  ·  '):'');}
+  var co=document.getElementById('free-credits-only');
+  var creditsOnly=!!(co&&co.checked);
   var hide=document.getElementById('free-hide');
   var hiding=!!(hide&&hide.checked);
   var all=(f.models||[]).filter(function(m){
     return m.in_picker||m.free==='free'||m.free==='free-window'||m.free==='quota'||m.free==='trial';});
   var list=[],hidden={},hiddenN=0;
   all.forEach(function(m){
+    if(creditsOnly&&m.credits!=='client'){return;}
     var u=hiding?unavailProvider(m.provider):null;
     if(u){hiddenN++;hidden[m.provider]=u;return;}
     list.push(m);});
   var hk=Object.keys(hidden).map(function(k){return k+'('+hidden[k]+')';}).join(', ');
   var hh=document.getElementById('free-hidden');
   if(hh){hh.textContent=hiddenN?('已隐藏 '+hiddenN+' 个不可用模型 '+hk):'';}
-  meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+cnt.join(' · ')+' · 显示 '+list.length+'/'+all.length;
+  meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+ccnt.join(' · ')+' · 显示 '+list.length+'/'+(creditsOnly?all.filter(function(m){return m.credits==='client';}).length:all.length);
   rows.innerHTML=list.length?list.map(function(m){
     return '<tr><td>'+esc(m.picker_name||m.picker_slug||m.model)+'</td>'+
       '<td>'+pill(freeKind(m.free),m.badge)+'</td>'+
+      '<td title="'+esc(m.credits_note||'')+'">'+pill(creditsKind(m.credits),m.credits_badge||m.credits)+'</td>'+
       '<td class="dim">'+esc(m.window)+'</td>'+
       '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('')
-    : '<tr><td colspan="4" class="dim">当前无可用模型'+(hiding?'（可取消勾选「隐藏不可用」）':'')+'</td></tr>';
+    : '<tr><td colspan="5" class="dim">当前无可用模型'+(hiding?'（可取消勾选「隐藏不可用」）':'')+'</td></tr>';
   document.getElementById('free-gaps').textContent=(f.gaps||[]).map(function(g){
     return '['+g.provider+'] '+g.reason;}).join('   |   ');
 }
-var VF_KIND={REAL:'ok','ECHO/MIRROR':'warn','CANNED/MOCK':'warn',UNCLEAR:'warn',
-  AUTH_EXPIRED:'bad',UPSTREAM_DOWN:'bad',BRIDGE_DOWN:'bad',GATE:'bad'};
+var VF_KIND={REAL:'ok',STREAM_BROKEN:'bad','ECHO/MIRROR':'warn','CANNED/MOCK':'warn',UNCLEAR:'warn',
+  CHANNEL_BLOCKED:'bad',PLAN_BLOCKED:'warn',AUTH_EXPIRED:'bad',UPSTREAM_DOWN:'bad',BRIDGE_DOWN:'bad',GATE:'bad'};
 function vfKind(v){return VF_KIND[v]||'idle';}
 function verifyCell(name){
   var v=(SNAP&&SNAP.verify&&SNAP.verify.by_bridge)||{};
