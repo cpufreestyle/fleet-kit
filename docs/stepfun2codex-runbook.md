@@ -112,10 +112,22 @@ Codex 对此毫无办法：`disable_response_storage = true` 让它每轮重发�
 | 沙盒 POST 100 图，cap 生效 | 32（`cap_dropped=68`） |
 | 经 launchd 全链路 100 图，`stepfun/step-5-preview` | 32 |
 | 经 launchd 全链路 100 图，`workbuddy/hy4-preview` | 100（原样透传） |
+| 上线后 71 张互不相同的图，直连 15721 | 400 `images_too_many` |
+| 上线后同一批 71 图，经 launchd shim 15722 | 200（`images=71 unique=71 kept=32 cap_dropped=39`） |
 
 stats：`requests:2, rewritten:1, images_seen:100, images_kept:32`。
 `hy4-preview` 拿到完整的 100 张，证明 `IMAGE_CAP_MODELS=step` 只对 step 前缀生效，
 没有顺手砍别的船。
+
+上线后那一行是对着正在跑的服务打的（launchd `com.local.stepfun-image-cap`，
+shim health：`requests:19, rewritten:5, images_seen:355, images_kept:36, passthrough:5`）：
+同一批 71 张**互不相同**的图，POST 到 15721 复现用户看到的 400，POST 到 15722
+拿到 200 和 6053 input_tokens。这是「修好了」而不是「单测里修好了」的证据。
+
+排错时踩过的坑：拿一批 71 张**完全相同**的图去打，shim 去重到 1 张，上游回的是
+`400 input_invalid`，跟 cap 无关 —— 单图、原文不改、直连 15721 也是同样的
+`input_invalid`，那张 70 字节的测试 PNG 本身不合法。判据：**shim 日志里的 `kept=N`
+是它对上游的承诺；回来一个非图片数的 400，就是请求本身有问题**。
 
 ### 部署
 
@@ -132,6 +144,8 @@ tools/stepfun_image_shim.sh <run|start|stop|status|install-timer|uninstall-timer
 | `IMAGE_CAP_UPSTREAM` | 转发目标 | `http://127.0.0.1:15721` |
 | `IMAGE_CAP_MAX` | 每请求保留图片数 | 32（`<= 0` 不限） |
 | `IMAGE_CAP_MODELS` | 生效模型子串，逗号分隔 | `step` |
+| `IMAGE_CAP_REPIN_INTERVAL` | base_url 定时重 pin 间隔（秒） | 300（`<= 0` 关闭） |
+| `IMAGE_CAP_PIN_CONFIG` | 重 pin 的 Codex 配置文件 | `~/.codex/config.toml` |
 | `FLEET_PYTHON` | shim 用的 python | 取 `runtime/.venv/bin/python` |
 
 日志：`/tmp/fleet-logs/com.local.stepfun-image-cap.log`。
@@ -150,6 +164,11 @@ shim 在 15722 上空转，图片照样撞 400。
 - 按 host:port 子串替换，scheme 和 `/v1` 路径原样保留；
 - 已经指向 shim、或指向别的 host 时文件一个字节都不动，报 `no change` —— 可以每次
   setup 都跑，也可以挂定时任务。
+
+只靠 setup 时的那一次 pin 活不过下一次切换：shim 因此自己挂了定时重 pin，启动立即跑一
+次、之后每 `IMAGE_CAP_REPIN_INTERVAL` 秒（默认 300）再跑一次，改写时日志打 `[repin]`
+行。`pin_once` 是并发安全的：写前重读文件，发现 CC Switch 正在同一个文件上写就跳过
+（`skipped: ... changed while pinning`），绝不回写半截 config。
 
 ### 回滚
 

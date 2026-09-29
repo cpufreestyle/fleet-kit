@@ -22,12 +22,24 @@ and the launchd service definition stay argument-free and identical:
     IMAGE_CAP_MAX       images kept per request (default 32; <= 0 = no cap)
     IMAGE_CAP_MODELS    comma-separated model substrings the cap applies to
                         (default "step"; empty = every model)
+    IMAGE_CAP_REPIN_INTERVAL  seconds between base_url re-pins (default 300;
+                         <= 0 disables)
+    IMAGE_CAP_PIN_CONFIG      Codex config to keep pinned
+                         (default ~/.codex/config.toml)
 
 Failure policy: an unparseable body, an unknown path, an unreachable upstream
 or a cap that would leave nothing behind all mean "forward what came in". The
 shim sits in front of a working chain and must never be the thing that breaks
 it; if the cap cannot be applied safely the request goes through exactly as it
 arrived, which is the behaviour the operator already had.
+
+The same policy covers the base_url pin. CC Switch owns ~/.codex/config.toml and
+rewrites the custom provider's base_url back to its own port every time the
+operator switches providers, so a pin run once by setup-providers.sh survives
+only until the next switch -- and a single switch leaves Codex talking straight
+past the shim while the images fall back to the 400 the shim exists to prevent.
+The shim therefore re-pins itself on a timer, best effort, logging and moving on
+when it cannot.
 
 The forwarder also bypasses any ambient HTTP_PROXY. CC Switch is on loopback,
 and a proxy hop there turns a dead upstream into an answer that looks like it
@@ -38,6 +50,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
+import time
 import sys
 
 import httpx
@@ -94,6 +108,10 @@ class Config:
         self.upstream = upstream.rstrip("/")
         self.max_images = max_images
         self.models = models
+        self.repin_interval = float(
+            os.environ.get("IMAGE_CAP_REPIN_INTERVAL", "300"))
+        self.pin_config = (os.environ.get("IMAGE_CAP_PIN_CONFIG")
+                           or os.path.expanduser("~/.codex/config.toml"))
         self.connect_timeout = connect_timeout
 
     @property
@@ -138,6 +156,65 @@ class Stats:
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
+
+
+def repin_codex_base_url(config, log=None) -> str:
+    """Point Codex's custom provider at this shim and keep it there.
+
+    CC Switch owns ~/.codex/config.toml and rewrites the custom provider's
+    base_url back to 127.0.0.1:15721 the moment the operator switches
+    providers. A pin run once at setup therefore survives only until the next
+    switch, and one switch is enough to send Codex straight past the shim while
+    the images fall back to the 400 the shim exists to prevent. tools/
+    pin_shim_base_url.py does the rewrite; this runs it against this shim's
+    own host:port, so a config pointed anywhere else is still left alone.
+
+    Best effort by design: every outcome comes back as a string and nothing
+    raises, so a timer can log and carry on. A shim that stopped proxying
+    because its re-pin raised would be a worse failure than an un-pinned one.
+    """
+    if config.repin_interval <= 0:
+        return "re-pin disabled (IMAGE_CAP_REPIN_INTERVAL=%.0f)" % (
+            config.repin_interval)
+    path = config.pin_config
+    if not os.path.isfile(path):
+        return "no codex config at %s" % path
+    try:
+        import pin_shim_base_url
+    except Exception as exc:  # pragma: no cover - same directory, always there
+        return "re-pin unavailable: %s" % exc
+    hostport = "%s:%d" % (config.host, config.port)
+    try:
+        changed, detail = pin_shim_base_url.pin_once(
+            path, to_hostport=hostport)
+    except Exception as exc:
+        return "re-pin failed: %s" % exc
+    if changed:
+        detail = "%s (-> %s)" % (detail, hostport)
+        if log:
+            log("[repin] %s" % detail)
+    return detail
+
+
+def start_repin_thread(config, log=None):
+    """Re-pin now, then every config.repin_interval seconds.
+
+    The first pass runs immediately because launchd may have restarted the shim
+    while Codex was already talking to CC Switch. Returns the daemon thread,
+    or None when the interval disables the feature.
+    """
+    if config.repin_interval <= 0:
+        return None
+
+    def loop():
+        while True:
+            repin_codex_base_url(config, log=log)
+            time.sleep(config.repin_interval)
+
+    thread = threading.Thread(target=loop, name="fleetkit-image-cap-repin",
+                             daemon=True)
+    thread.start()
+    return thread
 
 
 def build_app(config: Config):
@@ -239,6 +316,8 @@ def main(argv=None) -> None:
 
     config = parse_args(argv)
     app = build_app(config)
+    # Best effort: log the outcome, never let a failed re-pin stop the proxy.
+    start_repin_thread(config, log=lambda line: print(line, flush=True))
     banner = ("[stepfun-image-cap] :%d -> %s (max %d images, models: %s)"
               % (config.port, config.upstream, config.max_images,
                  config.models or "*"))

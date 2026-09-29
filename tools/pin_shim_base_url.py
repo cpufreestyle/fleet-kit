@@ -23,6 +23,12 @@ This is that pin, as a standalone idempotent tool:
 
 Run by hand (tools/pin_shim_base_url.py --dry-run to preview), or wire one call
 after the default-model pin block in opencodex/setup-providers.sh.
+
+The pin is also a scheduled one: the image-cap shim re-runs it on a timer,
+because CC Switch rewrites the base_url the moment the operator switches
+providers and nobody re-runs setup by hand. Every entry point is therefore
+idempotent and concurrency-safe -- pin_once() re-reads the file before it
+writes and refuses to write back a config that moved underneath it.
 """
 from __future__ import annotations
 
@@ -46,15 +52,19 @@ def find_provider(lines, default="custom"):
     return default
 
 
-def pin(path, provider, from_hostport, to_hostport, dry_run=False):
-    with open(path, encoding="utf-8") as fh:
-        lines = fh.readlines()
+def rewrite(text, provider, from_hostport, to_hostport):
+    """Return (new text, count) with the provider's base_url repointed.
 
+    Pure, so a caller can tell whether the file moved between this call and the
+    write without parsing anything twice. Only a base_url inside the target
+    provider's section is touched; a sibling provider and an
+    ANTHROPIC_BASE_URL on the same port are left alone.
+    """
     section_target = "[model_providers.%s]" % provider
     in_target = False
     changed = 0
     out = []
-    for raw in lines:
+    for raw in text.splitlines(keepends=True):
         stripped = raw.strip()
         if stripped.startswith("[") and stripped.endswith("]"):
             in_target = (stripped == section_target)
@@ -66,22 +76,70 @@ def pin(path, provider, from_hostport, to_hostport, dry_run=False):
             if new != raw:
                 out.append(new)
                 changed += 1
-                print("  pinned %s base_url: %s -> %s"
-                      % (provider, from_hostport, to_hostport))
                 continue
         out.append(raw)
 
-    if not changed:
-        print("  no change: %s base_url is not on %s (already pinned?)"
-              % (provider, from_hostport))
-        return 0
+    return "".join(out), changed
 
+
+def _atomic_write(path, text):
+    """Replace the file in one step so no reader sees a partial config.
+
+    Codex reads this file on every invocation, and a truncated config is a
+    broken Codex rather than a merely un-pinned one.
+    """
+    tmp = "%s.fleetpin.tmp" % path
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def pin_once(path, provider=None, from_hostport="127.0.0.1:15721",
+             to_hostport="127.0.0.1:15722", dry_run=False):
+    """Pin exactly once. Returns (wrote or would write, human-readable detail).
+
+    A timer calls this, so the write has to survive CC Switch writing the same
+    file at the same instant: the text is re-read immediately before the
+    replace and the pin is abandoned when the file moved underneath us, because
+    writing back a half-parsed config would break Codex outright instead of
+    merely leaving the shim unused. Every failure comes back as a detail
+    string and a False -- nothing raises, so a caller on a timer can log and
+    carry on.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            original = fh.read()
+    except OSError as exc:
+        return False, "cannot read %s: %s" % (path, exc)
+    name = provider or find_provider(original.splitlines())
+    new_text, changed = rewrite(original, name, from_hostport,
+                                to_hostport)
+    if not changed:
+        return False, ("no change: %s base_url is not on %s (already pinned?)"
+                       % (name, from_hostport))
     if dry_run:
-        print("  [dry-run] would write %s" % path)
-        return 0
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.writelines(out)
-    print("  wrote %s" % path)
+        return True, "[dry-run] would write %s" % path
+    try:
+        with open(path, encoding="utf-8") as fh:
+            if fh.read() != original:
+                return False, "skipped: %s changed while pinning" % path
+    except OSError as exc:
+        return False, "cannot re-read %s: %s" % (path, exc)
+    try:
+        _atomic_write(path, new_text)
+    except OSError as exc:
+        return False, "cannot write %s: %s" % (path, exc)
+    return True, "pinned %s base_url: %s -> %s" % (name, from_hostport,
+                                                   to_hostport)
+
+
+def pin(path, provider, from_hostport, to_hostport, dry_run=False):
+    """Printing wrapper over pin_once(), for a human running the tool."""
+    changed, detail = pin_once(path, provider, from_hostport, to_hostport,
+                               dry_run)
+    print("  %s" % detail)
     return 0
 
 

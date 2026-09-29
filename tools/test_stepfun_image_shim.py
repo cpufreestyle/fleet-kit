@@ -359,3 +359,123 @@ def test_a_loopback_forward_never_inherits_the_ambient_http_proxy(upstream, clie
         assert upstream.seen[-1][0] == "POST"
     finally:
         proxy.close()
+
+
+CONFIG_WITH_SIBLINGS = '''model_provider = "custom"
+model = "stepfun/step-5-preview"
+
+[model_providers.custom]
+name = "custom"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+
+[model_providers.other]
+name = "other"
+base_url = "http://127.0.0.1:15721"
+
+[shell_environment_policy]
+inherit = "all"
+ANTHROPIC_BASE_URL = "http://127.0.0.1:15721"
+'''
+
+
+def _repin_config(port=15722):
+    config = shim.Config("127.0.0.1", port, "http://127.0.0.1:15721", 32, "step")
+    config.repin_interval = 300
+    return config
+
+
+def test_repin_points_a_clobbered_config_back_at_the_shim(tmp_path):
+    """CC Switch rewrites the base_url on every provider switch, so the shim
+    has to win it back on its own -- through the same surgical pin, at that:
+    the sibling provider on 15721 and the ANTHROPIC_BASE_URL on the same port
+    must survive, because repointing either of those breaks a working path.
+    """
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(CONFIG_WITH_SIBLINGS, encoding="utf-8")
+    config = _repin_config()
+    config.pin_config = str(config_file)
+
+    logs = []
+    detail = shim.repin_codex_base_url(config, log=logs.append)
+
+    text = config_file.read_text(encoding="utf-8")
+    assert 'base_url = "http://127.0.0.1:15722/v1"' in text
+    assert 'base_url = "http://127.0.0.1:15721"' in text, "a sibling provider was repointed"
+    assert 'ANTHROPIC_BASE_URL = "http://127.0.0.1:15721"' in text, "the Anthropic path was repointed"
+    assert "15722" in detail
+    assert logs and "[repin]" in logs[0]
+
+
+def test_repin_pins_to_the_port_the_shim_is_actually_on(tmp_path):
+    """The re-pin target must come from this shim's own host:port, so a
+    deployment that moved the shim off 15722 is still pinned correctly instead
+    of being pointed at a port nothing listens on.
+    """
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(CONFIG_WITH_SIBLINGS, encoding="utf-8")
+    config = _repin_config(port=15999)
+    config.pin_config = str(config_file)
+
+    shim.repin_codex_base_url(config)
+
+    assert "127.0.0.1:15999" in config_file.read_text(encoding="utf-8")
+
+
+def test_repin_can_be_disabled(tmp_path):
+    """IMAGE_CAP_REPIN_INTERVAL <= 0 turns the timer off; the config must then
+    be left byte-for-byte alone rather than half-rewritten.
+    """
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(CONFIG_WITH_SIBLINGS, encoding="utf-8")
+    config = _repin_config()
+    config.pin_config = str(config_file)
+    config.repin_interval = 0
+
+    detail = shim.repin_codex_base_url(config)
+
+    assert "disabled" in detail
+    assert config_file.read_text(encoding="utf-8") == CONFIG_WITH_SIBLINGS
+
+
+def test_repin_reports_a_missing_config_without_raising(tmp_path):
+    """A timer that raised on a missing config would take the proxy down with
+    it; the answer is a detail string the log can carry.
+    """
+    config = _repin_config()
+    config.pin_config = str(tmp_path / "absent.toml")
+
+    detail = shim.repin_codex_base_url(config)
+
+    assert "no codex config" in detail
+
+
+def test_start_repin_thread_returns_none_when_disabled():
+    config = _repin_config()
+    config.repin_interval = 0
+    assert shim.start_repin_thread(config) is None
+
+
+def test_the_repin_thread_pins_before_its_first_sleep(tmp_path):
+    """launchd may restart the shim while Codex is already talking to CC
+    Switch, so the first pass must run at startup, not one interval later.
+    The interval here is an hour: only the immediate pass can pin.
+    """
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(CONFIG_WITH_SIBLINGS, encoding="utf-8")
+    config = _repin_config()
+    config.pin_config = str(config_file)
+    config.repin_interval = 3600
+
+    thread = shim.start_repin_thread(config)
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if "15722" in config_file.read_text(encoding="utf-8"):
+                break
+            time.sleep(0.02)
+        assert "15722" in config_file.read_text(encoding="utf-8")
+        assert thread.daemon is True
+    finally:
+        if thread:
+            thread.join(timeout=0.1)

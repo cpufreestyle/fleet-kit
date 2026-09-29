@@ -21,6 +21,9 @@ import unittest
 
 KIT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 TOOL = os.path.join(KIT, "tools", "pin_shim_base_url.py")
+sys.path.insert(0, os.path.join(KIT, "tools"))
+
+import pin_shim_base_url  # noqa: E402  (path set up above)
 
 CONFIG = '''model_provider = "custom"
 model = "stepfun/step-5-preview"
@@ -113,7 +116,60 @@ class PinBaseUrl(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
         self.assertIn("15722", self._read())
 
+    def test_a_pin_reports_what_it_did_as_a_pair(self):
+        """pin_once() is the entry point the shim timer calls.
+
+        It returns a decision rather than printing, so a caller running it on a
+        schedule can tell "wrote" from "nothing to do" from "refused" without
+        parsing a log line.
+        """
+        changed, detail = pin_shim_base_url.pin_once(self.config)
+        self.assertTrue(changed)
+        self.assertIn("15722", detail)
+        again, detail = pin_shim_base_url.pin_once(self.config)
+        self.assertFalse(again)
+        self.assertIn("no change", detail)
+
+    def test_a_dry_run_pin_reports_it_would_write(self):
+        before = self._read()
+        changed, detail = pin_shim_base_url.pin_once(self.config, dry_run=True)
+        self.assertTrue(changed)
+        self.assertIn("dry-run", detail)
+        self.assertEqual(before, self._read())
+
+    def test_a_pin_leaves_no_temporary_file_behind(self):
+        _run(self.config)
+        leftovers = [name for name in os.listdir(self.tmp.name)
+                     if name.endswith(".tmp")]
+        self.assertEqual(leftovers, [],
+                         "the atomic write left %s behind" % leftovers)
+
+    def test_a_config_that_changes_mid_pin_is_left_alone(self):
+        """CC Switch writes this file too, and a half-parsed write would break Codex.
+
+        The shim re-pins on a timer, so the pin can land exactly while CC Switch
+        is rewriting the same file. Writing back the bytes this pin read would
+        truncate whatever CC Switch was in the middle of adding, so the pin has
+        to notice the file moved and do nothing.
+        """
+        real_rewrite = pin_shim_base_url.rewrite
+
+        def rewrite_that_gets_clobbered(text, provider, from_h, to_h):
+            with open(self.config, "w", encoding="utf-8") as fh:
+                fh.write(text + "\n# cc switch was writing here\n")
+            return real_rewrite(text, provider, from_h, to_h)
+
+        pin_shim_base_url.rewrite = rewrite_that_gets_clobbered
+        try:
+            changed, detail = pin_shim_base_url.pin_once(self.config)
+        finally:
+            pin_shim_base_url.rewrite = real_rewrite
+        self.assertFalse(changed, "the pin wrote a config CC Switch had changed")
+        self.assertIn("skipped", detail)
+        self.assertIn("# cc switch was writing here", self._read())
+        self.assertNotIn("15722", self._read(),
+                         "the refused pin still repointed the base_url")
+
 
 if __name__ == "__main__":
     unittest.main()
-
