@@ -13,6 +13,19 @@
 # the models cache. Verified live 2026-09-26: simulated the wipe, ran ocx ensure, the bridge
 # model count stayed at 0.
 #
+# The same switch also takes the fleet route with it: it drops openai_base_url and the
+# [model_providers.opencodex] table and sets model_provider at its own provider, so a fleet
+# model picked from the still-populated picker is sent to a foreign upstream and answered
+# 404 "model does not exist" (measured 2026-09-30, lingxi/lingxi-deepseek-flash against
+# api.stepfun.com/step_plan/v1/responses). route_pin() therefore runs first and puts the
+# route back with tools/pin_fleet_route.py, which touches only FleetKit's own keys so the
+# switcher's provider -- the one every already-open session resolves -- survives.
+#
+# A count that cannot be taken now heals too. It used to end the run with "skip", and a
+# config stripped of its declaration reported skip every 300s forever: measured 2026-09-30
+# 11:22 and 11:27, "skip: cannot count bridge models (no-catalog-declared)" with 123 bridge
+# models sitting in a catalog file nobody declared.
+#
 # This guard counts the slash-prefixed bridge models in the live catalog and re-runs
 # ocx sync when they drop below MIN_MODELS. Cheap enough for a 5 minute launchd timer.
 #
@@ -136,8 +149,27 @@ print("%d %d" % (len([s for s in (slug(m) for m in models) if "/" in s]),
 PY
 }
 
+# Put the fleet route back before counting anything. The pin is idempotent, so this
+# is a no-op on a healthy config and only spends a write when the switcher struck.
+# FLEET_ROUTE_PIN=0 turns it off for a caller that owns the config itself.
+route_pin() {
+  [ "${FLEET_ROUTE_PIN:-1}" = "1" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  local pin="${FLEET_ROUTE_PIN_TOOL:-${SCRIPT_DIR}/pin_fleet_route.py}"
+  [ -f "$pin" ] || return 0
+  local extra=""
+  [ "$DRY_RUN" = "1" ] && extra="--dry-run"
+  # shellcheck disable=SC2086  # $extra is either empty or one flag
+  python3 "$pin" --config "${CODEX_HOME}/config.toml" \
+      --codex-home "$CODEX_HOME" $extra >>"$LOG_FILE" 2>&1 \
+      || log "route pin failed on ${CODEX_HOME}/config.toml"
+  return 0
+}
+
 cmd_run() {
   mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+
+  route_pin
 
   if ! command -v ocx >/dev/null 2>&1; then
     log "skip: ocx not on PATH"
@@ -153,7 +185,21 @@ cmd_run() {
   count="${counts%% *}"
   hidden="${counts##* }"
   if ! printf "%s" "$count" | grep -q "^[0-9][0-9]*$"; then
-    log "skip: cannot count bridge models ($count)"
+    # No declaration, or a catalog that no longer parses. This is the worst
+    # state, not an idle one, and reporting "skip" here is how a stripped
+    # config stayed stripped for as long as the timer ran.
+    log "heal: cannot count bridge models ($count), running ocx sync"
+    if [ "$DRY_RUN" = "1" ]; then
+      log "[dry-run] ocx sync"
+      return 0
+    fi
+    if ocx sync >>"$LOG_FILE" 2>&1; then
+      after="$(catalog_bridge_count || echo unknown)"
+      log "heal done: $count, now $after"
+    else
+      log "heal FAILED: ocx sync exited non-zero"
+      return 1
+    fi
     return 0
   fi
 
