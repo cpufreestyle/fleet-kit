@@ -70,7 +70,8 @@ except Exception:                                        # pragma: no cover
 
 NODE_ORDER = ("workbuddy", "workbuddy-gpt", "xhx", "zcode", "qoder", "codely",
               "trae", "lingxi", "cline", "qwen", "gemini", "catpaw",
-              "antigravity", "stepfun", "tokendance")
+              "antigravity", "stepfun", "tokendance",
+              "kimi-code", "minimax")
 
 VENDORS = {
     "workbuddy": "腾讯云代码助手 CodeBuddy（国内版）",
@@ -88,6 +89,8 @@ VENDORS = {
     "zcode": "智谱 Z.AI Coding（ZCode）",
     "stepfun": "阶跃星辰 StepFun（ocx 原生）",
     "tokendance": "TokenDance 词元跳动（ocx 原生）",
+    "kimi-code": "月之暗面 Kimi Code（coding 套餐）",
+    "minimax": "MiniMax（编程套餐 / Agent）",
 }
 
 # Which upstream facts each bridge reports, and where. The bridges disagree on
@@ -402,6 +405,136 @@ def credits_kind(name):
     return "unknown"
 
 
+# ---------------- 编程套餐账号（Kimi Code / MiniMax） ----------------
+# Neither of these is a bridge: they are coding plans, and the fleet runs no
+# bridge process for them. What each platform answers is different -- Kimi
+# publishes a usage endpoint, MiniMax publishes nothing but a chat call -- so
+# plan_credits.py owns the calls and this view only renders what came back. A
+# refused key is reported as refused: a dead key shown as 0 credits is how a
+# plan gets cancelled without anyone noticing.
+PLAN_ACCOUNTS = {
+    "kimi-code": {"vendor": "月之暗面 Kimi Code（coding 套餐）",
+                  "env": "KIMI_CODING_API_KEY", "plan": "kimi"},
+    "minimax": {"vendor": "MiniMax（编程套餐 / Agent）",
+                "env": "MINIMAX_API_KEY", "plan": "minimax"},
+}
+
+
+def cc_switch_kimi_key():
+    """The Kimi coding key CC Switch still holds, or "" when there is none."""
+    try:
+        import sqlite3
+        db = os.path.expanduser("~/.cc-switch/cc-switch.db")
+        if not os.path.exists(db):
+            return ""
+        con = sqlite3.connect("file:" + db + "?mode=ro", uri=True)
+        try:
+            row = con.execute(
+                "select settings_config from providers"
+                " where app_type='claude' and name='default'").fetchone()
+        finally:
+            con.close()
+        if not row:
+            return ""
+        cfg = json.loads(row[0] or "{}")
+        return str((cfg.get("env") or {}).get("ANTHROPIC_AUTH_TOKEN") or "")
+    except Exception:
+        return ""
+
+
+def plan_key(name):
+    """(key, where it came from) for a plan account, ("", "") when none."""
+    spec = PLAN_ACCOUNTS[name]
+    key = os.environ.get(spec["env"]) or ""
+    if key:
+        return key, "env " + spec["env"]
+    if spec["plan"] == "kimi":
+        stored = cc_switch_kimi_key()
+        if stored:
+            return stored, "cc-switch default provider"
+    return "", ""
+
+
+def _plan_numbers(body, limit=6):
+    """Every number in a usage payload, as "path=value" pairs.
+
+    The payload shape is only knowable once a live key answers, so the
+    reader reports what is there instead of hard-coding keys that may
+    not exist in the reply.
+    """
+    found = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                walk(value, "%s/%s" % (path, key))
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, path + "[]")
+        elif isinstance(node, bool):
+            return
+        elif isinstance(node, (int, float)):
+            found.append((path, node))
+
+    walk(body, "")
+    return found[:limit]
+
+
+def _refusal_text(out):
+    """The upstream message from a refused call, trimmed for one cell."""
+    body = out.get("body")
+    if isinstance(body, dict):
+        err = body.get("error") or {}
+        return str(err.get("message") or body)[:80]
+    return str(body)[:80]
+
+
+def read_plan_account(name):
+    row = _row(name)
+    row["vendor"] = PLAN_ACCOUNTS[name]["vendor"]
+    row["credits_kind"] = "subscription"
+    row["checkin"] = "上游无每日签到端点（额度只读，见 plan_credits.py）"
+    key, source = plan_key(name)
+    row["credits_source"] = "plan_credits（%s）" % (source or "无凭据")
+    if not key:
+        row["credits_note"] = ("未配置 key：export %s=<key>"
+                               % PLAN_ACCOUNTS[name]["env"])
+        row["detail"] = "没有可用凭据，未发起调用"
+        return row
+    row["account"] = "%s…%s" % (key[:4], key[-4:])
+    import plan_credits
+    if PLAN_ACCOUNTS[name]["plan"] == "kimi":
+        status, out = plan_credits.kimi(key)
+        row["up"] = status == 200
+        row["logged_in"] = status == 200
+        row["detail"] = "GET %s -> HTTP %s" % (out.get("endpoint"), status)
+        if status == 200:
+            numbers = _plan_numbers(out.get("body"))
+            row["credits_note"] = ("；".join("%s=%s" % (p, _pretty(v))
+                                            for p, v in numbers)
+                                   or "接口未返回额度数字")
+            for path, value in numbers:
+                if any(word in path.lower()
+                       for word in ("remain", "left", "quota", "balance")):
+                    row["credits_value"] = value
+                    row["credits_unit"] = path.rsplit("/", 1)[-1]
+                    break
+        else:
+            row["credits_note"] = "key 被拒：HTTP %s %s" % (
+                status, _refusal_text(out))
+        return row
+    status, out = plan_credits.minimax(key)
+    row["up"] = status == 200
+    row["logged_in"] = status == 200
+    row["detail"] = "POST %s (%s) -> HTTP %s" % (
+        out.get("endpoint"), out.get("model"), status)
+    row["credits_note"] = (
+        "MiniMax 无余额接口；1-token 调用已发出，扣减以控制台为准"
+        if status == 200 else
+        "key 被拒：HTTP %s %s" % (status, _refusal_text(out)))
+    return row
+
+
 # ---------------- 每节点一行 ----------------
 
 def _row(name):
@@ -416,6 +549,9 @@ def _row(name):
 def read_node(name):
     row = _row(name)
     base = _base(name)
+
+    if name in PLAN_ACCOUNTS:
+        return read_plan_account(name)
 
     if name in GATEWAY:
         # No local bridge: ocx forwards these straight to the vendor, so the

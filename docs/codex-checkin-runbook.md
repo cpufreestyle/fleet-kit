@@ -70,6 +70,28 @@ stdlib（urllib），可单独跑，不进任何 venv：
 （一次性 100,000,000 tokens）；其余节点口径来自 free-windows.json，数值留空并写清原因。
 status_ui 面板「节点积分 / 账号」就是这份数据（30s 缓存）。
 
+
+### 两个编程套餐账号（Kimi Code / MiniMax，2026-10-01 加入）
+它们不是桥：机队没有为它们跑桥进程，所以每一行仍是同样三个问题——账号活着吗、哪个 key、
+平台说还剩多少。调用由 `tools/plan_credits.py` 直接问平台，`node_credits.py` 只负责渲染：
+
+    kimi-code   GET  https://api.kimi.com/coding/v1/usages
+                # coding 套餐的窗口余额，一次 GET，不花钱
+    minimax     POST https://api.minimaxi.com/v1/chat/completions（max_tokens=1）
+                # MiniMax 没有余额接口：1-token 调用既验证 key 又真的扣一点，扣减以控制台为准
+
+key 来源：环境变量 `KIMI_CODING_API_KEY` / `MINIMAX_API_KEY`；Kimi 在没有环境变量时回落到
+cc-switch 里 claude 的 default provider（那份本来就是 Kimi coding key）。401/403 一律显示
+「key 被拒」并附平台原文——把死 key 渲染成 0 credits，是套餐被悄无声息取消的方式。
+
+当前实测（2026-10-01）：cc-switch 里那份 Kimi key 已失效，`GET /coding/v1/usages -> HTTP 401
+The API Key appears to be invalid or may have expired.`；MiniMax 本机没有任何凭据，行里直说
+「未配置 key」且不发起调用。拿到新 key 之后：
+
+    export KIMI_CODING_API_KEY=<key>
+    export MINIMAX_API_KEY=<key>        # 海外平台：plan_credits.py minimax --base https://api.minimax.io
+    python3 tools/plan_credits.py all   # 两边额度一次打出
+
 ## 使用方法
 ```bash
 VENV=~/.local/node-v22.20.0-darwin-arm64/lib/node_modules/workbuddy2codex/.venv/bin/python

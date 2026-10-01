@@ -36,9 +36,11 @@ FREE_KINDS = ("free", "free-window", "quota", "trial")
 BADGE = {"free": "FREE", "free-window": "LIMITED", "quota": "QUOTA",
          "trial": "TRIAL", "subscription": "SUB", "paid": "PAID",
          "unknown": "N/A", "blocked": "DOWN"}
-CREDITS_KINDS = ("client", "limit", "own", "unknown")
+# A coding plan bills as a subscription: the plan's own quota, not a client
+# credit and not a per-key limit. Kimi Code and MiniMax are read this way.
+CREDITS_KINDS = ("client", "limit", "own", "unknown", "subscription")
 CREDITS_BADGE = {"client": "客户端积分", "limit": "仅限额", "own": "独立Key",
-                 "unknown": "N/A"}
+                 "subscription": "订阅套餐内含", "unknown": "N/A"}
 
 
 def load_db():

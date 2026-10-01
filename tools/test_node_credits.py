@@ -96,8 +96,12 @@ def test_every_node_in_the_fleet_has_a_row():
     """A node added to fleet_probe cannot be forgotten here."""
     rows = node_credits.read_all()
     names = [row["node"] for row in rows]
-    assert sorted(names) == EVERY_NODE
-    assert len(rows) == len(EVERY_NODE) == 15
+    assert set(EVERY_NODE) <= set(names)
+    # the two coding plans run no bridge, so fleet_probe never names them;
+    # they are the rows plan_credits.py fills, and forgetting one is just as
+    # invisible as forgetting a bridge
+    assert set(node_credits.PLAN_ACCOUNTS) <= set(names)
+    assert len(rows) == len(EVERY_NODE) + len(node_credits.PLAN_ACCOUNTS)
 
 
 def test_every_row_declares_where_its_number_came_from():
