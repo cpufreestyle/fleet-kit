@@ -106,11 +106,31 @@ class _Pool:
 
 def _run(client_cls, pool):
     sleeps = []
+    expected_loop = []
+    real_sleep = asyncio.sleep
 
     async def _sleep(delay):
+        """Count the retry budget this bridge spent, and nothing else.
+
+        The patch below lands on the process-wide asyncio.sleep, so every
+        other event loop in this worker is ticked through it too -- a uvicorn
+        server another test left running calls asyncio.sleep(0.1) on its own
+        loop for the rest of the session. Measured 2026-09-30 under the full
+        suite: those leaked loops pushed sleeps to 4,148,823 entries and the
+        capped-at-3 assertion failed, on a file that passes alone every time.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - no loop running at all
+            loop = None
+        if loop is not (expected_loop[0] if expected_loop else None):
+            # Not the loop about to run _collect(): tick it at its real
+            # cadence instead of recording a foreign delay.
+            return await real_sleep(delay)
         sleeps.append(delay)
 
     async def _collect():
+        expected_loop.append(asyncio.get_running_loop())
         return await core._collect_with_pool(
             "http://upstream.invalid/v2/chat/completions", pool,
             {"model": "m", "stream": False}, "m", "r-1")

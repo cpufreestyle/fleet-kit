@@ -5,6 +5,7 @@ tests pin the aggregation the status panel renders and the two things that
 must never happen: an unwritable ledger taking a working bridge down, and an
 unbounded file.
 """
+import datetime
 import importlib.util
 import json
 import os
@@ -27,7 +28,17 @@ def path(tmp_path):
     return str(tmp_path / "xhx-usage.jsonl")
 
 
-def _row(model, total, day="2026-09-29", stream=False, ts=None):
+def _today():
+    """The day summarize() defaults to, so a test never pins a literal.
+
+    ledger.record() stamps datetime.now(), so a hardcoded day made these
+    tests green only on the day they were written.
+    """
+    return datetime.date.today().isoformat()
+
+
+def _row(model, total, day=None, stream=False, ts=None):
+    day = day or _today()
     return {"ts": ts or (day + "T10:00:00"), "model": model, "stream": stream,
             "prompt_tokens": 10, "completion_tokens": total - 10,
             "total_tokens": total, "reasoning_tokens": 0}
@@ -50,7 +61,7 @@ def test_a_call_is_counted_per_model(path):
                                      "total_tokens": 520, "reasoning_tokens": 0},
                   stream=False, seconds=8.0, path=path)
     ledger.record("sn-glm-5-3", {"total_tokens": 731}, stream=True, path=path)
-    summary = ledger.summarize(path=path, day="2026-09-29")
+    summary = ledger.summarize(path=path, day=_today())
     assert summary["calls"] == 2
     assert summary["with_usage"] == 2
     assert summary["total_tokens"] == 1251
@@ -69,12 +80,15 @@ def test_only_todays_rows_are_summarised(path):
     ledger.record("raccoon-405a1c", {"total_tokens": 999}, path=path)
     with open(path, encoding="utf-8") as handle:
         rows = [json.loads(line) for line in handle]
-    rows[0]["ts"] = "2026-09-28T10:00:00"
+    today = _today()
+    yesterday = (datetime.date.fromisoformat(today)
+                  - datetime.timedelta(days=1)).isoformat()
+    rows[0]["ts"] = yesterday + "T10:00:00"
     with open(path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(json.dumps(r) for r in rows) + "\n")
-    summary = ledger.summarize(path=path, day="2026-09-29")
+    summary = ledger.summarize(path=path, day=today)
     assert summary["calls"] == 0
-    assert ledger.summarize(path=path, day="2026-09-28")["total_tokens"] == 999
+    assert ledger.summarize(path=path, day=yesterday)["total_tokens"] == 999
 
 
 def test_a_missing_ledger_is_not_an_error(path):
