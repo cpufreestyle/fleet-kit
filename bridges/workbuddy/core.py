@@ -3093,8 +3093,13 @@ def main():
     )
     CONFIG["pool"] = pool
     CONFIG["account_service"] = WorkBuddyAccountService(pool, BRIDGE_VERSION)
-    CONFIG["checkin_service"] = WorkBuddyCheckinService(pool)
-
+    # The check-in endpoints live behind the same backend the bridge itself
+    # talks to, and the two variants are different hosts: measured
+    # 2026-10-01, the overseas bridge asked copilot.tencent.com with a
+    # www.workbuddy.ai credential and got 401 Authorization Required, which
+    # the dashboard then had to report as "status read failed".
+    CONFIG["checkin_service"] = WorkBuddyCheckinService(
+        pool, backend=_PROVIDER.get("backend"))
     # Buddy 签到助手: 启动时兜一轮，把账号池已完成当天签到的额度全部取出（失败只记日志，不影响启动）
     def _auto_checkin_startup() -> None:
         try:
