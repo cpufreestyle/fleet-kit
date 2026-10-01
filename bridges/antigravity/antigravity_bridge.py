@@ -77,6 +77,7 @@ class UpstreamError(Exception):
 # timeout=180，加上 get_access() 里的多客户端 refresh，最坏能挂好几分钟；客户端
 # 远早于此就断开，只剩 BrokenPipeError，健康检查于是误判 BRIDGE_DOWN。
 CHAT_BUDGET = float(os.environ.get('ANTIGRAVITY_CHAT_BUDGET') or '60')
+BRIDGE_KEY = os.environ.get('ANTIGRAVITY2CODEX_KEY') or ''
 # 同上：预算烧完后的最低时限，只为避免把 0/负数当 timeout 交给上游。
 FALLBACK_FLOOR = float(os.environ.get('ANTIGRAVITY_FALLBACK_FLOOR') or '1.0')
 
@@ -227,14 +228,17 @@ def get_access():
 def meta_for(ide=None):
     return {'ideType': ide or ST['ide'], 'pluginType': 'GEMINI', 'platform': 'PLATFORM_UNSPECIFIED'}
 
-def load_code_assist():
-    if ST['project'] is not None:
+def load_code_assist(ide=None):
+    # loadCodeAssist is the only endpoint that accepts a metadata field;
+    # the chat body must never carry one. Pass ide to re-resolve under
+    # that identity (the IDE fallback chain uses it).
+    if ide is None and ST['project'] is not None:
         return
     at = get_access()
     last = None
-    for ide in IDE_TYPES:
+    for candidate in ([ide] if ide else IDE_TYPES):
         try:
-            raw, _ = http_json(BASE + 'loadCodeAssist', {'metadata': meta_for(ide)},
+            raw, _ = http_json(BASE + 'loadCodeAssist', {'metadata': meta_for(candidate)},
                                headers={'Authorization': 'Bearer ' + at}, timeout=30)
             j = json.loads(raw)
         except UpstreamError as e:
@@ -243,7 +247,7 @@ def load_code_assist():
         ST['project'] = j.get('cloudaicompanionProject') or ''
         tier = j.get('currentTier') or {}
         ST['tier'] = tier.get('id') if isinstance(tier, dict) else None
-        ST['ide'] = ide
+        ST['ide'] = candidate
         return
     raise UpstreamError('loadCodeAssist failed: ' + str(last))
 
@@ -301,12 +305,16 @@ def looks_like_model_error(err):
 
 def call_upstream(model, msgs, stream, timeout=180, ide=None):
     at = get_access()
-    load_code_assist()
+    load_code_assist(ide)
     contents, sysinst = to_contents(msgs)
     inner = {'contents': contents, 'generationConfig': {'temperature': 0.7}}
     if sysinst:
         inner['systemInstruction'] = sysinst
-    body = {'model': model, 'request': inner, 'metadata': meta_for(ide)}
+    # v1internal:generateContent has no metadata field: Google answers 400
+    # INVALID_ARGUMENT (Unknown name metadata) before it even looks at the
+    # model, so every chat request used to be rejected outright. The IDE
+    # identity is applied on loadCodeAssist instead.
+    body = {'model': model, 'request': inner}
     if ST['project']:
         body['project'] = ST['project']
     if stream:
@@ -403,8 +411,28 @@ class H(BaseHTTPRequestHandler):
             # guard -- that is where the BrokenPipeError actually surfaced.
             pass
 
+    def _check_key(self):
+        """Same contract as _common.check_bridge_auth.
+
+        An unset key leaves the bridge open (it only listens on 127.0.0.1);
+        a set key requires the exact Authorization header. install.sh mints
+        one per bridge, so the fleet tooling already sends it.
+        """
+        if not BRIDGE_KEY:
+            return True
+        return (self.headers.get('Authorization') or '') == (
+            'Bearer ' + BRIDGE_KEY)
+
+    def _deny(self):
+        self._send(401, json.dumps({'error': {
+            'message': 'invalid bridge key',
+            'type': 'auth_error'}}))
+
     def do_GET(self):
         if self.path.startswith('/v1/models'):
+            if not self._check_key():
+                self._deny()
+                return
             now = int(time.time())
             data = {'object': 'list', 'data': [{'id': m, 'object': 'model', 'created': now, 'owned_by': 'antigravity'} for m in MODELS]}
             self._send(200, json.dumps(data))
@@ -419,6 +447,9 @@ class H(BaseHTTPRequestHandler):
             self._send(404, json.dumps({'error': 'not found'}))
 
     def do_POST(self):
+        if not self._check_key():
+            self._deny()
+            return
         if not self.path.startswith('/v1/chat/completions'):
             self._send(404, json.dumps({'error': 'not found'}))
             return
