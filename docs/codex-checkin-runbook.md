@@ -92,6 +92,23 @@ The API Key appears to be invalid or may have expired.`；MiniMax 本机没有�
     export MINIMAX_API_KEY=<key>        # 海外平台：plan_credits.py minimax --base https://api.minimax.io
     python3 tools/plan_credits.py all   # 两边额度一次打出
 
+
+### 桥调用会不会扣积分（2026-10-02 实测）
+用户此前提问「用小浣熊的模型，积分没少」。实测：经机队网关打 Kimi / MiniMax 模型，
+调用全部正常返回，但四个能看到数字的节点计数一个都没动：
+
+    调用                                    结果   workbuddy   workbuddy-gpt   xhx
+    xhx/xhx-sn-kimi-k3（Kimi 模型）         200     100         100             7824 → 7824
+    workbuddy/minimax-m3（MiniMax 模型）    200     100         100             7824 → 7824
+    catpaw/MiniMax-M2.7（MiniMax 模型）     502     -           -               -（catpaw 上游需 VPN）
+
+结论：这些桥消耗的是平台侧的限额/授权，不是面板上那个客户端积分（xhx 自己的 notes 也
+写明「llm/v2 调用不结算积分」）。积分要动，只能走官方客户端或平台自己的结算接口。
+所以「调用了模型但积分没少」是预期行为，不是桥把调用吞了。
+
+Kimi Code 的官方接口是另一回事：`/coding/v1/usages` 能直接读到套餐余额（见上一节），
+那份 key 换成有效的之后，`plan_credits.py kimi` 就是官方口径的额度调用。
+
 ## 使用方法
 ```bash
 VENV=~/.local/node-v22.20.0-darwin-arm64/lib/node_modules/workbuddy2codex/.venv/bin/python
