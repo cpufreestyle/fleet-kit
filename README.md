@@ -714,7 +714,8 @@ python3 tools/pin_cc_switch_endpoint.py --dry-run --all-stepfun   # 预览会重
 StepFun，在 CC Switch UI 里选中它就直接绕过 shim，71 图照样 400（`--all-stepfun` 是同一个
 开关，`IMAGE_CAP_CC_PIN_ALL=0` 收窄回只动命名那一行）。`tools/pin_shim_base_url.py`
 （钉 `~/.codex/config.toml`）实测赢不了，降级为默认关闭的兜底。
-**改完数据库要重启 CC Switch.app 才生效**：它把路由表缓存在内存里。
+**改完数据库不用重启 CC Switch.app**（10-01 实测推翻旧结论：进程自 09-29 未重启，
+71 图请求仍被 shim 截断并返回 200，详见 runbook）。
 实测：100 图经 launchd 全链路，`stepfun/step-5-preview` 上游只收 32，
 `workbuddy/hy4-preview` 原样透传 100。详见 docs/stepfun2codex-runbook.md。
 

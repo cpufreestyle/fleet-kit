@@ -222,8 +222,8 @@ CC Switch 是 Codex 与 StepFun 之间的那一跳，它自己库里记着 StepF
   setup 都跑，也可以挂定时任务。
 
 人工重加或编辑一次 StepFun provider 就会拿到一条指回直连的新行，所以 shim 自己每
-`IMAGE_CAP_CC_PIN_INTERVAL` 秒（默认 300）重指一次。**改完数据库要重启 CC Switch.app 才
-生效**：它把路由表缓存在内存里。
+`IMAGE_CAP_CC_PIN_INTERVAL` 秒（默认 300）重指一次。改完数据库**不需要**重启
+CC Switch.app，10-01 实测推翻了这个判断，见下文。
 
 ### provider-switch 旁路（2026-10-01）
 
@@ -244,8 +244,7 @@ CC Switch 是 Codex 与 StepFun 之间的那一跳，它自己库里记着 StepF
 [cc-pin] repointed nv spark/codex providers.settings_config: https://api.stepfun.com/step_plan/v1 -> http://127.0.0.1:15722/v1 (1 endpoint row, 1 embedded config)
 ```
 
-现在 DB 里两个 codex 行都指向 `http://127.0.0.1:15722/v1`。仍然提醒一次：
-**改完数据库要重启 CC Switch.app 才生效**，它把路由表缓存在内存里。
+现在 DB 里两个 codex 行都指向 `http://127.0.0.1:15722/v1`。
 
 `tools/pin_shim_base_url.py`（改 `~/.codex/config.toml`）降级为默认关闭的兜底，
 `IMAGE_CAP_REPIN_INTERVAL=0`。实测它赢不了，见上文「为什么在下面，不在前面」。
@@ -262,12 +261,35 @@ python3 tools/pin_cc_switch_endpoint.py --dry-run   # 先看会动哪里
 `cc-switch.db.bak-before-fleetkit-endpoint-<时间戳>`，拷回去即可。
 `~/.codex/config.toml` 里 custom provider 的 `base_url` 也改回 15721。
 
+### 改完数据库要不要重启 CC Switch（2026-10-01 实测）
+
+09-30 的判断是「CC Switch 把路由表缓存在内存里，改完数据库必须重启 app 才生效」——
+那次确实靠运营者手动重启才通。10-01 拿本机现状重测，这个结论**不成立**：
+
+- `cc-switch` 进程 pid 773，启动时间 `Tue Sep 29 17:20:21 2026`，测量前后
+  `ps -eo pid,lstart,comm` 一致，期间没有重启过；
+- 端口 15721 由这个 pid 773 监听（`lsof -nP -iTCP:15721 -sTCP:LISTEN` 确认）；
+- 同一批 71 张**互不相同**的合法 PNG 连续两次 POST 到
+  `http://127.0.0.1:15721/v1/responses`，两次都是 `HTTP 200`、`input_tokens=6054`；
+- shim 侧同步对上这两发：日志
+  `[image-cap] model=step-5-preview images=71 unique=71 kept=32 dup_dropped=0 cap_dropped=39`，
+  health 的 `stats.rewritten` +1、`images_kept` +32。
+
+15721 是 CC Switch 自己的端口，请求必然经过它；而 71 张未经截断的图直连 StepFun 是 400
+（`images_too_many`，本文实测过）。所以这一步它确实转发到了 15722，**当前版本的
+CC Switch 是现读数据库的，改完不用重启**。
+
+推论：`setup-providers.sh` 结尾提示重启 CC Switch 是多余的，运营者看到
+`cc_pin.changed=true` 就可以认为链路已通。保守说法留给老版本：真缓存了，判据仍然是
+health 的 `requests` 涨不涨，而不是重启没重启。
+
 ### 两个坑
 
-- **CC Switch 改完数据库不重启不生效**：它把路由表缓存在内存里，
-  `pin_cc_switch_endpoint.py` 写完 `cc-switch.db` 之后，已经在跑的 CC Switch 仍按旧目标
-  转发。判据：shim health 里 `cc_pin.changed` 是 true 但 `requests` 不涨。运营者手动
-  重启 CC Switch.app 之后链路才通，这也是 setup 结尾要打印那行提示的原因。
+- **CC Switch 改完数据库不用重启（10-01 实测推翻旧结论）**：旧结论是「路由表缓存在
+  内存里，`pin_cc_switch_endpoint.py` 写完 `cc-switch.db` 之后，已经在跑的 CC Switch 仍按旧
+  目标转发，判据是 health 里 `cc_pin.changed` 是 true 但 `requests` 不涨」，运维上要求
+  手动重启 app。10-01 复测不成立，证据见上一节。真正可用的判据只有 health 的 `requests`
+  涨不涨：涨了就是链路通了，与重启与否无关。
 - **代理环境变量吃 loopback**：本机开着 `http_proxy=127.0.0.1:1082` 时，httpx 和 curl
   都会把 loopback 流量送进代理，探活 curl 一律加 `--noproxy '*'`。shim 内部用
   `LOOPBACK_MOUNTS`（`trust_env=False`）自己绕开了这一层。
