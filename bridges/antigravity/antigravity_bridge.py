@@ -6,6 +6,8 @@
 import json, os, socket, sys, threading, time, uuid
 import urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
+import _basehttp
 
 PORT = int(os.environ.get('ANTIGRAVITY2CODEX_PORT', '8797'))
 HOST = os.environ.get('ANTIGRAVITY2CODEX_HOST', '127.0.0.1')
@@ -452,6 +454,8 @@ class H(BaseHTTPRequestHandler):
                     'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': text}, 'finish_reason': 'stop'}],
                     'usage': {'prompt_tokens': len(prompt_from_messages(msgs)) // 4, 'completion_tokens': len(text) // 4, 'total_tokens': (len(text) + len(prompt_from_messages(msgs))) // 4}}
             self._send(200, json.dumps(resp))
+
+H = _basehttp.install_basehttp_guard(H)
 
 if __name__ == '__main__':
     srv = ThreadingHTTPServer((HOST, PORT), H)

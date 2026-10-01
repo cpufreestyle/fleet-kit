@@ -2,6 +2,7 @@ import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 import _platform
+import _basehttp
 import sys
 #!/usr/bin/env python3
 # catpaw2codex v2: Meituan CatPawAI (miaoshou AI IDE) -> OpenAI-compatible bridge (port 8795)
@@ -385,6 +386,8 @@ class H(BaseHTTPRequestHandler):
             self._send(code, out, extra.get('Content-Type', 'application/json'))
         except Exception as e:
             self._send(500, json.dumps({'error': {'message': str(e)[:300], 'type': 'bridge_error'}}))
+
+H = _basehttp.install_basehttp_guard(H)
 
 if __name__ == '__main__':
     srv = ThreadingHTTPServer((HOST, PORT), H)
