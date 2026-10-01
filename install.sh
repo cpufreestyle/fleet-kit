@@ -535,6 +535,15 @@ if [ -z "$ANTIGRAVITY_OAUTH_CLIENT_ID" ] || [ -z "$ANTIGRAVITY_OAUTH_CLIENT_SECR
   fi
 fi
 
+# gemini2codex refreshes against the same oauth2.googleapis.com endpoint and
+# accepts any Google consumer pair Antigravity ships, so it reuses the pair
+# above instead of baking a second copy (and a second revocation risk) in git.
+GEMINI_OAUTH_CLIENT_ID="$(pick_optional GEMINI_OAUTH_CLIENT_ID)"
+GEMINI_OAUTH_CLIENT_SECRET="$(pick_optional GEMINI_OAUTH_CLIENT_SECRET)"
+if [ -z "$GEMINI_OAUTH_CLIENT_ID" ] && [ -n "$ANTIGRAVITY_OAUTH_CLIENT_ID" ]; then
+  GEMINI_OAUTH_CLIENT_ID="$ANTIGRAVITY_OAUTH_CLIENT_ID"
+  GEMINI_OAUTH_CLIENT_SECRET="$ANTIGRAVITY_OAUTH_CLIENT_SECRET"
+fi
 emit_fleet_env() {
   local preserved=""
   if [ -n "$EXISTING" ]; then
@@ -577,6 +586,12 @@ ANTIGRAVITY_OAUTH_CLIENT_ID="${ANTIGRAVITY_OAUTH_CLIENT_ID}"
 ANTIGRAVITY_OAUTH_CLIENT_SECRET="${ANTIGRAVITY_OAUTH_CLIENT_SECRET}"
 # Optional extra id:secret pairs tried after the primary (Antigravity rotates these).
 ANTIGRAVITY_LEGACY_CLIENTS="${ANTIGRAVITY_LEGACY_CLIENTS}"
+
+# gemini2codex shares the Antigravity Google OAuth pair: the bridge reads
+# GEMINI_OAUTH_CLIENT_ID/SECRET first (bridges/gemini/gemini_bridge.py) and a
+# revoked pair fails refresh with 401, which is what took this bridge down.
+GEMINI_OAUTH_CLIENT_ID="${GEMINI_OAUTH_CLIENT_ID}"
+GEMINI_OAUTH_CLIENT_SECRET="${GEMINI_OAUTH_CLIENT_SECRET}"
 
 # Optional: TokenDance gateway models (https://tokendance.space).
 # Operator keys preserved from the previous fleet.env are appended below.
@@ -635,6 +650,9 @@ for row in "${BRIDGES[@]}"; do
     if [ -n "$ANTIGRAVITY_LEGACY_CLIENTS" ]; then
       extraenv="${extraenv};ANTIGRAVITY_LEGACY_CLIENTS=${ANTIGRAVITY_LEGACY_CLIENTS}"
     fi
+  fi
+  if [ "$name" = "gemini" ] && [ -n "$GEMINI_OAUTH_CLIENT_ID" ]; then
+    extraenv="${extraenv};GEMINI_OAUTH_CLIENT_ID=${GEMINI_OAUTH_CLIENT_ID};GEMINI_OAUTH_CLIENT_SECRET=${GEMINI_OAUTH_CLIENT_SECRET}"
   fi
   if [ "$name" = "qwen" ] && [ -n "$QWEN_API_KEY" ]; then
     extraenv="${extraenv};QWEN_API_KEY=${QWEN_API_KEY}"

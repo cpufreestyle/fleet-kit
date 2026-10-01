@@ -23,6 +23,9 @@ Codex -> 本地代理(可选) -> gemini2codex(:8794) -> A: cloudcode-pa.googleap
 - OAuth token: `~/.gemini/jetski-standalone-oauth-token` (含 refresh_token; access 过期自动刷新)
 - web cookie: `~/.gemini2codex/cookies.txt` (600 权限; PSID 185 / PSIDTS 110 字符)
 - 公开 client 凭据来源: `@google/gemini-cli@0.60.0` bundle (CLIENT_CANDIDATES 两组)
+- OAuth client 凭据: 经 `GEMINI_OAUTH_CLIENT_ID` / `GEMINI_OAUTH_CLIENT_SECRET` (fleet.env) 注入,
+  由 install.sh 从 Antigravity.app 提取并与 antigravity 桥共享; 桥内两组历史常量仅作最后兜底
+  (2026-10-01 实测: 旧常量已被 Google 吊销, 单独刷新返回 401 unauthorized_client)
 - Claude/Gemini 客户端资产: `/Applications/Antigravity.app`, `/Applications/Gemini.app`
 
 ## 操作
@@ -182,4 +185,16 @@ curl -s -X POST -H 'Content-Type: application/json' \
 实测（2026-10-01）：`pytest tools/` 全量 449 通过、4 失败，gemini 相关 63 条全绿；那 4 条失败全在 `tools/checkin.py`（签到模块，另一处正在改），与本桥无关。
 另以 `GEMINI2CODEX_PORT=18794` + tmp `GEMINI_AUTH_DIR` 起真实进程冒烟，
 `/health`、`/v1/models`、`GET/POST /__gemini/accounts*` 均正常，用完即停。
+
+## 2026-10-01 晚更新：OAuth client 吊销 + VALI 账号门禁（两层根因）
+- 现象: 502 envelope 契约正常 (channels + account), 但 code_assist 与 web 双通道同时失败。
+- 根因一（已修, 待提交）: 桥内硬编码两组 Google OAuth client 被吊销,
+  `oauth2.googleapis.com/token` 返回 401 unauthorized_client, access token 无法自动续期。
+  `_load_oauth_pairs()` 改为 env 注入 (同 antigravity 惯例, 凭据不入 git, install.sh 提取共享),
+  本机 fleet.env 与 launchd plist 已同步注入 Antigravity 提取到的可用 pair。
+- 根因二（需用户操作）: 换有效 client 刷新后, generateContent 仍 403 VALI
+  「Verify your account to continue.」; 用 antigravity 桥 (:8797, 有效 client) 打同一 Google
+  端点同样 403, 证明是账号级门禁而非桥级。web 通道 302 跳 `google_abuse=GOOGLE_ABUSE_EXEMPTION`
+  同指账号验证。修复路径: 浏览器登录该 Google 账号完成验证, 或 `POST /__gemini/accounts/import-current`
+  往池里加第二个账号。
 

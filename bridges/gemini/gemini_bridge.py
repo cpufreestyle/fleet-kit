@@ -13,10 +13,39 @@ PORT = int(os.environ.get('GEMINI2CODEX_PORT', '8794'))
 HOST = os.environ.get('GEMINI2CODEX_HOST', '127.0.0.1')
 TOKEN_FILE = os.path.expanduser('~/.gemini/jetski-standalone-oauth-token')
 COOKIE_FILE = os.path.expanduser('~/.gemini2codex/cookies.txt')
-CLIENT_CANDIDATES = [
-    ('681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com', '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'),
-    ('764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur.apps.googleusercontent.com', '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'),
-]
+
+
+def _load_oauth_pairs():
+    # Google OAuth client pairs live in fleet.env, exactly like the antigravity
+    # bridge: push protection rejects Google client secrets, so the live pair
+    # never lands in git and install.sh re-extracts it from the Antigravity app
+    # on every re-install. The constants at the bottom are last-resort fallbacks
+    # -- do_refresh() walks the whole list and keeps the first pair Google
+    # accepts, so a revoked pair costs one failed round trip, not the bridge.
+    pairs = []
+
+    def add(client_id, client_secret):
+        client_id = (client_id or '').strip()
+        client_secret = (client_secret or '').strip()
+        if client_id and client_secret and (client_id, client_secret) not in pairs:
+            pairs.append((client_id, client_secret))
+
+    add(os.environ.get('GEMINI_OAUTH_CLIENT_ID'),
+        os.environ.get('GEMINI_OAUTH_CLIENT_SECRET'))
+    for item in (os.environ.get('GEMINI_LEGACY_CLIENTS') or '').split(','):
+        item = item.strip()
+        if item:
+            add(*item.split(':', 1))
+    add(os.environ.get('GEMINI_LEGACY_CLIENT_ID'),
+        os.environ.get('GEMINI_LEGACY_CLIENT_SECRET'))
+    add('681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com',
+        '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')
+    add('764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur.apps.googleusercontent.com',
+        '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')
+    return pairs
+
+
+CLIENT_CANDIDATES = _load_oauth_pairs()
 MODELS = ['gemini-3-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-3-flash-preview']
 UA = 'GeminiCLI/0.60.0 (MacOS; arm64)'
 
