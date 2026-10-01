@@ -278,6 +278,35 @@ def write_json(path, snap):
     json.load(open(tmp, encoding="utf-8"))
     os.replace(tmp, path)
 
+def bridge_key(name, env):
+    """Bridge auth key: fleet.env first, the installed service second.
+
+    fleet.env only exists on the machine that ran install.sh, and the default
+    --env path names one specific install root. Anywhere else the lookup yields
+    "" and a key-enforcing bridge answers 401 to every probe, which
+    catalog_filter.py reads as "this bridge is dead" and drops its rows from the
+    Codex picker - a listening fleet with an empty model list. install.sh
+    writes the same key into the service definition it generated (launchd plist
+    on macOS, the generated wrapper elsewhere), so read it back there before
+    declaring the bridge unreachable.
+    """
+    keyenv = KEY_ENV.get(name, "")
+    key = env.get(keyenv, "")
+    if key:
+        return key
+    try:
+        from fleet_platform import LABEL_SUFFIX, label_prefix, service_envs
+    except Exception:
+        return key
+    try:
+        suffix = LABEL_SUFFIX.get(name)
+        if not suffix:
+            return key
+        return service_envs().get(label_prefix() + "." + suffix, {}).get(keyenv, "")
+    except Exception:
+        return key
+
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -315,7 +344,7 @@ def main():
         if name in GATEWAY:
             ok, why, model = probe_gateway(name, name, timeout=args.call_timeout)
         else:
-            key = env.get(KEY_ENV.get(name, ""), "")
+            key = bridge_key(name, env)
             ok, why, model = probe(name, port, key, tries=max(1, args.tries),
                                   timeout=args.call_timeout)
         evidence[name] = why
