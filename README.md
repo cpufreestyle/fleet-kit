@@ -373,6 +373,31 @@ docs/stepfun2codex-runbook.md。
 `ocx provider add --force` 都会重写 config.toml，不 pin 默认模型会被打回。
 改默认：`fleet.env` 里设 `FLEET_DEFAULT_MODEL=<slug>`，或直接手改 config.toml。
 
+### 默认模型出问题，跳回 step-5-preview
+
+默认模型 = `stepfun/step-5-preview`（下称港湾），其他模型出问题时按两层跳回：
+
+1. **pin 时守卫**（`tools/default_model_guard.py`）：每次 `setup-providers.sh`
+    pin 完默认模型后跑一遍，也可以手动
+    `python3 tools/default_model_guard.py`（`--dry-run` 只看不改，
+    `--json` 出机器可读结论）。它拿活配置里的 `model` 键，去**这条模型自己的
+   路由**上打一次真实聊天（nonce `E2E_OK`，与 `fleet_probe.py` 同一约定）：
+   stepfun 系走 image-cap shim 15722，其余走各自的桥端口。探到已死且当前默认
+   不是港湾，就把 `model` 改钉回港湾并打印证据；港湾自己也死了就只报告、不改
+   写——没有地方可跳。`fleet.env` 里的 `FLEET_DEFAULT_MODEL` 指着一条死路线
+   时同样会告警：下次 setup 会把它 pin 上去。
+2. **运行时 failover**（CC Switch 自己的 `auto_failover_enabled`）：会话中临时
+   切到别的 provider 后它挂了，CC Switch 按熔断判据把请求转给 failover 队列里
+   的 provider。港湾（StepFun）必须在 codex 的 failover 队列里，否则第 2 层为空转。
+   守卫每次运行只读检查这两项（`proxy_config.auto_failover_enabled=1`、
+   StepFun `in_failover_queue=1`，库在 `~/.cc-switch/cc-switch.db`），漂移时
+   打印修复 SQL 并以退出码 1 报警；它**不写** CC Switch 的库——那是个 App 正开
+   着的 55MB 数据库，改了不重启不生效，重启是人的决定。
+
+为什么探路由而不是探 15721 网关：CC Switch 会把外来模型改写成当前 provider 的
+模型再转出网关，一条死掉的默认从网关侧看永远是 200 step-5-preview——trae 路线
+挂了那一周就是这么被漏掉的。
+
 ### 为什么有的模型不在选择器
 
 - **tokendance**：95 个 live 模型已全部进入 catalog（`setup-providers.sh` 里原先的
