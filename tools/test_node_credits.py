@@ -7,6 +7,7 @@ pin the two properties that make the view trustworthy: every node in
 fleet_probe's table has a row, and a row that cannot prove a number says where
 it looked instead of inventing one.
 """
+import base64
 import http.server
 import importlib.util
 import json
@@ -263,3 +264,94 @@ def test_credits_kinds_come_from_the_database_not_a_second_copy():
     assert node_credits.credits_kind("workbuddy") == "client"
     assert node_credits.credits_kind("trae") == "limit"
     assert node_credits.credits_kind("no-such-node") == "unknown"
+
+
+SUB = "9f7447af-ae07-4209-a1b6-f3cdba17927e"
+
+
+def _jwt(claims):
+    """An unsigned JWT carrying exactly the payload the test wants read back."""
+    def seg(obj):
+        raw = json.dumps(obj).encode()
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    return "%s.%s.sig" % (seg({"alg": "none"}), seg(claims))
+
+
+def test_a_bridge_that_keeps_its_login_in_a_file_reports_it(
+        monkeypatch, tmp_path):
+    """A bridge that names no account is still signed in; say whose.
+
+    Measured 2026-10-01: lingxi answers logged_in=true on /health and no
+    account at all, so the panel drew a dash beside a live session. The
+    identity the vendor issued is already on disk in the bridge's own
+    auth.json, so the row reads that instead of asking the vendor again --
+    which is the only option for vendors like gemini that answer 403 on the
+    account level today.
+    """
+    (tmp_path / "auth.json").write_text(json.dumps(
+        {"token": _jwt({"sub": SUB, "name": ""}), "name": ""}),
+        encoding="utf-8")
+    monkeypatch.setenv("LINGXI_HOME", str(tmp_path))
+    routes = {"/health": ({"ok": True, "version": "0.1.0", "logged_in": True},
+                          200)}
+    server = _Server(routes)
+    try:
+        monkeypatch.setitem(node_credits.PORTS, "lingxi", server.port)
+        row = node_credits.read_node("lingxi")
+    finally:
+        server.close()
+    assert row["up"] is True
+    assert row["account"] == SUB
+    assert "account 本机凭据" in row["detail"]
+
+
+def test_the_display_name_wins_over_the_subject_id(monkeypatch, tmp_path):
+    """The vendor's own UI shows a name, so the panel shows a name.
+
+    xhx writes both a display name and a subject id into auth.json; the name
+    is what a reader recognizes, and the id only fills in when a vendor
+    issues no name at all -- the case the lingxi test above pins.
+    """
+    (tmp_path / "auth.json").write_text(json.dumps(
+        {"access_token": _jwt({"name": "RaccoonJoshua", "sub": "12345"}),
+         "name": "RaccoonJoshua"}), encoding="utf-8")
+    monkeypatch.setenv("BOX_AGENT_CONFIG_DIR", str(tmp_path))
+    # the balance reader calls upstream; this row is about the account
+    monkeypatch.setattr(node_credits, "xhx_points",
+                        lambda: {"ok": False, "detail": "test"})
+    routes = {"/health": ({"ok": True, "version": "0.1.0", "logged_in": True,
+                           "models": ["a"]}, 200)}
+    server = _Server(routes)
+    try:
+        monkeypatch.setitem(node_credits.PORTS, "xhx", server.port)
+        row = node_credits.read_node("xhx")
+    finally:
+        server.close()
+    assert row["account"] == "RaccoonJoshua"
+
+
+def test_a_machine_that_never_logged_in_keeps_the_dash(monkeypatch, tmp_path):
+    """No credential file means no identity -- a dash, never an invented one.
+
+    The fallback reads the login this machine already has, so a machine with
+    none must stay blank rather than borrow the name out of whoever else's
+    ~/.box-agent/config happens to sit on the box running the tests.
+    """
+    monkeypatch.setenv("BOX_AGENT_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(node_credits, "xhx_points",
+                        lambda: {"ok": False, "detail": "test"})
+    routes = {"/health": ({"ok": True, "logged_in": True, "models": []}, 200)}
+    server = _Server(routes)
+    try:
+        monkeypatch.setitem(node_credits.PORTS, "xhx", server.port)
+        row = node_credits.read_node("xhx")
+    finally:
+        server.close()
+    assert row["up"] is True
+    assert row["account"] == ""
+    assert "account 本机凭据" not in row["detail"]
+
+
+def test_a_node_that_keeps_no_credential_file_has_no_fallback():
+    """Only the two JWT-on-disk bridges have a local identity to read."""
+    assert node_credits.local_account("trae") == ""

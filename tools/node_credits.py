@@ -41,6 +41,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import base64
 import http.cookiejar
 import json
 import os
@@ -194,6 +195,66 @@ def _login_of(payload):
 def _base(name):
     port = PORTS.get(name)
     return None if not port else "http://127.0.0.1:%d" % port
+
+
+# ---------------- 本机凭据：桥不上报账号时，读它自己的登录态 ----------------
+#
+# Two bridges keep their login as a JWT on disk and never echo an account name
+# on /health (measured 2026-10-01: xhx and lingxi both answered account=""),
+# so the panel drew a dash for a bridge that is signed in. The payload of a
+# JWT is the identity the vendor itself issued -- it is not a credential, and
+# reading it needs neither a second login nor an upstream call the vendor may
+# refuse (gemini answers 403 on the account level today).
+LOCAL_AUTH_FILES = {
+    # node: (env var, default dir, file, token key)
+    "xhx": ("BOX_AGENT_CONFIG_DIR",
+            os.path.join("~", ".box-agent", "config"), "auth.json",
+            "access_token"),
+    "lingxi": ("LINGXI_HOME", os.path.join("~", ".LingXi"), "auth.json", "token"),
+}
+
+
+def _jwt_claims(token):
+    """Payload claims of a JWT, read without verifying the signature."""
+    parts = str(token or "").split(".")
+    if len(parts) < 2:
+        return {}
+    padded = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        return {}
+    return claims if isinstance(claims, dict) else {}
+
+
+def local_account(name):
+    """Which account this bridge is signed in as, from its own credential file.
+
+    "" when the file is absent (never logged in on this machine), the token is
+    opaque, or the claims carry neither a display name nor an id: the caller
+    then keeps the dash instead of inventing one.
+    """
+    env_key, default_dir, filename, token_key = LOCAL_AUTH_FILES.get(
+        name, (None, "", "", ""))
+    if not env_key:
+        return ""
+    root = os.environ.get(env_key) or default_dir
+    try:
+        auth = json.loads((Path(os.path.expanduser(root)) / filename)
+                          .read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(auth, dict):
+        return ""
+    claims = _jwt_claims(auth.get(token_key))
+    # Display name first -- it is what the vendor's own UI shows. Fall back to
+    # the subject id, which is the account's stable identity for vendors that
+    # issue no name at all (lingxi writes name="" next to its token).
+    for value in (auth.get("name"), claims.get("name"), claims.get("user_id"),
+                  claims.get("sub")):
+        if value and str(value).strip():
+            return str(value).strip()[:80]
+    return ""
 
 
 # ---------------- workbuddy / workbuddy-gpt：Buddy 加油站 ----------------
@@ -430,10 +491,19 @@ def read_node(name):
 
     row["up"] = True
     row["account"] = _account_of(health)[:80]
+    account_from = "health"
+    if not row["account"]:
+        # The bridge names no identity (measured: xhx and lingxi both answer
+        # account=""), so read the one its own credential file already holds
+        # rather than drawing a dash for a bridge that is signed in.
+        row["account"] = local_account(name)[:80]
+        account_from = "credential file" if row["account"] else "health"
     row["plan"] = _plan_of(health)[:60]
     row["logged_in"] = _login_of(health)
     row["detail"] = "health %s v%s" % (health.get("__path"),
                                        health.get("version") or "?")
+    if account_from == "credential file":
+        row["detail"] += "；account 本机凭据"
     row["credits_source"] = "free-windows.json"
 
     if name == "zcode":

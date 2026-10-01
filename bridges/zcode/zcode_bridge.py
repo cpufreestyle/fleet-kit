@@ -252,6 +252,29 @@ def read_token() -> str:
     return token if JWT_RE.match(token) else ""
 
 
+def token_account() -> str:
+    """Which Z.AI account the JWT belongs to, or "" when it cannot be read.
+
+    The status panel has to say which account is behind this bridge, and the
+    JWT is the only place that says: the credential file keeps it encrypted
+    under zcodejwttoken, and the coding-plan api-key carries no identity at
+    all. The subject claim is an id rather than a credential, so publishing it
+    on /health leaks nothing and keeps the panel from guessing.
+    """
+    token = read_token()
+    parts = token.split(".") if token else []
+    if len(parts) < 2:
+        return ""
+    padded = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        return ""
+    if not isinstance(claims, dict):
+        return ""
+    return str(claims.get("sub") or claims.get("user_id") or "")[:80]
+
+
 def auth_state() -> dict:
     """What the shared ZCode credential file can authenticate right now."""
     creds = _credentials()
@@ -550,6 +573,7 @@ async def health():
         "ok": True,
         "bridge": BRIDGE_VERSION,
         "logged_in": bool(token),
+        "account": token_account(),
         "auth": auth_state(),
         "captcha": "present" if cap else "missing",
         "captcha_age_hours": None if not cap else round(captcha_age_hours(), 2),
