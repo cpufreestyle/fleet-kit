@@ -551,6 +551,8 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 | antigravity | Antigravity 桌面 App 登录（或 gemini login） | ~/.gemini/jetski-standalone-oauth-token | 与 gemini 共用 token；需能连 cloudcode-pa.googleapis.com |
 | qwen | qwencloud.com 控制台创建 API key，写入 `fleet.env` 的 `QWEN2CODEX_KEY` | `fleet.env`（无本地登录态） | 上游 maas.qwencloudapi.com；key 丢失可在控制台重建 |
 
+（gemini 支持多账号池：`GEMINI_AUTH_DIR` + `POST /__gemini/accounts/*`，用法见 docs/gemini2codex-runbook.md「多账号池」一节。）
+
 每个服务登录后运行对应的 bridges/finish.sh <name>：重启桥 → 等待 /v1/models →
 列出模型 → 注入 Codex 模型目录 → ocx sync → 冒烟聊天一次。
 

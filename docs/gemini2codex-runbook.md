@@ -108,3 +108,78 @@ ocx sync && ocx service restart
 改完实测：`curl` 60.04s 拿到 502，错误信息
 `refresh failed for all clients: URLError: <urlopen error request budget exhausted>`
 ——一眼能看出是预算耗尽，而不是一条看不懂的管道错误。
+
+## 2026-10-01 更新：多账号池（`GEMINI_AUTH_DIR`）
+
+原来这座桥只有一个身份：本机 `gemini login` 登的是谁，桥就是谁。
+换账号靠手工复制 token 文件，一个账号被 Google 判 403 / refresh 失效，
+整座桥就只剩 502，而且报错里看不出是哪个凭据烧了。
+
+现在桥内建账号池（`bridges/gemini/gemini_accounts.py`），对单账号使用者零影响：
+没有导入任何账号时，池里只有一个合成的 `legacy` 账号，
+直接引用官方登录文件（`~/.gemini/jetski-standalone-oauth-token` + cookies.txt）。
+
+### 目录结构
+
+```
+$GEMINI_AUTH_DIR/            # 默认 ~/.gemini2codex/auths，权限 700
+  pool-state.json            # primary / active / 每账号 last_used、cooldown_until
+  <label>/token.json         # 官方 jetski-standalone-oauth-token 的副本（通道 A）
+  <label>/cookies.txt        # 可选，通道 B 的 web cookie 副本
+```
+
+label 就是账号身份（OAuth token 文件里没有 email/uid），`ref = sha256(label)[:16]`；
+文件权限 600 / 目录 700，写入走临时文件 + `os.replace`。
+
+### 环境变量
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `GEMINI_AUTH_DIR` | `~/.gemini2codex/auths` | 账号池目录 |
+| `GEMINI_ACCOUNT_COOLDOWN` | `120` | 一个账号失败后冷却多少秒；冷却期默认跳过，全冷却时仍然全量参与（兜底） |
+| `GEMINI2CODEX_KEY` | 空 | 本地桥 key，空则只监听 127.0.0.1 不校验 |
+
+### HTTP 接口（与 workbuddy `/ui/accounts/*` 同契约）
+
+```bash
+# 列出账号池：{"status":"ok","account_pool":{...}}
+curl -s http://127.0.0.1:8794/__gemini/accounts
+
+# 把本机当前登录的 gemini 账号快照成一个新账号（换号后一条命令）
+curl -s -X POST -H 'Content-Type: application/json' \
+     -d '{"label":"second"}' http://127.0.0.1:8794/__gemini/accounts/import-current
+
+# 指定主账号（第一个导入的自动成为 primary）
+curl -s -X POST -H 'Content-Type: application/json' \
+     -d '{"ref":"<ref>"}' http://127.0.0.1:8794/__gemini/accounts/primary
+
+# 重扫目录（手动放文件后）
+curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
+     http://127.0.0.1:8794/__gemini/accounts/refresh
+
+# 删除一个导入的账号；legacy 不是目录，删它会回 400
+curl -s -X POST -H 'Content-Type: application/json' \
+     -d '{"ref":"<ref>"}' http://127.0.0.1:8794/__gemini/accounts/remove
+```
+
+4xx 统一 `{"detail": "..."}`（未知账号 404、删 legacy / 非法 label 400）。
+
+### 选择顺序与故障转移
+
+1. 排序：`primary` → `active` → 其余按 LRU（`last_used`）→ label 字典序。
+2. 每个候选依次走通道 A（Code Assist）+ 通道 B（gemini web），两路都失败才算这个账号烧了，
+   进冷却并写 `failures` / `reason`。
+3. 请求线程里账号上下文是 thread-local 的：并发请求不会互相读到对方的 access token。
+4. 502 信封保持原契约：`error.message` 是字符串，`error.channels` 恒为
+   `{code_assist, web}`；新增 `error.account` 是**第一个**烧掉的账号（即 primary）。
+
+### 测试
+
+- `tools/test_gemini_account_pool.py`：池本身（legacy 兜底、primary 排序、冷却、删 legacy 拒绝）。
+- `tools/test_gemini_bridge_failover.py`：走真实 HTTP 的桥接层——502 信封契约、
+  故障转移到第二个账号、`/__gemini/accounts*` 路由行为。
+
+实测（2026-10-01）：`pytest tools/` 全量 449 通过、4 失败，gemini 相关 63 条全绿；那 4 条失败全在 `tools/checkin.py`（签到模块，另一处正在改），与本桥无关。
+另以 `GEMINI2CODEX_PORT=18794` + tmp `GEMINI_AUTH_DIR` 起真实进程冒烟，
+`/health`、`/v1/models`、`GET/POST /__gemini/accounts*` 均正常，用完即停。
+
