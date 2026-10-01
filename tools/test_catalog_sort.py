@@ -132,3 +132,79 @@ def test_strict_coverage_still_refuses_a_real_gap(tmp_path):
 
     assert proc.returncode == 4
     assert "zcode" in proc.stderr
+
+
+def _aged_reach(tmp_path, hours, **over):
+    """A reach snapshot whose verdicts are 'hours' old."""
+    import json
+    reach = tmp_path / "reach.json"
+    stamp = (datetime.datetime.now(datetime.timezone.utc)
+             - datetime.timedelta(hours=hours)).isoformat()
+    snap = {
+        "reachable": ["workbuddy"],
+        "unreachable": ["cline"],
+        "skipped": {},
+        "measured_at": stamp,
+        "verified_models": {},
+    }
+    snap.update(over)
+    reach.write_text(json.dumps(snap), encoding="utf-8")
+    return reach
+
+
+def _order_fixture(tmp_path):
+    """cline (early in --order) unreachable, qwen (late) unknown.
+
+    The two only change places if the unreachable verdict stops being
+    believed: both are then tier 1, and --order puts cline first.
+    """
+    import json
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(json.dumps({"models": [
+        {"slug": "qwen/qwen3.8-max"},
+        {"slug": "cline/cline-free-deepseek-v4.1-flash"},
+        {"slug": "workbuddy/glm-5.2"},
+    ]}), encoding="utf-8")
+    return catalog
+
+
+def _order(catalog, reach, *extra):
+    import json
+    proc = _sort(catalog, reach, *extra)
+    assert proc.returncode == 0, proc.stderr
+    rows = json.loads(open(catalog, encoding="utf-8").read())["models"]
+    return [m["slug"] for m in rows], proc
+
+
+def test_a_stale_unreachable_verdict_stops_sinking(tmp_path):
+    """An aged 'unreachable' is a claim about a moment, not a fact.
+
+    Measured 2026-10-01: zcode/GLM-5.3-Flash answered a real chat completion,
+    yet the picker still could not show it, because the reach snapshot was
+    still calling providers dead from days earlier. The drop path already
+    refuses to trust an aged verdict; ordering must not trust it either, or a
+    provider that recovered stays buried below every unknown one forever.
+    """
+    catalog = _order_fixture(tmp_path)
+    reach = _aged_reach(tmp_path, hours=96)
+
+    order, proc = _order(catalog, reach)
+
+    assert order == ["workbuddy/glm-5.2",
+                     "cline/cline-free-deepseek-v4.1-flash",
+                     "qwen/qwen3.8-max"]
+    assert "not sinking stale" in proc.stderr
+    # it is still not promoted to reachable: nothing here re-measured it
+    assert order[0] == "workbuddy/glm-5.2"
+
+
+def test_a_fresh_snapshot_still_sinks_an_unreachable_provider(tmp_path):
+    """The control: while the verdict is current, nothing changes."""
+    catalog = _order_fixture(tmp_path)
+    reach = _aged_reach(tmp_path, hours=0.1)
+
+    order, proc = _order(catalog, reach)
+
+    assert order == ["workbuddy/glm-5.2", "qwen/qwen3.8-max",
+                     "cline/cline-free-deepseek-v4.1-flash"]
+    assert "not sinking stale" not in proc.stderr
