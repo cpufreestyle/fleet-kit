@@ -68,6 +68,7 @@ BRIDGES = (
     ("antigravity", "antigravity2codex", 10, "ANTIGRAVITY2CODEX_KEY"),
     ("qwen", "qwen2codex", 11, "QWEN2CODEX_KEY"),
     ("cline", "cline2codex", 12, "CLINE2CODEX_KEY"),
+    ("zcode", "zcode2codex", 13, "ZCODE2CODEX_KEY"),
 )
 BRIDGE_BY_NAME = dict((item[0], item) for item in BRIDGES)
 
@@ -435,7 +436,12 @@ def collect(cfg):
 
     warnings = list(cfg["warnings"])
     for bridge in bridges:
-        if not bridge["key"]["set"] and bridge["probe"]["http"] in (401, 403):
+        # When the fleet env is missing entirely, the warning above already says
+        # every key is unknown and how to point at the real install. Repeating it
+        # once per bridge -- with a path derived from that same wrong home -- is
+        # noise that reads like twelve separate logins are needed.
+        if (not bridge["key"]["set"] and bridge["probe"]["http"] in (401, 403)
+                and cfg["env_found"]):
             warnings.append("%s: HTTP %d 且 key 未读取到 - 登录后执行 bash %s/bridges/finish.sh %s"
                             % (bridge["name"], bridge["probe"]["http"], cfg["home"], bridge["name"]))
         if not os.path.isfile(plist_path(cfg["launch_dir"], bridge["label"])):
@@ -619,8 +625,31 @@ def collect_cached(cfg):
 # configuration
 # --------------------------------------------------------------------------- #
 
+def _default_home():
+    """Fleet root when neither --home nor FLEET_HOME is given.
+
+    The launchd service always passes --home, so only a hand-run
+    `status_ui.py --once` lands here. The old single guess made that hand run
+    report every bridge as unauthenticated -- one "log in and run finish.sh"
+    warning each -- on a fleet that was perfectly healthy, because the guess
+    did not match where install.sh had actually put things.
+
+    Evaluated per call, not at import: HOME is read when the question is asked,
+    so a process that changes HOME (tests, a wrapper) is honoured.
+    """
+    home = os.path.expanduser("~")
+    candidates = (
+        os.path.join(home, "FleetKit", "runtime"),
+        os.path.join(home, "fleet"),
+    )
+    for candidate in candidates:
+        if os.path.isfile(os.path.join(candidate, "fleet.env")):
+            return candidate
+    return candidates[-1]
+
+
 def build_config(args):
-    home = args.home or os.environ.get("FLEET_HOME") or os.path.join(os.path.expanduser("~"), "fleet")
+    home = args.home or os.environ.get("FLEET_HOME") or _default_home()
     env_file = args.env_file or os.environ.get("FLEET_ENV_FILE") or os.path.join(home, "fleet.env")
     keys = {}
     env_found = os.path.isfile(env_file)
@@ -631,8 +660,12 @@ def build_config(args):
         except OSError as exc:
             warnings.append("fleet.env 不可读 %s (%s)" % (env_file, exc))
     else:
-        warnings.append("fleet.env 不存在: %s（桥 key 未知，探测不带 Authorization 头；"
-                        "其余状态仍可查看）" % env_file)
+        warnings.append(
+            "fleet.env 不存在: %s（桥 key 未知，探测不带 Authorization 头；"
+            "其余状态仍可查看）。如果本机安装不在默认位置，请加 --home DIR "
+            "或设 FLEET_HOME；launchd 里登记的正确值见 "
+            "~/Library/LaunchAgents/com.local.fleet-ui.plist 的 --home 参数。"
+            % env_file)
 
     # config layers: CLI flag > process env > fleet.env > default
     port_base = args.port_base
@@ -1298,7 +1331,7 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="status_ui.py",
         description="FleetKit local status dashboard (stdlib only, zero new deps)")
-    parser.add_argument("--home", help="fleet root (default ~/FleetKit/runtime or $FLEET_HOME)")
+    parser.add_argument("--home", help="fleet root (default ~/FleetKit/runtime, then ~/fleet; or $FLEET_HOME)")
     parser.add_argument("--env-file", help="fleet.env path (default <home>/fleet.env)")
     parser.add_argument("--host", default="127.0.0.1",
                         help="bind address (default 127.0.0.1)")
