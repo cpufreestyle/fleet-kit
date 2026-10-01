@@ -95,7 +95,7 @@ Codex 对此毫无办法：`disable_response_storage = true` 让它每轮重发�
 
 ### 方案
 
-`tools/stepfun_image_shim.py` 是架在 CC Switch（127.0.0.1:15721）前面的透明透传，
+`tools/stepfun_image_shim.py` 是架在 CC Switch（127.0.0.1:15721）**下面**的透明透传，
 监听 15722，转发前对请求体做两件无损重写（实现在 `tools/image_cap.py`）：
 
 - 去重：同一个 data URL 重复出现（重新贴的截图、被回声两次的工具结果）算一张，
@@ -103,6 +103,39 @@ Codex 对此毫无办法：`disable_response_storage = true` 让它每轮重发�
 - 截断：去重后仍超过上限时保留最近的图片，最旧的替换成一句短文本说明。
   被丢掉的槽位变成文本而不是被删掉 —— 空的 content 列表是畸形请求，
   而一个静默的空洞对模型读起来像「用户这里什么都没发」。
+
+### 链路
+
+    Codex -> 127.0.0.1:15721 (CC Switch) -> 127.0.0.1:15722 (本 shim)
+          -> https://api.stepfun.com/step_plan/v1
+
+shim 的上游是真正的上游而不是 CC Switch，所以两边不可能绕成环。
+
+### 为什么在下面，不在前面（2026-09-30 Go）
+
+第一版把 shim 架在 CC Switch 前面，靠 `tools/pin_shim_base_url.py` 把
+`~/.codex/config.toml` 里 custom provider 的 `base_url` 钉到 15722，并实测确认文件里
+写的确实是 15722。**但它一条请求都没拦住过**：
+
+- `~/.cc-switch/cc-switch.db` 的 `proxy_request_logs` 里 03:28:52、03:29:15 两条 400
+  的 `provider_id` 是 StepFun（`3a20aad7-bc99-4b10-8a72-d7b7dacd2c16`），请求到的是
+  CC Switch 自己的端口；
+- shim 自己的 health 是 `requests=1`，只有一次自测；
+- CC Switch 记录的转发目标是 `https://api.stepfun.com/step_plan/v1/chat/completions`，
+  来自它自己库里的 providers 行。
+
+两个原因叠在一起就无解：CC Switch 拥有 `~/.codex/config.toml`，运营者每切一次 provider
+它就把 `base_url` 写回 15721；而**已经在跑的 Codex 不重读配置文件**。钉文件这一手因此
+永远赢不了。真正有效的杠杆是 CC Switch 自己的路由表：`tools/pin_cc_switch_endpoint.py`
+改写 `~/.cc-switch/cc-switch.db` 里 StepFun/codex 这一行的转发目标
+（`provider_endpoints.url` 和内嵌在 `providers.settings_config` 里的 `base_url` 两处都改），
+链路反过来之后，不管配置文件是谁写的、Codex 有没有重启，每条请求都必须经过 shim 才能
+到 StepFun。
+
+CC Switch 把路由表缓存在内存里，改完数据库要重启 app 才生效，运营者是手动重启的。shim
+自己也每 300 秒重指一次，防止谁手工重加了一次 StepFun provider 又指回直连；
+`tools/pin_shim_base_url.py` 降级成默认关闭的兜底（`IMAGE_CAP_REPIN_INTERVAL=0`），
+需要时可以单独打开。
 
 ### 实测
 
@@ -114,10 +147,16 @@ Codex 对此毫无办法：`disable_response_storage = true` 让它每轮重发�
 | 经 launchd 全链路 100 图，`workbuddy/hy4-preview` | 100（原样透传） |
 | 上线后 71 张互不相同的图，直连 15721 | 400 `images_too_many` |
 | 上线后同一批 71 图，经 launchd shim 15722 | 200（`images=71 unique=71 kept=32 cap_dropped=39`） |
+| 2026-10-01 sweep 后同一批 71 张互异图，经 launchd shim 15722 | 200（`kept=32 cap_dropped=39`） |
 
 stats：`requests:2, rewritten:1, images_seen:100, images_kept:32`。
 `hy4-preview` 拿到完整的 100 张，证明 `IMAGE_CAP_MODELS=step` 只对 step 前缀生效，
 没有顺手砍别的船。
+
+2026-10-01 sweep 上线后对着正在跑的服务复打（launchd `com.local.stepfun-image-cap`）：
+health `requests:23, rewritten:1, images_seen:71, images_kept:32, passthrough:3`，
+`cc_pin.changed=true`。`kept=32` 等于 cap 上限，`passthrough` 是非 step 前缀的请求，
+再一次证明 cap 只对 step 前缀生效。
 
 上线后那一行是对着正在跑的服务打的（launchd `com.local.stepfun-image-cap`，
 shim health：`requests:19, rewritten:5, images_seen:355, images_kept:36, passthrough:5`）：
@@ -141,46 +180,94 @@ tools/stepfun_image_shim.sh <run|start|stop|status|install-timer|uninstall-timer
 | 变量 | 作用 | 默认 |
 |------|------|------|
 | `IMAGE_CAP_PORT` | shim 监听端口 | 15722 |
-| `IMAGE_CAP_UPSTREAM` | 转发目标 | `http://127.0.0.1:15721` |
+| `IMAGE_CAP_UPSTREAM` | 转发目标 | `https://api.stepfun.com/step_plan/v1` |
+| `IMAGE_CAP_CC_DB` | CC Switch 数据库 | `~/.cc-switch/cc-switch.db` |
+| `IMAGE_CAP_CC_PROVIDER`、`IMAGE_CAP_CC_APP_TYPE` | 要重指的 provider 行 | `StepFun` / `codex` |
+| `IMAGE_CAP_CC_PIN_INTERVAL` | CC Switch 定时重指间隔（秒） | 300（`<= 0` 关闭） |
+| `IMAGE_CAP_CC_PIN_ALL` | sweep：重指所有指向 StepFun 的 codex 行 | 1（`0` 收窄回只动命名 provider） |
 | `IMAGE_CAP_MAX` | 每请求保留图片数 | 32（`<= 0` 不限） |
 | `IMAGE_CAP_MODELS` | 生效模型子串，逗号分隔 | `step` |
-| `IMAGE_CAP_REPIN_INTERVAL` | base_url 定时重 pin 间隔（秒） | 300（`<= 0` 关闭） |
-| `IMAGE_CAP_PIN_CONFIG` | 重 pin 的 Codex 配置文件 | `~/.codex/config.toml` |
+| `IMAGE_CAP_REPIN_INTERVAL` | 兜底：config.toml 定时重 pin 间隔（秒），默认关 | 0 |
+| `IMAGE_CAP_PIN_CONFIG` | 兜底重 pin 的 Codex 配置文件 | `~/.codex/config.toml` |
 | `FLEET_PYTHON` | shim 用的 python | 取 `runtime/.venv/bin/python` |
 
 日志：`/tmp/fleet-logs/com.local.stepfun-image-cap.log`。
 `uninstall.sh` 的 `SUFFIXES` 已含 `stepfun-image-cap`，卸载不会在 launchd 里留孤儿作业。
 
-### 必须配 base_url pin
+### 必须重指 CC Switch 的路由表
 
-CC Switch 拥有 `~/.codex/config.toml`，运营者每切换一次 provider 它就把 custom
-provider 的 `base_url` 写回 15721。只装 shim 不 pin 的结果是：Codex 直连 CC Switch，
-shim 在 15722 上空转，图片照样撞 400。
+CC Switch 是 Codex 与 StepFun 之间的那一跳，它自己库里记着 StepFun provider 该转发到哪。
+只装 shim 不改这个目标的结果是：请求从 CC Switch 直连 StepFun，shim 在 15722 上空转，
+图片照样撞 400。
 
-`tools/pin_shim_base_url.py` 就是这次 pin，幂等，`setup-providers.sh` 每次都会重跑：
+`tools/pin_cc_switch_endpoint.py` 就是这次重指，幂等，`setup-providers.sh` 每次都会重跑：
 
-- 读顶层 `model_provider` 名字（默认 `custom`），只改那一个 provider 的 `base_url`，
-  不碰别的 provider，也不碰文件里其它 15721 引用；
+- **默认 sweep 模式**：不只 `StepFun` 这一行，而是按**转发目标**把本机所有指向 StepFun 的
+  codex 行都指到 shim（CLI `--all-stepfun` 是同一个开关，`IMAGE_CAP_CC_PIN_ALL=0` 收窄回
+  只动命名的那一行）；
+- 按目标而非 provider 名判断 —— 名字不可信，同一个上游可以叫 `StepFun`、`nv spark`
+  或者别的；
+- 别的 app 一个字节都不碰：`StepFun/claude` 指向
+  `https://api.stepfun.com/step_plan`（无 `/v1`），是正常通道，不在 sweep 范围内；
+- 没有 StepFun 的机器上就是 no-op；
+- 改两处，因为 CC Switch 可能读任意一处：`provider_endpoints.url`，以及内嵌在
+  `providers.settings_config`（JSON，其 `"config"` 值里的 TOML）中的 `base_url`；
+- 目标既不是 stepfun 也不是 shim 时拒绝改写 —— 有人手工指到别处是别人的决定，
+  静默改掉比不 cap 更糟；
+- 首次改写前取一个带时间戳的 sqlite 备份（`cc-switch.db.bak-before-fleetkit-endpoint-*`，
+  只取一次），之后不再取；
+- 已经指向 shim 时报 `no change`，可以每次 setup 都跑，也可以挂定时任务。
 - 按 host:port 子串替换，scheme 和 `/v1` 路径原样保留；
 - 已经指向 shim、或指向别的 host 时文件一个字节都不动，报 `no change` —— 可以每次
   setup 都跑，也可以挂定时任务。
 
-只靠 setup 时的那一次 pin 活不过下一次切换：shim 因此自己挂了定时重 pin，启动立即跑一
-次、之后每 `IMAGE_CAP_REPIN_INTERVAL` 秒（默认 300）再跑一次，改写时日志打 `[repin]`
-行。`pin_once` 是并发安全的：写前重读文件，发现 CC Switch 正在同一个文件上写就跳过
-（`skipped: ... changed while pinning`），绝不回写半截 config。
+人工重加或编辑一次 StepFun provider 就会拿到一条指回直连的新行，所以 shim 自己每
+`IMAGE_CAP_CC_PIN_INTERVAL` 秒（默认 300）重指一次。**改完数据库要重启 CC Switch.app 才
+生效**：它把路由表缓存在内存里。
+
+### provider-switch 旁路（2026-10-01）
+
+`--dry-run --all-stepfun` 实测发现本机还有第二条旁路：
+
+```
+[dry-run] nv spark/codex forwards to https://api.stepfun.com/step_plan/v1 (providers.settings_config); would write it to http://127.0.0.1:15722/v1
+[dry-run] StepFun/codex already points at http://127.0.0.1:15722/v1 (provider_endpoints)
+```
+
+`nv spark` 这个 codex provider 也转发到 StepFun，但不叫 StepFun，原来那只动命名行的
+窄模式够不着它。运营者在 CC Switch UI 里选中它 → 直接绕过 shim → 71 图照样 400。
+判据不是名字而是目标：**凡是指向 StepFun 的 codex 行，都是要过 cap 的船**。
+
+于是 sweep 成为默认。上线后 shim 日志实测：
+
+```
+[cc-pin] repointed nv spark/codex providers.settings_config: https://api.stepfun.com/step_plan/v1 -> http://127.0.0.1:15722/v1 (1 endpoint row, 1 embedded config)
+```
+
+现在 DB 里两个 codex 行都指向 `http://127.0.0.1:15722/v1`。仍然提醒一次：
+**改完数据库要重启 CC Switch.app 才生效**，它把路由表缓存在内存里。
+
+`tools/pin_shim_base_url.py`（改 `~/.codex/config.toml`）降级为默认关闭的兜底，
+`IMAGE_CAP_REPIN_INTERVAL=0`。实测它赢不了，见上文「为什么在下面，不在前面」。
 
 ### 回滚
 
 ```bash
 tools/stepfun_image_shim.sh uninstall-timer
-python3 tools/pin_shim_base_url.py --dry-run   # 先看会动哪里
+python3 tools/pin_cc_switch_endpoint.py --dry-run   # 先看会动哪里
 ```
 
-然后把 `~/.codex/config.toml` 里 custom provider 的 `base_url` 改回 15721。
+然后把 CC Switch 里 StepFun provider 的转发目标改回
+`https://api.stepfun.com/step_plan/v1` —— 首次改写前的整库备份就在同目录的
+`cc-switch.db.bak-before-fleetkit-endpoint-<时间戳>`，拷回去即可。
+`~/.codex/config.toml` 里 custom provider 的 `base_url` 也改回 15721。
 
 ### 两个坑
 
+- **CC Switch 改完数据库不重启不生效**：它把路由表缓存在内存里，
+  `pin_cc_switch_endpoint.py` 写完 `cc-switch.db` 之后，已经在跑的 CC Switch 仍按旧目标
+  转发。判据：shim health 里 `cc_pin.changed` 是 true 但 `requests` 不涨。运营者手动
+  重启 CC Switch.app 之后链路才通，这也是 setup 结尾要打印那行提示的原因。
 - **代理环境变量吃 loopback**：本机开着 `http_proxy=127.0.0.1:1082` 时，httpx 和 curl
   都会把 loopback 流量送进代理，探活 curl 一律加 `--noproxy '*'`。shim 内部用
   `LOOPBACK_MOUNTS`（`trust_env=False`）自己绕开了这一层。

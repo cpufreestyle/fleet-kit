@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # FleetKit StepFun image-cap shim control.
 #
-# tools/stepfun_image_shim.py is a transparent pass-through in front of CC
-# Switch (127.0.0.1:15721) that de-duplicates and caps the photos in a Codex
-# request before StepFun's Plan API hits its 70-image ceiling (see
-# tools/image_cap.py for the measurement). It listens one port above CC Switch
-# on 15722, so Codex's base_url must point at the shim, not at CC Switch.
+# tools/stepfun_image_shim.py is a transparent pass-through below CC Switch
+# (127.0.0.1:15721) that de-duplicates and caps the photos in a Codex request
+# before StepFun's Plan API hits its 70-image ceiling (see tools/image_cap.py
+# for the measurement). The chain is
+#
+#     Codex -> 15721 (CC Switch) -> 15722 (this shim) -> api.stepfun.com
+#
+# so CC Switch's StepFun provider has to point at the shim rather than straight
+# at StepFun: tools/pin_cc_switch_endpoint.py does that, and the shim re-runs it
+# on a timer because a provider row re-added by hand points past it again.
 # Every setting comes from the IMAGE_CAP_* environment, which keeps this
 # wrapper and the launchd plist it writes argument-free and identical.
 #
@@ -96,9 +101,14 @@ set -u
 # Defaults mirror parse_args() in stepfun_image_shim.py; fleet.env may override.
 SHIM_HOST="${IMAGE_CAP_HOST:-127.0.0.1}"
 SHIM_PORT="${IMAGE_CAP_PORT:-15722}"
-SHIM_UPSTREAM="${IMAGE_CAP_UPSTREAM:-http://127.0.0.1:15721}"
+SHIM_UPSTREAM="${IMAGE_CAP_UPSTREAM:-https://api.stepfun.com/step_plan/v1}"
 SHIM_MAX="${IMAGE_CAP_MAX:-32}"
 SHIM_MODELS="${IMAGE_CAP_MODELS:-step}"
+SHIM_REPIN="${IMAGE_CAP_REPIN_INTERVAL:-0}"
+SHIM_CC_DB="${IMAGE_CAP_CC_DB:-$HOME/.cc-switch/cc-switch.db}"
+SHIM_CC_PROVIDER="${IMAGE_CAP_CC_PROVIDER:-StepFun}"
+SHIM_CC_APP_TYPE="${IMAGE_CAP_CC_APP_TYPE:-codex}"
+SHIM_CC_PIN="${IMAGE_CAP_CC_PIN_INTERVAL:-300}"
 SHIM_LABEL="${LABEL_PREFIX}.stepfun-image-cap"
 SHIM_PIDFILE="$LOG_DIR/stepfun-image-cap.pid"
 # platform.sh points the launchd job's StandardOutPath/StandardErrorPath at
@@ -110,6 +120,17 @@ SHIM_HEALTH_URL="$SHIM_BASE_URL/__image_cap/health"
 # launchd reads these from the plist EnvironmentVariables so the plist and the
 # run/start branches below start the same python, configured the same way.
 ENVPAIRS="IMAGE_CAP_HOST=$SHIM_HOST;IMAGE_CAP_PORT=$SHIM_PORT;IMAGE_CAP_UPSTREAM=$SHIM_UPSTREAM;IMAGE_CAP_MAX=$SHIM_MAX;IMAGE_CAP_MODELS=$SHIM_MODELS"
+# The paths are passed absolute on purpose. launchd copies EnvironmentVariables
+# verbatim and does not expand a ~ in them, so the Python-side default of
+# ~/.cc-switch/cc-switch.db would reach the service as a literal tilde and
+# every pin would report "db not found" while the shim itself looked healthy.
+ENVPAIRS="$ENVPAIRS;IMAGE_CAP_PIN_CONFIG=${IMAGE_CAP_PIN_CONFIG:-$HOME/.codex/config.toml}"
+ENVPAIRS="$ENVPAIRS;IMAGE_CAP_CC_DB=$SHIM_CC_DB;IMAGE_CAP_CC_PROVIDER=$SHIM_CC_PROVIDER;IMAGE_CAP_CC_APP_TYPE=$SHIM_CC_APP_TYPE;IMAGE_CAP_CC_PIN_INTERVAL=$SHIM_CC_PIN;IMAGE_CAP_REPIN_INTERVAL=$SHIM_REPIN"
+
+# What run/start export. Kept as a single list next to ENVPAIRS so the two cannot
+# drift: a foreground run has to mean the same configuration as the launchd
+# service, or a bug reproduces in one and not the other.
+EXPORTS="IMAGE_CAP_HOST=$SHIM_HOST IMAGE_CAP_PORT=$SHIM_PORT IMAGE_CAP_UPSTREAM=$SHIM_UPSTREAM IMAGE_CAP_MAX=$SHIM_MAX IMAGE_CAP_MODELS=$SHIM_MODELS IMAGE_CAP_CC_DB=$SHIM_CC_DB IMAGE_CAP_CC_PROVIDER=$SHIM_CC_PROVIDER IMAGE_CAP_CC_APP_TYPE=$SHIM_CC_APP_TYPE IMAGE_CAP_CC_PIN_INTERVAL=$SHIM_CC_PIN IMAGE_CAP_REPIN_INTERVAL=$SHIM_REPIN IMAGE_CAP_PIN_CONFIG=${IMAGE_CAP_PIN_CONFIG:-$HOME/.codex/config.toml}"
 
 shim_pid() {
   if [ -f "$SHIM_PIDFILE" ] && kill -0 "$(cat "$SHIM_PIDFILE")" 2>/dev/null; then
@@ -122,7 +143,7 @@ shim_pid() {
 install_shim_plist() {
   mkdir -p "$LAUNCH_DIR" "$LOG_DIR"
   fleet_service_install "$SHIM_LABEL" "$FLEET_HOME" "$ENVPAIRS" "$PY" "$SHIM_PY" ""
-  echo "installed $SHIM_LABEL: $SHIM_BASE_URL -> $SHIM_UPSTREAM  log $SHIM_LOG"
+  echo "installed $SHIM_LABEL: $SHIM_BASE_URL -> $SHIM_UPSTREAM  (cc pin every ${SHIM_CC_PIN}s, codex repin every ${SHIM_REPIN}s)  log $SHIM_LOG"
 }
 
 remove_shim_plist() {
@@ -132,7 +153,7 @@ remove_shim_plist() {
 
 case "$CMD" in
   run)
-    export IMAGE_CAP_HOST="$SHIM_HOST" IMAGE_CAP_PORT="$SHIM_PORT" IMAGE_CAP_UPSTREAM="$SHIM_UPSTREAM" IMAGE_CAP_MAX="$SHIM_MAX" IMAGE_CAP_MODELS="$SHIM_MODELS"
+    export $EXPORTS
     exec "$PY" "$SHIM_PY"
     ;;
   start)
@@ -141,7 +162,7 @@ case "$CMD" in
       exit 0
     fi
     mkdir -p "$LOG_DIR"
-    export IMAGE_CAP_HOST="$SHIM_HOST" IMAGE_CAP_PORT="$SHIM_PORT" IMAGE_CAP_UPSTREAM="$SHIM_UPSTREAM" IMAGE_CAP_MAX="$SHIM_MAX" IMAGE_CAP_MODELS="$SHIM_MODELS"
+    export $EXPORTS
     nohup "$PY" "$SHIM_PY" >>"$SHIM_LOG" 2>&1 &
     echo $! > "$SHIM_PIDFILE"
     sleep 1

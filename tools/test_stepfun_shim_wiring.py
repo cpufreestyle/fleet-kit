@@ -6,8 +6,18 @@ session that pastes screenshots crosses that ceiling no matter what the operator
 does (tools/image_cap.py holds the measurement). Installing the service alone is
 not enough: CC Switch owns ~/.codex/config.toml and rewrites the custom
 provider's base_url back to 127.0.0.1:15721 on every provider switch, so a setup
-that only installs the shim leaves Codex talking straight to CC Switch while the
-shim sits unused on 15722.
+that only installs the shim leaves requests going straight through CC Switch to
+StepFun while the shim sits unused on 15722 (its own health then shows only the
+self-test). The re-point therefore has to move CC Switch's routing table, not the
+file: tools/pin_cc_switch_endpoint.py rewrites the provider_endpoints row and the
+base_url embedded in providers.settings_config so the chain becomes
+Codex -> CC Switch -> shim -> step_plan, and the shim's upstream is a real
+upstream rather than CC Switch, so the two cannot route into a loop.
+
+Codex itself stays on CC Switch's port. Pointing its base_url at the shim instead
+is measured 2026-10-01 to answer 401 on every turn: Codex sends
+`Authorization: Bearer PROXY_MANAGED` and only CC Switch substitutes the real
+StepFun key, so the shim forwards the placeholder and StepFun rejects it.
 
 These tests pin the contracts the install depends on: both setup scripts install
 the shim, they do it behind a dry-run branch so --dry-run stays a plan that
@@ -38,8 +48,21 @@ class StaticWiring(unittest.TestCase):
         src = _source(SETUP)
         self.assertIn("stepfun_image_shim.sh", src,
                       "setup-providers.sh no longer installs the image-cap shim")
-        self.assertIn("pin_shim_base_url.py", src,
-                      "the base_url re-pin is gone; CC Switch rewrites it back to 15721 on every switch, so the shim goes unused")
+        self.assertNotIn('run python3 "$KIT/tools/pin_shim_base_url.py"', src,
+                         "setup-providers.sh points Codex's base_url straight at the shim again; Codex sends Bearer PROXY_MANAGED and only CC Switch holds the real key, so every turn answers 401")
+
+    def test_the_routing_table_pin_runs_inside_the_service(self):
+        """The CC Switch re-point has to survive without anyone re-running setup.
+
+        tools/pin_cc_switch_endpoint.py is not called from setup-providers.sh any
+        more: the shim re-points CC Switch's routing table on its own timer, so a
+        provider switch that clobbers the row is undone within the interval. The
+        control script is what turns that timer on, and a service started without
+        it would leave the shim bypassed while every check here stayed green.
+        """
+        src = _source(SHIM_SH)
+        self.assertIn("IMAGE_CAP_CC_PIN_INTERVAL", src,
+                      "the shim service no longer re-points CC Switch, so a provider switch drops the shim out of the chain")
 
     def test_setup_providers_guards_the_shim_install_with_dry_run(self):
         idx = _source(SETUP).index("stepfun_image_shim.sh")
@@ -121,7 +144,8 @@ class DryRunMutatesNothing(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
             self.assertIn("install-timer", proc.stdout,
                           "the dry run does not plan the shim install")
-            self.assertIn("pin_shim_base_url.py", proc.stdout)
+            self.assertNotIn("${KIT}/tools/pin_shim_base_url.py", proc.stdout,
+                             "the dry run plans the config.toml pin, which points Codex past CC Switch and breaks authentication")
             written = os.listdir(services) if os.path.isdir(services) else []
             self.assertEqual(written, [],
                              "the dry run wrote a service file: %s" % written)

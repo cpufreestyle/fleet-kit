@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local pass-through that de-duplicates and caps images before CC Switch.
+"""Local pass-through that de-duplicates and caps images below CC Switch.
 
 Why this exists, in one sentence: StepFun's Plan API answers a request with 70
 images and refuses the 71st with 400 images_too_many, and Codex re-sends its
@@ -11,21 +11,48 @@ The shim is a transparent forwarder, not a second bridge. It listens on
 127.0.0.1 (default 15722, one above CC Switch's 15721 so the pair is obvious
 in a port list), rewrites the body of the JSON endpoints it recognises when
 the model is one of the configured ones, and hands everything else -- method,
-path, query, headers, status, SSE stream -- to CC Switch untouched. A request
-with no images, or fewer than the cap, is forwarded byte for byte.
+path, query, headers, status, SSE stream -- to StepFun's Plan API untouched.
+A request with no images, or fewer than the cap, is forwarded byte for byte.
+
+It sits below CC Switch rather than above it, and that placement is the whole
+lesson of this project's 2026-09-30 Go: with the shim in front, CC Switch owned
+~/.codex/config.toml, rewrote the provider's base_url back to its own port on
+every provider switch, and a Codex that was already running never re-read the
+file -- measured, the config read 15722/v1 while the failing request still
+arrived at CC Switch's own port and the shim's own health showed exactly one
+self-test. Below CC Switch the cap applies on every path regardless of who
+wrote which config, because CC Switch has to forward through the shim to reach
+StepFun at all. The chain is
+
+    Codex -> 127.0.0.1:15721 (CC Switch) -> 127.0.0.1:15722 (this shim)
+          -> https://api.stepfun.com/step_plan/v1
+
+and the shim's upstream is therefore a real upstream, never CC Switch, so the
+two cannot route into a loop. tools/pin_cc_switch_endpoint.py is what points
+CC Switch at the shim; this service re-runs it on a timer because an operator
+who re-adds or re-edits the StepFun provider gets a fresh row pointing
+straight at StepFun again.
 
 Everything is configured through the environment so tools/stepfun_image_shim.sh
 and the launchd service definition stay argument-free and identical:
 
     IMAGE_CAP_PORT      listen port            (default 15722)
-    IMAGE_CAP_UPSTREAM  where to forward       (default http://127.0.0.1:15721)
+    IMAGE_CAP_UPSTREAM  where to forward       (default
+                        https://api.stepfun.com/step_plan/v1)
     IMAGE_CAP_MAX       images kept per request (default 32; <= 0 = no cap)
     IMAGE_CAP_MODELS    comma-separated model substrings the cap applies to
                         (default "step"; empty = every model)
-    IMAGE_CAP_REPIN_INTERVAL  seconds between base_url re-pins (default 300;
-                         <= 0 disables)
+    IMAGE_CAP_CC_DB     CC Switch database to keep pointed here
+                        (default ~/.cc-switch/cc-switch.db)
+    IMAGE_CAP_CC_PROVIDER, IMAGE_CAP_CC_APP_TYPE  the provider row to repoint
+                        (default StepFun / codex)
+    IMAGE_CAP_CC_PIN_INTERVAL  seconds between CC Switch re-points
+                        (default 300; <= 0 disables)
+    IMAGE_CAP_REPIN_INTERVAL  seconds between Codex config re-pins
+                        (default 0, i.e. off; pin_cc_switch_endpoint.py records
+                         why the file pin is only a fallback now)
     IMAGE_CAP_PIN_CONFIG      Codex config to keep pinned
-                         (default ~/.codex/config.toml)
+                        (default ~/.codex/config.toml)
 
 Failure policy: an unparseable body, an unknown path, an unreachable upstream
 or a cap that would leave nothing behind all mean "forward what came in". The
@@ -33,17 +60,21 @@ shim sits in front of a working chain and must never be the thing that breaks
 it; if the cap cannot be applied safely the request goes through exactly as it
 arrived, which is the behaviour the operator already had.
 
-The same policy covers the base_url pin. CC Switch owns ~/.codex/config.toml and
-rewrites the custom provider's base_url back to its own port every time the
-operator switches providers, so a pin run once by setup-providers.sh survives
-only until the next switch -- and a single switch leaves Codex talking straight
-past the shim while the images fall back to the 400 the shim exists to prevent.
-The shim therefore re-pins itself on a timer, best effort, logging and moving on
-when it cannot.
+The same policy covers the CC Switch pin. CC Switch caches its routing table in
+memory, and an operator who re-adds or re-edits the StepFun provider gets a row
+pointing straight at StepFun again, which quietly takes the shim out of the
+path for every later request. The shim therefore re-points it on a timer, best
+effort, logging and moving on when it cannot. The Codex config.toml pin it used
+to carry is off by default: measured 2026-09-30, CC Switch rewrote that file
+back while Codex was already running, so the pin lost the file race and changed
+nothing -- the routing table below it is the lever that actually holds.
 
-The forwarder also bypasses any ambient HTTP_PROXY. CC Switch is on loopback,
-and a proxy hop there turns a dead upstream into an answer that looks like it
-came from CC Switch (see LOOPBACK_MOUNTS below).
+The forwarder also bypasses any ambient HTTP_PROXY for loopback: a proxy hop
+there turns a dead upstream into an answer that looks like it came from the
+target. An upstream on another host -- api.stepfun.com by default -- still
+honours the operator's proxy settings, which on this box is a measured working
+route to that host (see LOOPBACK_MOUNTS below; a 401 from the real API means
+the hop worked).
 """
 from __future__ import annotations
 
@@ -62,6 +93,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import image_cap  # noqa: E402  (path set up above, like the bridges do)
 
 HEALTH_PATH = "/__image_cap/health"
+
+# The CC Switch pin runs on a timer that has no handle on build_app()'s closure,
+# so its last outcome lives here and the health endpoint reports it: without
+# it, the only way to tell whether the cap is actually in the request path is
+# to read the shim's log, which is not something an operator does at 3am.
+LAST_CC_PIN = {"detail": "not run yet", "changed": False}
+
+DEFAULT_CC_DB = "~/.cc-switch/cc-switch.db"
+DEFAULT_CC_PROVIDER = "StepFun"
+DEFAULT_CC_APP_TYPE = "codex"
+DEFAULT_CC_PIN_INTERVAL = 300.0
 
 # Request headers that must not be relayed: they describe our hop, not the
 # client's, and a stale content-length on a rewritten body is a hung request.
@@ -84,16 +126,41 @@ PASSTHROUGH_RESPONSE_HEADERS = frozenset({
 CAP_PATH_SUFFIXES = ("/responses", "/chat/completions", "/messages")
 
 
-# The upstream is CC Switch on loopback, so this hop must never inherit
-# HTTP_PROXY. Measured 2026-09-30: in a shell whose HTTP_PROXY points at a
-# local proxy, httpx routed even 127.0.0.1 forwarding through it, and the proxy
-# answered its own empty 503 for a target it would not reach -- so the shim's
-# "upstream unreachable" branch never ran, the 503 was relayed as if CC Switch
-# had produced it, and nothing in the log said the request was misrouted.
-# checkin.py documents the same trap on the same day. Mounts with a None
-# transport disable the proxy for loopback only; an upstream on another host
-# still honours the operator's proxy settings. ("all://::1" is not a valid
-# httpx pattern; the bracketed form is.)
+def forward_path(upstream: str, path: str) -> str:
+    """Drop a leading path segment the upstream base already ends with.
+
+    Both ends of the wire carry the version prefix and concatenating them
+    doubles it. The upstream default is an OpenAI base URL that already ends
+    in /v1 (https://api.stepfun.com/step_plan/v1), and the pinned client base_url
+    is http://127.0.0.1:15722/v1, so Codex sends GET/POST /v1/responses and a
+    plain join forwards https://api.stepfun.com/step_plan/v1/v1/responses.
+    Measured 2026-09-30: that doubled path answers 404 while
+    /step_plan/v1/responses answers 401 for the same bodyless probe -- the 404
+    reaches the operator as "unexpected status 404 Not Found: Unknown error",
+    which says nothing about either half being duplicated.
+
+    Only an exact leading-segment match is dropped, so an upstream without a
+    version suffix (a bare http://127.0.0.1:15721 in the tests) is unaffected
+    and a genuinely different first segment is forwarded untouched.
+    """
+    upstream_tail = upstream.rstrip("/").rsplit("/", 1)[-1]
+    rest = path.lstrip("/")
+    head, _, remainder = rest.partition("/")
+    if upstream_tail and head == upstream_tail:
+        return remainder.lstrip("/")
+    return rest
+
+
+# A loopback hop must never inherit HTTP_PROXY. Measured 2026-09-30: in a shell
+# whose HTTP_PROXY points at a local proxy, httpx routed even 127.0.0.1
+# forwarding through it, and the proxy answered its own empty 503 for a target
+# it would not reach -- so the shim's "upstream unreachable" branch never ran,
+# the 503 was relayed as if the target had produced it, and nothing in the log
+# said the request was misrouted. checkin.py documents the same trap on the same
+# day. Mounts with a None transport disable the proxy for loopback only; the
+# default upstream is now a remote host, so that path still honours the
+# operator's proxy settings, which is a working route here. ("all://::1" is not
+# a valid httpx pattern; the bracketed form is.)
 LOOPBACK_MOUNTS = {pattern: None for pattern in (
     "all://127.0.0.1", "all://localhost", "all://[::1]")}
 
@@ -102,16 +169,39 @@ class Config:
     """Everything the shim needs, resolved once at startup."""
 
     def __init__(self, host: str, port: int, upstream: str, max_images: int,
-                 models: str, connect_timeout: float = 15.0):
+                 models: str, connect_timeout: float = 15.0, cc_db: str = "",
+                 cc_provider: str = DEFAULT_CC_PROVIDER,
+                 cc_app_type: str = DEFAULT_CC_APP_TYPE,
+                 cc_pin_interval: float | None = None,
+                 cc_pin_all: bool | None = None):
         self.host = host
         self.port = port
         self.upstream = upstream.rstrip("/")
         self.max_images = max_images
         self.models = models
         self.repin_interval = float(
-            os.environ.get("IMAGE_CAP_REPIN_INTERVAL", "300"))
+            os.environ.get("IMAGE_CAP_REPIN_INTERVAL", "0"))
         self.pin_config = (os.environ.get("IMAGE_CAP_PIN_CONFIG")
                            or os.path.expanduser("~/.codex/config.toml"))
+        # The CC Switch pin is the one that holds (see the module docstring), so
+        # it carries its own database, its own provider row and its own cadence
+        # rather than sharing the file pin's.
+        self.cc_db = (cc_db or os.environ.get("IMAGE_CAP_CC_DB")
+                      or os.path.expanduser(DEFAULT_CC_DB))
+        self.cc_provider = (os.environ.get("IMAGE_CAP_CC_PROVIDER")
+                            or cc_provider)
+        self.cc_app_type = (os.environ.get("IMAGE_CAP_CC_APP_TYPE")
+                            or cc_app_type)
+        self.cc_pin_interval = float(
+            DEFAULT_CC_PIN_INTERVAL if cc_pin_interval is None
+            else cc_pin_interval)
+        # Sweep every StepFun-forwarding codex row, not just the one called
+        # "StepFun": this machine also carries "nv spark" aimed at the same
+        # upstream, and selecting it in the CC Switch UI would otherwise step
+        # around the cap. Set IMAGE_CAP_CC_PIN_ALL=0 for the narrow behaviour.
+        self.cc_pin_all = (os.environ.get("IMAGE_CAP_CC_PIN_ALL", "1")
+                           .strip().lower() not in ("0", "false", "no", "off")
+                           if cc_pin_all is None else bool(cc_pin_all))
         self.connect_timeout = connect_timeout
 
     @property
@@ -135,13 +225,26 @@ def parse_args(argv=None) -> Config:
                         default=int(os.environ.get("IMAGE_CAP_PORT", "15722")))
     parser.add_argument("--upstream",
                         default=os.environ.get(
-                            "IMAGE_CAP_UPSTREAM", "http://127.0.0.1:15721"))
+                            "IMAGE_CAP_UPSTREAM",
+                            "https://api.stepfun.com/step_plan/v1"))
     parser.add_argument("--max-images", type=int,
                         default=int(os.environ.get(
                             "IMAGE_CAP_MAX", str(image_cap.DEFAULT_MAX_IMAGES))))
     parser.add_argument("--models", default=os.environ.get("IMAGE_CAP_MODELS", "step"))
     args = parser.parse_args(argv)
     return Config(args.host, args.port, args.upstream, args.max_images, args.models)
+
+
+def health_payload(config, stats):
+    """What /health reports, including whether the CC Switch pin still holds.
+
+    The cc_pin block is here because it is the one piece of shim state an
+    operator has to be able to read without a shell: when it stops holding, the
+    cap silently leaves the request path and the 400 comes back.
+    """
+    return {"ok": True, "upstream": config.upstream,
+            "max_images": config.max_images, "models": config.models,
+            "cc_pin": dict(LAST_CC_PIN), "stats": stats.as_dict()}
 
 
 class Stats:
@@ -217,6 +320,67 @@ def start_repin_thread(config, log=None):
     return thread
 
 
+def pin_cc_switch_endpoint(config, log=None) -> str:
+    """Repoint CC Switch's StepFun provider at this shim and keep it there.
+
+    This is the pin that actually holds, and it replaced the file pin on
+    2026-09-30 after the measurement recorded in tools/
+    pin_cc_switch_endpoint.py: CC Switch owns ~/.codex/config.toml, so pointing
+    Codex at the shim loses the file race the moment a provider is switched, and
+    a Codex already running does not re-read the file either. Repointing CC
+    Switch's own routing table at the shim puts the cap in the path for every
+    route -- which is what the shim's one-self-test health count proved was
+    missing -- and this shim then forwards to StepFun directly, so the two can
+    never route into each other.
+
+    A provider row that was re-added or re-edited by hand points at StepFun
+    again, which is why this runs on a timer instead of once at setup. Best
+    effort by design: every outcome comes back as a string and nothing raises,
+    so the thread can log and carry on even while the database is locked or CC
+    Switch is mid-write.
+    """
+    if config.cc_pin_interval <= 0:
+        return "cc pin disabled (IMAGE_CAP_CC_PIN_INTERVAL=%.0f)" % (
+            config.cc_pin_interval)
+    try:
+        import pin_cc_switch_endpoint
+    except Exception as exc:  # pragma: no cover - same directory, always there
+        return "cc pin unavailable: %s" % exc
+    try:
+        shim = pin_cc_switch_endpoint.shim_base_url(config.host, config.port)
+        changed, detail = pin_cc_switch_endpoint.pin_once(
+            config.cc_db, shim, config.cc_provider, config.cc_app_type,
+            sweep=config.cc_pin_all)
+    except Exception as exc:
+        return "cc pin failed: %s" % exc
+    LAST_CC_PIN["detail"] = detail
+    LAST_CC_PIN["changed"] = bool(changed)
+    if changed and log:
+        log("[cc-pin] %s" % detail)
+    return detail
+
+
+def start_cc_pin_thread(config, log=None):
+    """Re-point CC Switch now, then every config.cc_pin_interval seconds.
+
+    The first pass runs immediately because launchd may have restarted the shim
+    while a fresh StepFun provider row already pointed past it. Returns the
+    daemon thread, or None when the interval disables the feature.
+    """
+    if config.cc_pin_interval <= 0:
+        return None
+
+    def loop():
+        while True:
+            pin_cc_switch_endpoint(config, log=log)
+            time.sleep(config.cc_pin_interval)
+
+    thread = threading.Thread(target=loop, name="fleetkit-image-cap-cc-pin",
+                             daemon=True)
+    thread.start()
+    return thread
+
+
 def build_app(config: Config):
     app = FastAPI(title="fleetkit-stepfun-image-cap", version="1.0.0")
     stats = Stats()
@@ -263,9 +427,7 @@ def build_app(config: Config):
 
     @app.get(HEALTH_PATH)
     async def health():
-        return {"ok": True, "upstream": config.upstream,
-                "max_images": config.max_images, "models": config.models,
-                "stats": stats.as_dict()}
+        return health_payload(config, stats)
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH",
                                             "DELETE", "HEAD", "OPTIONS"])
@@ -280,7 +442,9 @@ def build_app(config: Config):
 
         headers = {name: value for name, value in request.headers.items()
                    if name.lower() not in HOP_REQUEST_HEADERS}
-        url = "%s/%s" % (config.upstream, path.lstrip("/"))
+        joined = "%s/%s" % (config.upstream,
+                            forward_path(config.upstream, path))
+        url = joined.rstrip("/") or config.upstream
         if request.url.query:
             url += "?" + request.url.query
 
@@ -316,7 +480,8 @@ def main(argv=None) -> None:
 
     config = parse_args(argv)
     app = build_app(config)
-    # Best effort: log the outcome, never let a failed re-pin stop the proxy.
+    # Best effort: log the outcomes, never let a failed pin stop the proxy.
+    start_cc_pin_thread(config, log=lambda line: print(line, flush=True))
     start_repin_thread(config, log=lambda line: print(line, flush=True))
     banner = ("[stepfun-image-cap] :%d -> %s (max %d images, models: %s)"
               % (config.port, config.upstream, config.max_images,

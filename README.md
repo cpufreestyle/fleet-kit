@@ -695,19 +695,26 @@ bash "<PRJ>/runtime/opencodex/setup-providers.sh" 即追加 tokendance provider
 
 StepFun 的 Plan API 在 CC Switch 这一跳有 70 图上限（第 71 张回 400
 `images_too_many`；`disable_response_storage = true` 让 Codex 每轮重发整段会话，
-长会话必然撞上）。`tools/stepfun_image_shim.py` 架在 CC Switch（15721）前面的
+长会话必然撞上）。`tools/stepfun_image_shim.py` 架在 CC Switch（15721）**下面**的
 透传层，监听 15722，转发前去重 + 截断到 32 张（`tools/image_cap.py` 是测量）。
+链路：Codex → 15721(CC Switch) → 15722(shim) → `https://api.stepfun.com/step_plan/v1`，
+shim 的上游是真正的上游而不是 CC Switch，两边绕不成环。
 
 ```bash
 bash tools/stepfun_image_shim.sh status           # 看 URL / pid / 健康
 bash tools/stepfun_image_shim.sh install-timer   # launchd 常驻
 bash tools/stepfun_image_shim.sh uninstall-timer
-python3 tools/pin_shim_base_url.py --dry-run      # 预览 base_url pin
+python3 tools/pin_cc_switch_endpoint.py --dry-run --all-stepfun   # 预览会重指哪些行
 ```
 
 `install.sh` 和 `opencodex/setup-providers.sh` 已自动接线（含 `--dry-run` 守卫）。
-CC Switch 每次切 provider 都会把 `base_url` 写回 15721，所以 pin 必须跟着 setup 重跑；
-`tools/pin_shim_base_url.py` 幂等，只改 `model_provider` 指向的那个 provider。
+真正有效的杠杆是 CC Switch 自己的路由表：`tools/pin_cc_switch_endpoint.py` 改写
+`~/.cc-switch/cc-switch.db` 里指向 StepFun 的 codex 行的转发目标。默认是 **sweep 模式**，
+按转发目标判而不是按 provider 名判 —— 本机 `nv spark` 这个 codex provider 也转发到
+StepFun，在 CC Switch UI 里选中它就直接绕过 shim，71 图照样 400（`--all-stepfun` 是同一个
+开关，`IMAGE_CAP_CC_PIN_ALL=0` 收窄回只动命名那一行）。`tools/pin_shim_base_url.py`
+（钉 `~/.codex/config.toml`）实测赢不了，降级为默认关闭的兜底。
+**改完数据库要重启 CC Switch.app 才生效**：它把路由表缓存在内存里。
 实测：100 图经 launchd 全链路，`stepfun/step-5-preview` 上游只收 32，
 `workbuddy/hy4-preview` 原样透传 100。详见 docs/stepfun2codex-runbook.md。
 

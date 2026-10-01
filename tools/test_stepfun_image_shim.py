@@ -17,6 +17,7 @@ import importlib.util
 import json
 import os
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -94,11 +95,13 @@ class _FakeUpstream:
 class _Shim:
     """The real shim app on a real socket, in this process."""
 
-    def __init__(self, upstream_port, max_images=32, models="step"):
+    def __init__(self, upstream_port, max_images=32, models="step",
+                 upstream_url=None):
         import uvicorn
 
         config = shim.Config("127.0.0.1", 0,
-                             "http://127.0.0.1:%d" % upstream_port,
+                             upstream_url or "http://127.0.0.1:%d"
+                             % upstream_port,
                              max_images, models)
         self.app = shim.build_app(config)
         self.config = config
@@ -238,6 +241,35 @@ def test_the_query_string_survives_the_hop(upstream, client, site_factory):
     response = client.get(site.url("/v1/models?limit=1"))
     assert response.status_code == 200
     assert upstream.seen[-1][1] == "/v1/models?limit=1"
+
+
+def test_the_version_prefix_the_upstream_carries_is_not_repeated(
+        upstream, client, site_factory):
+    """The doubled /v1 that made StepFun answer 404 on 2026-09-30.
+
+    The upstream default is an OpenAI base URL that already ends in /v1 and the
+    pinned client base_url ends in /v1 too, so a plain join forwarded
+    /v1/v1/models. What the upstream records here is the whole request line,
+    which is the same difference StepFun prices as 401 against 404.
+    """
+    site = site_factory(upstream.port,
+                        upstream_url="http://127.0.0.1:%d/v1" % upstream.port)
+    response = client.get(site.url("/v1/models"))
+    assert response.status_code == 200
+    assert upstream.seen[-1][1] == "/v1/models"
+
+
+def test_forward_path_leaves_a_different_first_segment_alone():
+    """Only an exact duplicate is dropped, never a path that merely looks similar."""
+    upstream = "https://api.stepfun.com/step_plan/v1"
+    assert shim.forward_path(upstream, "responses") == "responses"
+    assert shim.forward_path(upstream, "v1/responses") == "responses"
+    assert shim.forward_path(upstream, "v1") == ""
+    bare = "http://127.0.0.1:15721"
+    assert shim.forward_path(bare, "v1/responses") == "v1/responses"
+    versioned = "http://127.0.0.1:15721/v1"
+    assert shim.forward_path(versioned, "v1/chat/completions") == (
+        "chat/completions")
 
 
 def test_health_reports_the_configuration(client, site_factory):
@@ -479,3 +511,168 @@ def test_the_repin_thread_pins_before_its_first_sleep(tmp_path):
     finally:
         if thread:
             thread.join(timeout=0.1)
+
+
+CC_DB_SCHEMA = """
+CREATE TABLE providers (
+    id TEXT NOT NULL,
+    app_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    settings_config TEXT NOT NULL,
+    PRIMARY KEY (id, app_type)
+);
+CREATE TABLE provider_endpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id TEXT NOT NULL,
+    app_type TEXT NOT NULL,
+    url TEXT NOT NULL,
+    added_at INTEGER
+);
+"""
+
+CC_STEPFUN = "https://api.stepfun.com/step_plan/v1"
+CC_SHIM = "http://127.0.0.1:15722/v1"
+CC_SECOND = "a1b2c3d4-second-row"
+
+
+def _cc_settings(base_url):
+    import json
+    config = (
+        'model_provider = "custom"\n'
+        '\n'
+        '[model_providers.custom]\n'
+        'name = "custom"\n'
+        'base_url = "%s"\n'
+        'wire_api = "responses"\n'
+    ) % base_url
+    return json.dumps({"config": config})
+
+
+def _cc_db(path, rows):
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(CC_DB_SCHEMA)
+        for provider_id, app_type, name, target in rows:
+            conn.execute(
+                "insert into providers (id, app_type, name, settings_config)"
+                " values (?, ?, ?, ?)",
+                (provider_id, app_type, name, _cc_settings(target)))
+            conn.execute(
+                "insert into provider_endpoints (provider_id, app_type, url,"
+                " added_at) values (?, ?, ?, ?)",
+                (provider_id, app_type, target, int(time.time())))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _cc_rows(path):
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute(
+            "select providers.name, provider_endpoints.app_type,"
+            " provider_endpoints.url from providers join provider_endpoints"
+            " on providers.id = provider_endpoints.provider_id"
+            " order by providers.name").fetchall()
+    finally:
+        conn.close()
+
+
+def _cc_config(db):
+    config = shim.Config("127.0.0.1", 15722, CC_STEPFUN, 32, "step")
+    config.cc_db = str(db)
+    config.cc_pin_interval = 3600
+    return config
+
+
+def test_cc_pin_sweeps_every_codex_row_that_forwards_to_stepfun(tmp_path):
+    # The measured bypass, 2026-10-01: this machine's CC Switch carries two
+    # codex providers aimed at api.stepfun.com, only one of them named StepFun.
+    # Pinning just the named one leaves selecting the other as a way to walk
+    # straight past the cap, so the shim's pin has to move both.
+    db = tmp_path / "cc-switch.db"
+    _cc_db(db, [("stepfun-row", "codex", "StepFun", CC_STEPFUN),
+                (CC_SECOND, "codex", "nv spark", CC_STEPFUN)])
+
+    detail = shim.pin_cc_switch_endpoint(_cc_config(db))
+
+    self_urls = sorted(url for _name, _app, url in _cc_rows(db))
+    assert self_urls == [CC_SHIM, CC_SHIM], self_urls
+    assert "nv spark" in detail, detail
+
+
+def test_cc_pin_leaves_a_provider_forwarding_elsewhere_alone(tmp_path):
+    db = tmp_path / "cc-switch.db"
+    _cc_db(db, [("stepfun-row", "codex", "StepFun", CC_STEPFUN),
+                (CC_SECOND, "codex", "MiniMax", "https://api.minimaxi.com/v1")])
+
+    shim.pin_cc_switch_endpoint(_cc_config(db))
+
+    rows = {(name, app): url for name, app, url in _cc_rows(db)}
+    assert rows[("MiniMax", "codex")] == "https://api.minimaxi.com/v1"
+
+
+def test_cc_pin_can_be_narrowed_to_the_named_provider(tmp_path):
+    db = tmp_path / "cc-switch.db"
+    _cc_db(db, [("stepfun-row", "codex", "StepFun", CC_STEPFUN),
+                (CC_SECOND, "codex", "nv spark", CC_STEPFUN)])
+    os.environ["IMAGE_CAP_CC_PIN_ALL"] = "0"
+    try:
+        config = _cc_config(db)
+    finally:
+        del os.environ["IMAGE_CAP_CC_PIN_ALL"]
+
+    shim.pin_cc_switch_endpoint(config)
+
+    rows = {(name, app): url for name, app, url in _cc_rows(db)}
+    assert rows[("StepFun", "codex")] == CC_SHIM
+    assert rows[("nv spark", "codex")] == CC_STEPFUN, (
+        "IMAGE_CAP_CC_PIN_ALL=0 did not narrow the pin")
+
+
+def test_cc_pin_reports_a_missing_database_without_raising(tmp_path):
+    config = _cc_config(tmp_path / "absent.db")
+    detail = shim.pin_cc_switch_endpoint(config)
+    assert "cc-switch db not found" in detail
+
+
+def test_cc_pin_is_off_when_the_interval_is_zero(tmp_path):
+    db = tmp_path / "cc-switch.db"
+    _cc_db(db, [("stepfun-row", "codex", "StepFun", CC_STEPFUN)])
+    config = _cc_config(db)
+    config.cc_pin_interval = 0
+
+    detail = shim.pin_cc_switch_endpoint(config)
+
+    assert "disabled" in detail
+    assert _cc_rows(db)[0][2] == CC_STEPFUN, "a disabled pin still wrote"
+
+
+def test_the_cc_pin_thread_pins_before_its_first_sleep(tmp_path):
+    db = tmp_path / "cc-switch.db"
+    _cc_db(db, [("stepfun-row", "codex", "StepFun", CC_STEPFUN)])
+    config = _cc_config(db)
+    config.cc_pin_interval = 3600
+
+    thread = shim.start_cc_pin_thread(config)
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if _cc_rows(db)[0][2] == CC_SHIM:
+                break
+            time.sleep(0.02)
+        assert _cc_rows(db)[0][2] == CC_SHIM, "the first pass never ran"
+    finally:
+        if thread:
+            thread.join(timeout=0.1)
+
+
+def test_health_reports_the_cc_pin_outcome(tmp_path):
+    db = tmp_path / "cc-switch.db"
+    _cc_db(db, [("stepfun-row", "codex", "StepFun", CC_STEPFUN)])
+    config = _cc_config(db)
+    shim.pin_cc_switch_endpoint(config)
+
+    health = shim.health_payload(config, shim.Stats())
+    assert health["cc_pin"]["changed"] is True
+    assert CC_SHIM in health["cc_pin"]["detail"]
