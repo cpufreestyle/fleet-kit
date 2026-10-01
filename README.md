@@ -9,6 +9,17 @@
 真实调用基线（2026-09-26）：`tools/verify_real_calls.py` 用随机运算题核验，5/10 桥真实推理
 （workbuddy、workbuddy-gpt、qoder、trae、xhx），其余 5 桥为登录门禁/会话失效/上游关停/需 VPN/Google 网络阻断，见「真实调用检测」。
 
+## 镜像同步
+
+GitHub 是本仓库的主 remote（origin）。当国际出口阻断、GitHub 不可达时，同一个
+仓库同步推送到 Gitee 私有镜像，凭证已存在本机 ~/.git-credentials：
+
+    git push gitee main      # 推到 Gitee 镜像 cpufreestyle/fleet-kit
+    git push origin main     # 网络恢复后补推 GitHub
+
+两个 remote 内容一致；git remote -v 里的 gitee 即镜像。2026-10-01 首次同步，
+当时 main 领先 origin 5 个提交，全部历史已落在镜像上。
+
 ## 架构
 
     Codex ──▶ opencodex 代理 (127.0.0.1:10100)
