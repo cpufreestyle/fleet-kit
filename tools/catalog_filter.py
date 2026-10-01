@@ -75,8 +75,8 @@ KEEP_BACKUPS = 5
 # catalog_sort.py refuses to let a stale reach snapshot drop them: bridges
 # recover (a renewed token, a VPN back up, an upstream 503 clearing), and the
 # prover only runs on demand, so the snapshot in the panel is routinely a day
-# or two old. Verified bridges are 12, and the verdict list is 7 -- hiding the
-# other five off a 3 day old verdict hides working models.
+# or two old. Verified bridges are 13, and the verdict list is 7 -- hiding the
+# other six off a 3 day old verdict hides working models.
 MAX_VERIFY_AGE = 86400
 
 # Rows that are never a usable chat model when picked in Codex. The substrings are
