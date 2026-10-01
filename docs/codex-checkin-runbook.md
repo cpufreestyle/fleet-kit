@@ -39,8 +39,36 @@ launchd(com.local.fleet-checkin)  每日 09:00 + RunAtLoad
 - token 来自 `~/.box-agent/config/auth.json`；过期走单次轮换刷新（立即落盘），刷新失败重读盘（桌面端可能已重同步）
 - 签到后顺带拉 `GET /api/web/points/v1/balance` 记账（available_points 等）
 
-### 待扩展（有验证接口后按 TASKS 注册表加）
-- 灵犀 / qoder / workbuddy / codely / trae：目前均未发现每日签到端点（codely 为预算制、trae 为积分制无签到接口）
+### workbuddy / workbuddy-gpt — Buddy 加油站真签到（2026-10-01）
+- 经桥自己的端点，不另存凭证：GET / 领 dashboard session cookie →
+  GET /ui/checkin（活动 + 每账号 today_checked_in / credit / streak_days）→
+  POST /ui/checkin/claim（无 ref = 整个账号池领取）
+- 端点仍要求本机 + Content-Type: application/json + Origin 匹配，见桥内 _check_dashboard_management
+- **两座桥端点路径相同、后端不同**：国内 copilot.tencent.com、海外 www.workbuddy.ai。
+  实测 2026-10-01：海外桥拿国内端点问海外账号 → 401 Authorization Required，面板只能显示
+  「状态读取失败」。已改为按 _PROVIDER["backend"] 传后端，海外随即读到本期活动
+  （Buddy 加油站 season 1、每日 100 credits）
+- 海外 POST /v2/billing/meter/daily-checkin 目前回 400：应用里这条路要带 X-Device-Token
+  （Turing Shield，见 "WorkBuddy AI.app" 的 app.asar），本工具不伪造该头，所以海外节点报
+  「待领取」而不是假装领到；桌面端启动时会自行领取
+
+### 其余 12 个节点 — 无每日签到端点（已逐个核实）
+qoder / codely / trae / lingxi / cline / qwen / gemini / catpaw / antigravity / zcode / stepfun / tokendance
+- 上游没有每日签到接口，记为 na：既不算成功也不算失败，--run-now 退出码不因此变红
+- codely 的 LiteLLM /key/info、/user/info 实测 nginx 403，也没有余额可读
+- 每个节点仍然读出账号与积分，让 15 个节点在面板里都有带数字的一行
+
+## 节点积分查看（tools/node_credits.py）
+stdlib（urllib），可单独跑，不进任何 venv：
+
+    python3 tools/node_credits.py                 # 全机队一张表
+    python3 tools/node_credits.py --json          # 机器可读
+    python3 tools/node_credits.py --node zcode    # 单节点
+
+每行：状态 / 账号 / 登录 / 积分口径（free-windows.json）/ 积分值 / 来源 / 签到状态。
+真数字来源：xhx 官方 points balance、workbuddy 两桥 /ui/checkin、zcode /entitlements
+（一次性 100,000,000 tokens）；其余节点口径来自 free-windows.json，数值留空并写清原因。
+status_ui 面板「节点积分 / 账号」就是这份数据（30s 缓存）。
 
 ## 使用方法
 ```bash

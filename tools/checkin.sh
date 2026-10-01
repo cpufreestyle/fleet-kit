@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # FleetKit auto check-in control (daily points for subscription platforms).
 #
-# Wraps tools/checkin.py (task registry: xhx SenseTime Raccoon, and the
-# WorkBuddy "Buddy 加油站" whose claim runs inside the bridge itself -- this
-# script only confirms that bridge is reachable and keyed).
+# Wraps tools/checkin.py. The task registry covers every node in the fleet
+# (15): it really claims the daily points where an endpoint exists (xhx
+# SenseTime Raccoon, and the WorkBuddy "Buddy 加油站" through the bridge
+# /ui/checkin/claim), and for the nodes whose upstream publishes no daily
+# check-in it records that fact plus the account and credits the node does
+# expose, so every node has a row with a number instead of being dropped.
+# Per-node account/credits detail: tools/node_credits.py.
 #
 # Usage: checkin.sh <command> [--home DIR]
 #   status             show today state and balances (no network)
