@@ -86,11 +86,38 @@ def make_client_getter(**kwargs):
     return client
 
 
+def install_upstream_guard(app: FastAPI) -> None:
+    """An unreachable upstream answers 503, never a bare 500.
+
+    Every bridge here calls a third-party HTTP endpoint and every one of them
+    can be unreachable: a company VPN, a revoked host, DNS, a proxy that went
+    away. Before this, httpx.ConnectError escaped the route function and
+    Starlette turned it into 500 Internal Server Error plus a traceback, so the
+    caller learned nothing and the log just grew. Measured on codely
+    (2026-09-30): 26 bare 500s in one log, 291KB of ConnectError tracebacks,
+    and a panel row reading "bridge down, 0 models" while the catalog was fine
+    and only the network was down.
+
+    A handler registered for an exception class only runs when nothing caught
+    it, so routes that already phrase their own failure keep precedence.
+    """
+
+    @app.exception_handler(httpx.HTTPError)
+    async def _upstream_unreachable(request: Request, exc: httpx.HTTPError):
+        detail = "%s: %s" % (type(exc).__name__, str(exc)[:200])
+        return upstream_error_response(
+            503, detail, "upstream", "upstream_unreachable",
+            message="upstream unreachable: " + detail)
+
+
 def make_app(title: str, version: str = "") -> FastAPI:
     """The app = FastAPI(...) line, identical in the FastAPI bridges."""
     if version:
-        return FastAPI(title=title, version=version)
-    return FastAPI(title=title)
+        app = FastAPI(title=title, version=version)
+    else:
+        app = FastAPI(title=title)
+    install_upstream_guard(app)
+    return app
 
 
 def safe_header_value(value: str, max_chars: int = 200) -> str:

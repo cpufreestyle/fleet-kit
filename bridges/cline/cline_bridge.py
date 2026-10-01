@@ -25,16 +25,22 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 
-import urllib.parse
-
 import uvicorn
 import websockets
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+
+# bridges/ 自己也带公共模块（_common），和 workbuddy 插自己目录同一个套路。
+_BRIDGES_DIR = Path(__file__).resolve().parent.parent
+if str(_BRIDGES_DIR) not in sys.path:
+    sys.path.insert(0, str(_BRIDGES_DIR))
+import _common
 
 BRIDGE_VERSION = "0.1.0"
 
@@ -138,7 +144,7 @@ def ensure_hub(attempts: int = 12, delay: float = 2.0) -> bool:
     return hub_ready()
 
 
-app = FastAPI(title="cline2codex")
+app = _common.make_app("cline2codex")
 
 
 def check_auth(request: Request) -> None:
