@@ -303,6 +303,21 @@ async def fetch_cli_api_key(force: bool = False) -> str:
     return key
 
 
+def _unreachable(exc: BaseException) -> JSONResponse:
+    """An unreachable gateway is the routine failure here, never a bare 500.
+
+    The only upstream this bridge talks to lives on the company network, so
+    ConnectError/ReadTimeout is what it sees most. /v1/models learned this in
+    root cause 24; the chat route had the same hole (root cause 25) and answered
+    500 Internal Server Error plus a traceback, which told the caller nothing
+    about the cause.
+    """
+    detail = "%s: %s" % (type(exc).__name__, str(exc)[:200])
+    return _common.upstream_error_response(
+        503, detail, "gateway", "codely_upstream_unreachable",
+        message="codely gateway unreachable: " + detail)
+
+
 async def get_gateway_key(allow_refresh: bool = True) -> str:
     try:
         return await fetch_cli_api_key()
@@ -412,6 +427,14 @@ async def list_models(request: Request):
         detail = r.text[:200]
     except HTTPException as e:
         detail = e.detail
+    except Exception as e:  # noqa: BLE001 - an unreachable gateway must degrade
+        # httpx.ConnectError and friends are the *common* failure here: the
+        # gateway lives on the company network, so a VPN drop or an
+        # unreachable host is routine. Letting them escape turned every
+        # /v1/models call into a bare 500 plus a traceback in the log (measured:
+        # 291KB of ConnectError tracebacks), and bypassed the fallback catalog
+        # this handler exists to serve.
+        detail = "%s: %s" % (type(e).__name__, str(e)[:200])
     # 无凭据/降级：官方 CLI 实测的静态目录（带 codely/ 前缀）
     data = {
         "object": "list",
@@ -454,31 +477,33 @@ async def chat_completions(request: Request):
         )
     stream = bool(body.get("stream"))
 
-    key = await get_gateway_key()
-    url = f"{GATEWAY_BASE}/chat/completions"
+    try:
+        key = await get_gateway_key()
+        url = f"{GATEWAY_BASE}/chat/completions"
 
-    def _hdrs(k: str) -> dict:
-        return gateway_headers(k, "/v1/chat/completions")
+        def _hdrs(k: str) -> dict:
+            return gateway_headers(k, "/v1/chat/completions")
 
-    headers = _hdrs(key)
+        async def once(hdrs):
+            c = client()
+            req = c.build_request("POST", url, json=body, headers=hdrs)
+            return await c.send(req, stream=True)
 
-    async def once(hdrs):
-        c = client()
-        req = c.build_request("POST", url, json=body, headers=hdrs)
-        return await c.send(req, stream=True)
-
-    resp = await once(headers)
-    if resp.status_code == 401:
-        await resp.aclose()
-        # Token invalid: re-mint the virtual key first, then retry once.
-        # The old order ran refresh_access_token() first, which needs a
-        # refresh_token the official CLI never writes; its HTTPException was
-        # swallowed by "except HTTPException: pass", so the retry went out with
-        # the same dead key and failed again.
-        key = await remint_gateway_key()
-        _rotate_session()
-        headers = _hdrs(key)
-        resp = await once(headers)
+        resp = await once(_hdrs(key))
+        if resp.status_code == 401:
+            await resp.aclose()
+            # Token invalid: re-mint the virtual key first, then retry once.
+            # The old order ran refresh_access_token() first, which needs a
+            # refresh_token the official CLI never writes; its HTTPException was
+            # swallowed by "except HTTPException: pass", so the retry went out with
+            # the same dead key and failed again.
+            key = await remint_gateway_key()
+            _rotate_session()
+            resp = await once(_hdrs(key))
+    except HTTPException:
+        raise  # whitelist 400s and mint-endpoint 401s keep their own shape
+    except Exception as e:  # noqa: BLE001 - the company gateway drops routinely
+        return _unreachable(e)
 
     if resp.status_code != 200:
         text = (await resp.aread()).decode("utf-8", "replace")

@@ -162,3 +162,89 @@ def test_chat_route_retries_with_the_reminted_key(tmp_path, monkeypatch):
     assert seen[0] == "Bearer " + DEAD_KEY
     assert seen[1] == "Bearer " + GOOD_KEY
     assert json.loads(creds.read_text())["cli_api_key"] == GOOD_KEY
+
+def test_models_route_degrades_when_the_gateway_is_unreachable(tmp_path, monkeypatch):
+    """httpx.ConnectError must not become a bare 500.
+
+    The gateway lives on the company network, so an unreachable host is the
+    routine failure -- and it was the one class the try block did not catch.
+    Letting it escape turned every /v1/models call into a bare 500 plus a
+    traceback in the log (measured 2026-09-30: 291KB of ConnectError
+    tracebacks) and bypassed the fallback catalog this handler exists to
+    serve, so the panel reported the bridge down with an empty model list.
+    """
+    codely, _ = _load_codely(tmp_path, monkeypatch)
+
+    def boom(request):
+        raise httpx.ConnectError("All connection attempts failed")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(boom))
+    monkeypatch.setattr(codely, "client", lambda: client)
+
+    from fastapi.testclient import TestClient
+    r = TestClient(codely.app).get("/v1/models")
+
+    assert r.status_code == 200
+    assert [m["id"] for m in r.json()["data"]] == [
+        codely.CATALOG_PREFIX + m for m in codely.FALLBACK_MODELS]
+    assert r.headers.get("X-Codely-Models-Fallback")
+    assert "\n" not in r.headers["X-Codely-Models-Fallback"]
+
+
+
+def test_chat_route_degrades_when_the_gateway_is_unreachable(tmp_path, monkeypatch):
+    """The chat route must not answer a bare 500 when the gateway drops.
+
+    Same hole as /v1/models had before root cause 24, measured 2026-09-30 by
+    injecting ConnectError into the only upstream call the chat route makes:
+    the exception escaped the handler entirely and the caller got
+    500 Internal Server Error plus a traceback, with nothing in the body
+    about the cause. The upstream error envelope already exists for exactly
+    this wording ("an unreachable-host error, which is not an upstream status
+    at all"), so the fix is to route through it.
+    """
+    codely, _ = _load_codely(tmp_path, monkeypatch)
+
+    def boom(request):
+        raise httpx.ConnectError("All connection attempts failed")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(boom))
+    monkeypatch.setattr(codely, "client", lambda: client)
+
+    from fastapi.testclient import TestClient
+    r = TestClient(codely.app).post("/v1/chat/completions", json={
+        "model": "codely/codely-core",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+
+    assert r.status_code == 503
+    err = r.json()["error"]
+    assert "unreachable" in err["message"]
+    assert "ConnectError" in err["message"]
+    assert err["type"] == "codely_upstream_unreachable"
+
+
+def test_chat_route_keeps_the_whitelist_400_when_the_gateway_drops(
+        tmp_path, monkeypatch):
+    """The new catch must not swallow the bridge's own 4xx decisions.
+
+    HTTPException is raised before any upstream call, so an unknown model
+    still has to fail with the whitelist 400 -- not 503 -- while the network
+    is equally unusable.
+    """
+    codely, _ = _load_codely(tmp_path, monkeypatch)
+
+    def boom(request):
+        raise httpx.ConnectError("All connection attempts failed")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(boom))
+    monkeypatch.setattr(codely, "client", lambda: client)
+
+    from fastapi.testclient import TestClient
+    r = TestClient(codely.app).post("/v1/chat/completions", json={
+        "model": "codely/not-on-this-team-key",
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+
+    assert r.status_code == 400
+    assert "is not allowed for this team key" in r.json()["detail"]
