@@ -67,6 +67,12 @@ import urllib.request
 # fleet_probe.py already build a proxy-free opener for the same reason.
 NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
+# npm drops a shell script plus a .cmd/.ps1 pair next to ocx, and subprocess on
+# Windows can only exec the .cmd, so resolve it through fleet_platform instead
+# of relying on PATH spelling (see ocx_exe's own docstring).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fleet_platform import ocx_exe
+
 BACKUP_TEMPLATE = ".bak-%Y%m%d-%H%M%S"
 STATE_FILE = ".catalog-filter-restore-state.json"
 STATE_COOLDOWN = 3600
@@ -152,7 +158,7 @@ def fetch_status(url, timeout):
 def ocx(args, timeout):
     """Run an ocx subcommand; returns (ok, last-output-line)."""
     try:
-        out = subprocess.run(["ocx"] + args, capture_output=True, timeout=timeout)
+        out = subprocess.run([ocx_exe()] + args, capture_output=True, timeout=timeout)
     except Exception as exc:
         return False, "%s failed: %s" % (" ".join(args), exc)
     tail = (out.stdout or b"").decode("utf-8", "ignore").strip().splitlines()

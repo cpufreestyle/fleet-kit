@@ -294,9 +294,12 @@ def write_json(path, snap):
 
 def main():
     ap = argparse.ArgumentParser()
+    # the periodic probe runs from a bare wrapper that exports no FLEET_HOME,
+    # so the default has to point at the real fleet env, not a fixed path
     ap.add_argument("--env", default=os.environ.get(
         "FLEET_ENV_FILE",
-        os.path.expanduser("~/AI Shared/repo/FleetKit/runtime/fleet.env")))
+        os.path.join(os.environ.get("FLEET_HOME") or os.path.join(
+            os.path.expanduser("~"), "FleetKit", "runtime"), "fleet.env")))
     ap.add_argument("--out", default=os.environ.get(
         "FLEET_REACH_FILE",
         os.path.expanduser("~/.codex/fleet-reach.json")))

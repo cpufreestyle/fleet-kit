@@ -39,8 +39,10 @@ INTERVAL="${FLEET_PROBE_INTERVAL:-1800}"
 
 install_timer() {
     mkdir -p "$SERVICE_DIR" "$(dirname "$LOG")"
+    # --env matters: the generated wrapper exports no FLEET_HOME, so the
+    # probe has to be told where the fleet env lives
     fleet_timer_install "$LABEL" "$INTERVAL" "$PYTHON" "$PROBE" \
-        "--out $REACH --tries 6 --call-timeout 45 --sort-after"
+        "--env $ENV_FILE --out $REACH --tries 6 --call-timeout 45 --sort-after"
     echo "installed $LABEL every ${INTERVAL}s on $(fleet_os 2>/dev/null || echo macos)"
     echo "  service dir: $SERVICE_DIR"
     echo "  log        : $LOG"

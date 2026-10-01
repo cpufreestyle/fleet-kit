@@ -71,7 +71,7 @@ STREAM_PROBE_TIMEOUT = 25
 BRIDGES = [
     ("workbuddy",     "workbuddy2codex",      0, "hy4-preview",               "CODEBUDDY2OPENAI_KEY"),
     ("workbuddy-gpt", "workbuddy2codex-gpt",  1, "gpt-6-astra",               "CODEBUDDY2OPENAI_KEY"),
-    ("qoder",         "qoder2codex",          2, "DeepSeek-V4-Pro",           "QODER2CODEX_KEY"),
+    ("qoder",         "qoder2codex",          2, "Qwen3.8-Max",               "QODER2CODEX_KEY"),
     ("codely",        "codely2codex",         3, "codely-core",               "CODELY2CODEX_KEY"),
     ("trae",          "trae2codex",           4, "trae/Doubao-Seed-Evolving", "TRAE2CODEX_KEY"),
     ("lingxi",        "lingxi2codex",         5, "lingxi/deepseek-v4-flash",  "LINGXI2CODEX_KEY"),
@@ -81,6 +81,7 @@ BRIDGES = [
     ("antigravity",    "antigravity2codex",     10, "claude-opus-4-8@default",    "ANTIGRAVITY2CODEX_KEY"),
     ("qwen",           "qwen2codex",             11, "qwen3.8-flash",              "QWEN2CODEX_KEY"),
     ("cline",          "cline2codex",           12, "cline-free/deepseek-v4.1-flash", "CLINE2CODEX_KEY"),
+    ("zcode",          "zcode2codex",           13, "zcode/GLM-5.3",                  "ZCODE2CODEX_KEY"),
 ]
 
 

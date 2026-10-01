@@ -412,6 +412,9 @@ async def list_models(request: Request):
         detail = r.text[:200]
     except HTTPException as e:
         detail = e.detail
+    except httpx.HTTPError as e:
+        # Upstream network blips must degrade to the static catalog, not a 500.
+        detail = f"{type(e).__name__}: {e}"
     # 无凭据/降级：官方 CLI 实测的静态目录（带 codely/ 前缀）
     data = {
         "object": "list",
@@ -453,32 +456,41 @@ async def chat_completions(request: Request):
                    f"Allowed models (alias-only): {', '.join(FALLBACK_MODELS)}",
         )
     stream = bool(body.get("stream"))
+    try:
+        key = await get_gateway_key()
+        url = f"{GATEWAY_BASE}/chat/completions"
 
-    key = await get_gateway_key()
-    url = f"{GATEWAY_BASE}/chat/completions"
+        def _hdrs(k: str) -> dict:
+            return gateway_headers(k, "/v1/chat/completions")
 
-    def _hdrs(k: str) -> dict:
-        return gateway_headers(k, "/v1/chat/completions")
-
-    headers = _hdrs(key)
-
-    async def once(hdrs):
-        c = client()
-        req = c.build_request("POST", url, json=body, headers=hdrs)
-        return await c.send(req, stream=True)
-
-    resp = await once(headers)
-    if resp.status_code == 401:
-        await resp.aclose()
-        # Token invalid: re-mint the virtual key first, then retry once.
-        # The old order ran refresh_access_token() first, which needs a
-        # refresh_token the official CLI never writes; its HTTPException was
-        # swallowed by "except HTTPException: pass", so the retry went out with
-        # the same dead key and failed again.
-        key = await remint_gateway_key()
-        _rotate_session()
         headers = _hdrs(key)
+
+        async def once(hdrs):
+            c = client()
+            req = c.build_request("POST", url, json=body, headers=hdrs)
+            return await c.send(req, stream=True)
+
         resp = await once(headers)
+        if resp.status_code == 401:
+            await resp.aclose()
+            # Token invalid: re-mint the virtual key first, then retry once.
+            # The old order ran refresh_access_token() first, which needs a
+            # refresh_token the official CLI never writes; its HTTPException was
+            # swallowed by "except HTTPException: pass", so the retry went out with
+            # the same dead key and failed again.
+            key = await remint_gateway_key()
+            _rotate_session()
+            headers = _hdrs(key)
+            resp = await once(headers)
+
+    except httpx.HTTPError as e:
+        # A transport failure must surface as 502, not a 500 from the FastAPI
+        # wrapper. httpx ConnectError str()s to the empty string, leaving only
+        # "ConnectError: " in the log; repr() keeps the target host.
+        return Response(content=json.dumps({"error": {
+            "message": f"gateway unreachable: {type(e).__name__} ({url}): {e!r}",
+            "type": "codely_upstream_error"}}),
+                         media_type="application/json", status_code=502)
 
     if resp.status_code != 200:
         text = (await resp.aread()).decode("utf-8", "replace")

@@ -373,6 +373,18 @@ docs/stepfun2codex-runbook.md。
 `ocx provider add --force` 都会重写 config.toml，不 pin 默认模型会被打回。
 改默认：`fleet.env` 里设 `FLEET_DEFAULT_MODEL=<slug>`，或直接手改 config.toml。
 
+**规则（2026-10-01 起）：默认模型恒为 `step-5-preview`，任何 provider 探测失败就跳回它。**
+`tools/fleet_default_model.py` 强制执行这条规则：
+
+    python3 tools/fleet_default_model.py --status           # 当前 pin + 探测
+    python3 tools/fleet_default_model.py --guard --dry-run   # 只报告，不改文件
+    python3 tools/fleet_default_model.py --guard             # 回退 + 隐藏坏 provider 的模型行（自动备份）
+
+判定按「每 provider 采样最多 3 个模型」（单个模型可能只是没开 Responses API，不能据此判死整个
+provider）；跳过 tts/asr/embedding 之类噪声行；回退目标自己不通时退出 2 并拒绝改动。
+`opencodex/setup-providers.sh` 结尾会自动跑一次 `--guard`。改完 config.toml / catalog
+都要重启 Codex 才生效。
+
 ### 为什么有的模型不在选择器
 
 - **tokendance**：95 个 live 模型已全部进入 catalog（`setup-providers.sh` 里原先的
@@ -573,6 +585,7 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 - tools/catalog-filter.sh run|install-timer|uninstall-timer|status：按 verify.real 隐藏不可用桥模型＋按 slug 清理噪声行（默认 300s，与 ocx-catalog-guard 互补）
 - tools/free_models.py [--free-only] [--credits client|limit|own|unknown] [--provider P] [--missing] [--json] [--check-sources]：模型标注：免费状态 + 是否走客户端积分（数据在仓库根 free-windows.json，状态面板同源）
 - tools/short_aliases.py [--dry-run]：选择器短名（ocx 别名，路由不受影响）
+- tools/fleet_default_model.py [--status|--guard [--dry-run]] [--fallback SLUG]：默认模型恒为 step-5-preview，坏 provider 自动回退并隐藏
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
 - opencodex/setup-providers.sh：重新注册 11 桥
 - uninstall.sh [--home DIR] [--purge]：卸载 launchd 服务和 plist；--purge 连目录一起删

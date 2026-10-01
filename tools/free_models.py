@@ -29,6 +29,9 @@ import sys
 import time
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fleet_platform import ocx_exe
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(ROOT, "free-windows.json")
 CATALOG = os.path.expanduser("~/.codex/cc-switch-model-catalog.json")
@@ -49,7 +52,7 @@ def load_db():
 def ocx_live():
     """[(provider, model_id), ...] from the opencodex proxy; [] when unavailable."""
     try:
-        out = subprocess.run(["ocx", "models", "live", "--json"],
+        out = subprocess.run([ocx_exe(), "models", "live", "--json"],
                              capture_output=True, timeout=30)
         data = json.loads(out.stdout.decode("utf-8", "ignore"))
     except Exception:

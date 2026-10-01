@@ -249,5 +249,16 @@ else
   echo "  [warn] ${CODEX_TOML} not found; default model not pinned" >&2
 fi
 
+# Enforce the default-model rule: the pin must be a model that answers. If the
+# pinned model (or any provider in the catalog) is unreachable, fall back to
+# step-5-preview and hide the broken rows so the picker cannot offer them.
+if [ "$DRY_RUN" = "1" ]; then
+  run python3 "$KIT/tools/fleet_default_model.py" --guard --dry-run
+elif [ -f "$KIT/tools/fleet_default_model.py" ]; then
+  run python3 "$KIT/tools/fleet_default_model.py" --guard
+else
+  echo "  [warn] $KIT/tools/fleet_default_model.py missing; fallback rule not applied" >&2
+fi
+
 run ocx service restart
 echo "done. inspect with: ocx models live"

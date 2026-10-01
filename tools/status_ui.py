@@ -68,6 +68,7 @@ BRIDGES = (
     ("antigravity", "antigravity2codex", 10, "ANTIGRAVITY2CODEX_KEY"),
     ("qwen", "qwen2codex", 11, "QWEN2CODEX_KEY"),
     ("cline", "cline2codex", 12, "CLINE2CODEX_KEY"),
+    ("zcode", "zcode2codex", 13, "ZCODE2CODEX_KEY"),
 )
 BRIDGE_BY_NAME = dict((item[0], item) for item in BRIDGES)
 
@@ -122,7 +123,11 @@ def _short(text, limit=140):
 def run(cmd, timeout=10.0):
     """Run a command and return (returncode, combined output). Never raises."""
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        # text=True alone decodes with the ambient code page (GBK on a zh-CN
+        # host); ocx prints emoji, which makes the reader thread raise and the
+        # whole capture come back empty.
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                              encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return 127, "command not found: %s" % cmd[0]
     except subprocess.TimeoutExpired:
@@ -227,16 +232,23 @@ def launchd_info(label):
 
 
 def listen_info(port):
+    """Is something answering on the port, and with which pid.
+
+    lsof only exists on macOS/Linux; on Windows a plain connect answers the
+    question this column actually asks.
+    """
     code, out = run(["lsof", "-nP", "-iTCP:%d" % port, "-sTCP:LISTEN"], timeout=6.0)
-    if code != 0 or not out.strip():
-        return {"ok": False, "pid": None}
-    pid = None
-    for line in out.splitlines()[1:]:
-        parts = line.split()
-        if len(parts) > 1 and parts[1].isdigit():
-            pid = int(parts[1])
-            break
-    return {"ok": True, "pid": pid}
+    if code == 0 and out.strip():
+        pid = None
+        for line in out.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) > 1 and parts[1].isdigit():
+                pid = int(parts[1])
+                break
+        return {"ok": True, "pid": pid}
+    if fleet_platform.port_open(port):
+        return {"ok": True, "pid": None}
+    return {"ok": False, "pid": None}
 
 
 def probe_bridge(port, key, timeout=PROBE_TIMEOUT):
@@ -265,6 +277,11 @@ def probe_bridge(port, key, timeout=PROBE_TIMEOUT):
 
 
 def plist_path(launch_dir, label):
+    """The service wrapper for a label, whichever extension the backend wrote."""
+    for ext in (".plist", ".cmd", ".sh"):
+        candidate = os.path.join(launch_dir, label + ext)
+        if os.path.isfile(candidate):
+            return candidate
     return os.path.join(launch_dir, label + ".plist")
 
 
@@ -312,7 +329,7 @@ def ocx_status(ttl=OCX_TTL_SECONDS):
         cached = _OCX_CACHE["value"]
         if cached is not None and (time.time() - _OCX_CACHE["at"]) < ttl:
             return cached
-    code, out = run(["ocx", "status"], timeout=25.0)
+    code, out = run([fleet_platform.ocx_exe(), "status"], timeout=25.0)
     if code == 127:
         return {"available": False, "text": "ocx not installed", "healthz": None}
     text = "\n".join(out.strip().splitlines()[:40])
@@ -437,8 +454,8 @@ def collect(cfg):
         if not bridge["key"]["set"] and bridge["probe"]["http"] in (401, 403):
             warnings.append("%s: HTTP %d 且 key 未读取到 - 登录后执行 bash %s/bridges/finish.sh %s"
                             % (bridge["name"], bridge["probe"]["http"], cfg["home"], bridge["name"]))
-        if not os.path.isfile(plist_path(cfg["launch_dir"], bridge["label"])):
-            warnings.append("%s: plist 缺失 %s" % (bridge["name"], bridge["label"]))
+        if not fleet_platform.service_kind(bridge["label"]):
+            warnings.append("%s: 服务定义缺失 %s" % (bridge["name"], bridge["label"]))
 
     summary = {
         "bridges": len(bridges),

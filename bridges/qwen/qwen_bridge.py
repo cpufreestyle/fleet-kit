@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """qwen2codex — 把 Qwen Cloud（千问海外托管 API）模型暴露成标准 OpenAI 兼容 API。
 
@@ -44,8 +45,29 @@ UPSTREAM_PROXY = (os.environ.get("QWEN_UPSTREAM_PROXY") or "").strip()
 DEFAULT_TIMEOUT = float(os.environ.get("QWEN_CALL_TIMEOUT") or "300")
 CATALOG_PREFIX = "qwen/"
 
+# qoder 积分路由（QWEN_ROUTE=qoder）：qwen/* 模型改由本地 qoder2codex 桥
+# （127.0.0.1:8789，官方 qoderclicn 驱动的 Qoder 订阅）提供，走 qoder 账号
+# 积分，不再依赖千问海外托管 API key。模型 id 仍保持 qwen/ 前缀，桥内去掉
+# 前缀后透传给 qoder 桥。
+QWEN_ROUTE = (os.environ.get("QWEN_ROUTE") or "").strip().lower()
+QODER_BRIDGE_BASE = (os.environ.get("QODER_BRIDGE_BASE") or "http://127.0.0.1:8789/v1").rstrip("/")
+QODER_KEY = os.environ.get("QODER2CODEX_KEY") or ""
+ROUTE_QODER = QWEN_ROUTE == "qoder"
+
 # Qwen3.8-Flash = Qwen4 架构预览（Flash-Next）的生产版；无 key / 上游不可用时的静态兜底目录
 FALLBACK_MODELS = ["qwen3.8-flash", "qwen3.8-max"]
+
+# 上游 models 端点同站还挂着图片/视频/语音等 marketplace 模型，对话桥只保留文本类：
+# qoder 积分路由下的静态兜底目录（qoder 桥不可用时仍暴露 qwen/ slug）
+QODER_FALLBACK_MODELS = [
+    "qwen3.8-max",
+    "qwen3.8-flash",
+    "qwen3.7-max",
+    "qwen3.7-plus",
+    "qwen3.7-flash",
+]
+
+_UPSTREAM_LABEL = "qoder bridge(qwen/ 走 qoder 积分)" if ROUTE_QODER else "qwen upstream"
 
 # 上游 models 端点同站还挂着图片/视频/语音等 marketplace 模型，对话桥只保留文本类：
 # 命中下列子串的一律不暴露（与 catalog_filter 的 junk 规则同一意图）。
@@ -72,11 +94,21 @@ def is_chat_model(mid: str) -> bool:
     return not any(j in low for j in _JUNK_SUBSTR)
 
 
+def upstream_base() -> str:
+    """qoder 积分路由时上游指向本地 qoder2codex 桥。"""
+    return QODER_BRIDGE_BASE if ROUTE_QODER else UPSTREAM_BASE
+
+
 def upstream_headers() -> dict:
     h = {"Content-Type": "application/json", "Accept": "application/json"}
-    if API_KEY:
-        h["Authorization"] = f"Bearer {API_KEY}"
+    key = QODER_KEY if ROUTE_QODER else API_KEY
+    if key:
+        h["Authorization"] = f"Bearer {key}"
     return h
+
+def _upstream_key() -> str:
+    """The qoder route authenticates against the qoder2codex key instead."""
+    return QODER_KEY if ROUTE_QODER else API_KEY
 
 
 @app.get("/health")
@@ -84,42 +116,59 @@ async def health():
     return {
         "ok": True,
         "version": BRIDGE_VERSION,
+        "route": "qoder" if ROUTE_QODER else "qwen-cloud",
         "proxy": UPSTREAM_PROXY or "direct",
-        "has_api_key": bool(API_KEY),
-        "upstream": UPSTREAM_BASE,
-        "models": FALLBACK_MODELS,
+        "has_api_key": bool(QODER_KEY if ROUTE_QODER else API_KEY),
+        "upstream": upstream_base(),
+        "models": QODER_FALLBACK_MODELS if ROUTE_QODER else FALLBACK_MODELS,
     }
 
 
 @app.get("/v1/models")
 async def list_models(request: Request):
     check_bridge_auth(request)
-    ids = list(dict.fromkeys(FALLBACK_MODELS))
     detail = ""
-    if API_KEY:
+    if ROUTE_QODER:
+        # 模型目录来自本地 qoder 桥；仅保留 qwen 系（qoder 订阅自带千问系模型），
+        # 加 qwen/ 前缀对外暴露
+        ids = list(QODER_FALLBACK_MODELS)
         try:
-            r = await client().get(f"{UPSTREAM_BASE}/models", headers=upstream_headers())
+            r = await client().get(f"{QODER_BRIDGE_BASE}/models", headers=upstream_headers())
             if r.status_code == 200:
                 up = [m.get("id") for m in (r.json().get("data") or []) if m.get("id")]
-                kept = [m for m in up if is_chat_model(m)]
+                kept = [m for m in up if "qwen" in m.lower() and is_chat_model(m)]
                 if kept:
                     ids = kept
             else:
-                detail = f"upstream {r.status_code}"
-                if r.status_code in (401, 403):
-                    # The key was refused. Advertising rows here means every
-                    # chat call 401s while /health and the picker stay green,
-                    # so report the failure instead of the static catalog.
-                    # The names in FALLBACK_MODELS are real, which is why a
-                    # network/5xx failure below still serves them.
-                    return JSONResponse(
-                        {"error": {"message": f"qwen upstream refused the API key (HTTP {r.status_code}); "
-                                              f"set QWEN_API_KEY to a real Qwen Cloud key",
-                                   "type": "upstream_auth_error"}},
-                        status_code=401)
+                detail = f"qoder bridge {r.status_code}"
         except Exception as e:
-            detail = f"{type(e).__name__}: {e}"
-    # 无 key / 上游不可达：静态兜底目录（带 qwen/ 前缀，slug 与 catalog 注入一致）
+            detail = f"qoder bridge {type(e).__name__}: {e}"
+    else:
+        ids = list(dict.fromkeys(FALLBACK_MODELS))
+        if API_KEY:
+            try:
+                r = await client().get(f"{UPSTREAM_BASE}/models", headers=upstream_headers())
+                if r.status_code == 200:
+                    up = [m.get("id") for m in (r.json().get("data") or []) if m.get("id")]
+                    kept = [m for m in up if is_chat_model(m)]
+                    if kept:
+                        ids = kept
+                else:
+                    detail = f"upstream {r.status_code}"
+                    if r.status_code in (401, 403):
+                        # The key was refused. Advertising rows here means every
+                        # chat call 401s while /health and the picker stay green,
+                        # so report the failure instead of the static catalog.
+                        # The names in FALLBACK_MODELS are real, which is why a
+                        # network/5xx failure below still serves them.
+                        return JSONResponse(
+                            {"error": {"message": f"qwen upstream refused the API key (HTTP {r.status_code}); "
+                                          f"set QWEN_API_KEY to a real Qwen Cloud key",
+                                       "type": "upstream_auth_error"}},
+                            status_code=401)
+            except Exception as e:
+                detail = f"{type(e).__name__}: {e}"
+    # 无 key / 上游失败：静态兜底目录（带 qwen/ 前缀，slug 与 catalog 注入一致）
     data = {
         "object": "list",
         "data": [
@@ -142,34 +191,38 @@ async def chat_completions(request: Request):
     body["model"] = remap_model(body.get("model"))
     stream = bool(body.get("stream"))
 
-    if not API_KEY:
+    if not _upstream_key():
         # No key means every upstream call is a guaranteed 401; fail locally
         # with the fix instead of paying for the round trip.
         return _common.upstream_error_response(
-            503, "", "qwen", "qwen_key_missing",
-            message="qwen bridge has no QWEN_API_KEY; set a real Qwen Cloud key "
+            503, "", _UPSTREAM_LABEL, "qwen_key_missing",
+            message="qwen bridge has no API key for the current route; set "
+                    "QWEN_API_KEY (or QODER2CODEX_KEY when QWEN_ROUTE=qoder) "
                     "in fleet.env and re-run bash bridges/finish.sh qwen")
 
-    url = f"{UPSTREAM_BASE}/chat/completions"
+    url = f"{upstream_base()}/chat/completions"
     try:
         req = client().build_request("POST", url, json=body, headers=upstream_headers())
         resp = await client().send(req, stream=True)
     except Exception as e:
         return _common.upstream_error_response(
-            502, "", "qwen", "qwen_upstream_error",
-            message=f"qwen upstream unreachable: {type(e).__name__}: {e}")
+            502, "", _UPSTREAM_LABEL, "qwen_upstream_error",
+            message=f"{_UPSTREAM_LABEL} unreachable: {type(e).__name__}: {e}")
 
     return await _common.stream_response(resp, stream=stream,
-                                         upstream_name="qwen",
+                                         upstream_name=_UPSTREAM_LABEL,
                                          error_type="qwen_upstream_error",
                                          error_chars=500)
 
 
 def main():
-    _common.serve(
-        app, 8798,
-        f"[qwen2codex] v{BRIDGE_VERSION} on http://%s:%s  upstream={UPSTREAM_BASE} "
-        f"proxy={UPSTREAM_PROXY or 'direct'} api_key={'set' if API_KEY else 'MISSING'}")
+    def banner(args):
+        route_key = QODER_KEY if ROUTE_QODER else API_KEY
+        print(f"[qwen2codex] v{BRIDGE_VERSION} on http://{args.host}:{args.port}  upstream={UPSTREAM_BASE} "
+              f"route={QWEN_ROUTE or 'qwen-cloud'} proxy={UPSTREAM_PROXY or 'direct'} "
+              f"api_key={'set' if route_key else 'MISSING'}", flush=True)
+
+    _common.serve(app, 8798, None, on_args=banner)
 
 
 if __name__ == "__main__":

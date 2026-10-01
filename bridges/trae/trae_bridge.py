@@ -143,9 +143,19 @@ def app_support_root() -> Path:
 
 def storage_candidates() -> list[dict]:
     out = []
-    base = app_support_root()
-    for name in APP_NAMES:
-        out.append({"edition": name, "path": base / name / "User" / "globalStorage" / "storage.json", "source": "desktop"})
+    # 各版本目录并列放在同一个容器目录下（%APPDATA%\Trae CN、~/Library/Application
+    # Support/Trae CN、~/.config/Trae CN ...），不能自己再拼一层 "Trae"，否则会得到
+    # %APPDATA%\Trae\Trae CN 这种不存在的路径。
+    roots = [Path(app_support_root())]
+    for base in _platform.app_data_containers():
+        p = Path(base)
+        if p not in roots:
+            roots.append(p)
+    for base in roots:
+        for name in APP_NAMES:
+            out.append({"edition": name,
+                        "path": base / name / "User" / "globalStorage" / "storage.json",
+                        "source": "desktop"})
     # ~/.trae-cn/trae-jwt-token 与 ~/.trae/trae-jwt-token 是 RS256 JWT，
     # payload.data 只有 id/tenant_id/type/user_id，既没有 access token 也没有
     # refresh token；直接拿整个 JWT 当 Bearer 打 get_detail_param 实测返回 0 个
@@ -202,6 +212,11 @@ def read_desktop_auth(candidate: dict) -> Optional[dict]:
                 break
     except Exception:
         app_version = ""
+    if not app_version:
+        # Windows: storage.json lives outside any .app bundle, so the loop above
+        # finds nothing; read the version from the real IDE install directory.
+        app_version = _ide_app_version(candidate["edition"], candidate["path"])
+
     build_version = storage.get("iCubeLastVersion") or ""
     return {
         "edition": candidate["edition"],
@@ -231,6 +246,38 @@ def _parse_time(v) -> float:
         except Exception:
             return 0.0
     return 0.0
+
+
+def _ide_app_version(edition: str, storage_path: Path) -> str:
+    r"""从 IDE 安装目录读 appVersion（resources/app/product.json）。
+
+    Windows 的 Trae 装在 <盘>:\Programs\<edition>\ 或
+    %LOCALAPPDATA%\Programs\<edition>\ 下；macOS 则把 storage.json 放进 .app 内部。
+    """
+    roots = []
+    try:
+        roots.append(storage_path.parents[3])
+    except IndexError:
+        pass
+    for env_key in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+        base = os.environ.get(env_key)
+        if base:
+            roots.append(Path(base) / "Programs" / edition)
+            roots.append(Path(base) / edition)
+    for code in range(ord("A"), ord("Z") + 1):
+        letter = chr(code)
+        if not os.path.isdir(letter + ":\\"):
+            continue
+        roots.append(Path(letter + ":\\Programs\\" + edition))
+        roots.append(Path(letter + ":\\Program Files\\" + edition))
+    for root in roots:
+        try:
+            product = root / "resources" / "app" / "product.json"
+            if product.is_file():
+                return (json.loads(product.read_text(encoding="utf-8")) or {}).get("appVersion") or ""
+        except Exception:
+            continue
+    return ""
 
 
 def load_store() -> dict:
