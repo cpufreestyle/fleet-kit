@@ -48,11 +48,25 @@ BRIDGE_KEY = os.environ.get("CODELY2CODEX_KEY") or ""
 POLL_INTERVAL = float(os.environ.get("CODELY_DEVICE_POLL_INTERVAL") or "4")
 DEVICE_TIMEOUT = float(os.environ.get("CODELY_DEVICE_TIMEOUT") or "900")
 
-# 官方 CLI 未登录时 `--cmd "/model list"` 实测到的 8 个模型（`/health` 与无凭据降级用）
+# 官方 CLI 未登录时 `--cmd "/model list"` 实测到的 8 个模型（`/health` 用）
 FALLBACK_MODELS = [
     "codely-core", "codely-flash", "codely-air", "codely-basic", "codely-vl",
     "DeepSeek-V4.1-Flash", "GLM-5.3-FLASH", "KIMI-K3",
 ]
+# 上游给团队虚拟密钥放行的是 alias-only 模型（/v1/models 实测 is_alias:true）：
+# 直接请求 DeepSeek-V4.1-Flash / GLM-5.3-FLASH / KIMI-K3 会被网关拒
+# "team not allowed to access model. This team can only access models=
+# ['alias-only-proxy-models']"。所以无凭据降级的目录只列这 5 个，避免选择器出现
+# 必然 401 的死行。
+ALIAS_MODELS = ["codely-core", "codely-flash", "codely-air", "codely-basic", "codely-vl"]
+# 上游 alias → display_name 的反查（实测：basic/flash/air=DeepSeek-V4.1-Flash，
+# core=GLM-5.3）。旧目录里的裸模型名按 display_name 归一到可访问的 alias。
+DISPLAY_TO_ALIAS = {
+    "deepseek-v4.1-flash": "codely-flash",
+    "glm-5.3": "codely-core",
+    "glm-5.3-flash": "codely-flash",
+    "kimi-k3": "codely-core",
+}
 CATALOG_PREFIX = "codely/"
 
 # 官方 CLI 逆向出的 LiteLLM 网关签名参数（HMAC-SHA256 双层派生）：
@@ -156,14 +170,29 @@ def check_bridge_auth(request: Request) -> None:
 
 
 def remap_model(model: Optional[str]) -> Optional[str]:
-    """把 Codex 侧带 `codely/` 前缀的模型名还原成 Tuanjie 网关原生模型名。"""
+    """把 Codex 侧模型名归一到 Tuanjie 网关可访问的 alias-only 模型。
+
+    团队虚拟密钥只能访问 alias（codely-core/flash/air/basic/vl），直连
+    DeepSeek-V4.1-Flash / GLM-5.3-FLASH / KIMI-K3 会被网关拒
+    "team not allowed to access model. This team can only access
+    models=['alias-only-proxy-models']"。这里把各种来源的命名归一到可访问
+    alias；无法归一的返回 None，由调用方回 400（带可访问清单），而不是把
+    不可访问的名字透传给网关触发上面的报错。
+    """
     if not model:
         return model
-    if model.startswith(CATALOG_PREFIX):
-        return model[len(CATALOG_PREFIX):]
-    if model.startswith("codely-codely"):
-        return model[len("codely-"):]
-    return model
+    m = model
+    if m.startswith(CATALOG_PREFIX):           # Codex 选择器前缀 codely/
+        m = m[len(CATALOG_PREFIX):]
+    if m.startswith("codely-codely"):          # 目录二次加前缀的残留
+        m = m[len("codely-"):]
+    if m in ALIAS_MODELS:
+        return m
+    probe = m[len("codely-"):] if m.startswith("codely-") else m
+    key = probe.lower().replace("_", "-")
+    if key in DISPLAY_TO_ALIAS:                # 旧目录/裸名按 display_name 归一
+        return DISPLAY_TO_ALIAS[key]
+    return None
 
 
 # ---------------- 官方链路：设备码登录 / 刷新 / 虚拟密钥 ----------------
@@ -303,7 +332,7 @@ async def health():
         "has_cli_api_key": bool(creds.get("cli_api_key")),
         "user_id": creds.get("user_id"),
         "gateway": GATEWAY_BASE,
-        "models": FALLBACK_MODELS,
+        "models": ALIAS_MODELS,
     }
 
 
@@ -346,7 +375,17 @@ async def list_models(request: Request):
             headers=gateway_headers(key, "/v1/models"),
         )
         if r.status_code == 200:
-            return Response(content=r.content, media_type="application/json")
+            try:
+                # 团队虚拟密钥只能访问 alias；过滤掉非 alias 模型，否则 ocx 同步
+                # 后目录里会出现 DeepSeek-V4.1-Flash / GLM-5.3-FLASH / KIMI-K3 这类
+                # 必然 401 的死行（"team not allowed to access model"）。
+                live = r.json()
+                data = live.get("data", [])
+                data = [m for m in data if m.get("is_alias") or m.get("id") in ALIAS_MODELS]
+                live["data"] = data
+                return JSONResponse(live)
+            except Exception:
+                return Response(content=r.content, media_type="application/json")
         detail = r.text[:200]
     except HTTPException as e:
         detail = e.detail
@@ -355,7 +394,7 @@ async def list_models(request: Request):
         "object": "list",
         "data": [
             {"id": f"{CATALOG_PREFIX}{m}", "object": "model", "created": 0, "owned_by": "tuanjie-ai"}
-            for m in FALLBACK_MODELS
+            for m in ALIAS_MODELS
         ],
     }
     return JSONResponse(data, headers={"X-Codely-Models-Fallback": detail if isinstance(detail, str) else "1"})
@@ -368,7 +407,14 @@ async def chat_completions(request: Request):
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="invalid json body")
-    body["model"] = remap_model(body.get("model"))
+    mapped = remap_model(body.get("model"))
+    if mapped is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"model '{body.get('model')}' is not accessible on this Codely team; "
+                    f"allowed alias-only models: {', '.join(ALIAS_MODELS)}"),
+        )
+    body["model"] = mapped
     stream = bool(body.get("stream"))
 
     key = await get_gateway_key()

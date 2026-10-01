@@ -143,11 +143,20 @@ def parse_trae_auth_value(value: str) -> dict:
 # ---------------- 凭据与身份 ----------------
 
 def storage_candidates() -> list[dict]:
+    # macOS  : ~/Library/Application Support/<edition>/User/globalStorage/storage.json
+    # Windows: %APPDATA%\<edition>\User\globalStorage\storage.json
+    # Some installs nest the IDE folder under a vendor folder
+    # (.../Trae/Trae CN), so both roots are probed.
     out = []
-    base = Path(_platform.first_existing(
-        _platform.app_support_dirs("Trae")) or (_platform.home() + "/Library/Application Support"))
-    for name in APP_NAMES:
-        out.append({"edition": name, "path": base / name / "User" / "globalStorage" / "storage.json", "source": "desktop"})
+    seen = []
+    for cand in list(_platform.app_support_dirs()) + list(_platform.app_support_dirs("Trae")):
+        norm = str(Path(cand))
+        if cand and norm not in seen:
+            seen.append(norm)
+    bases = [Path(s) for s in seen] or [Path(_platform.home() + "/Library/Application Support")]
+    for base in bases:
+        for name in APP_NAMES:
+            out.append({"edition": name, "path": base / name / "User" / "globalStorage" / "storage.json", "source": "desktop"})
     out.append({"edition": "cli-cn", "path": Path.home() / ".trae-cn" / "trae-jwt-token", "source": "cli"})
     out.append({"edition": "cli", "path": Path.home() / ".trae" / "trae-jwt-token", "source": "cli"})
     return [c for c in out if c["path"].exists()]

@@ -289,7 +289,20 @@ class AccountPool:
                 preferred = 0 if ref == primary else 1 if ref == active else 2
                 return preferred, float(state.get("last_used") or 0), ref
 
-            return [AccountCandidate(ref, self._managers[ref]) for ref in sorted(healthy, key=rank)]
+            if healthy:
+                return [AccountCandidate(ref, self._managers[ref]) for ref in sorted(healthy, key=rank)]
+
+            # 全部冷却时不要直接判池不可用：单账号池被一次 429（60s）或 5xx（30s）
+            # 打进冷却后，整个舰队会在冷却期内对每条请求回
+            # "all WorkBuddy accounts are cooling down"，真实上游原因被吞掉。
+            # 退化成按剩余冷却升序再试一次：冷却已过就直接成功，未过则由上游
+            # 返回真实 429/402，Codex 侧拿到的是可判断的错误而不是假性 503。
+            def cooldown_rank(ref: str) -> tuple:
+                state = self._state["accounts"].get(ref, {})
+                return float(state.get("cooldown_until") or 0), int(state.get("failures") or 0), ref
+
+            return [AccountCandidate(ref, self._managers[ref])
+                    for ref in sorted(self._managers, key=cooldown_rank)]
 
     def mark_success(self, ref: str) -> None:
         with self._lock:

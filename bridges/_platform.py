@@ -83,7 +83,9 @@ def app_support_dirs(*parts):
     """
     out = []
     h = home()
-    rel = os.path.join(*parts)
+    # parts may be empty: callers that only want the platform root
+    # (".../Application Support", "%APPDATA%") pass nothing.
+    rel = os.path.join(*parts) if parts else ""
     if os_name() == "macos":
         out.append(os.path.join(h, "Library", "Application Support", rel))
     elif os_name() == "windows":
