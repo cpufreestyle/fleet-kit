@@ -52,6 +52,48 @@ Codex 里模型以 `桥名/模型` 出现，例如 `workbuddy/hy4-preview`。
     bash "<R>/bridges/finish.sh" <name>         # 某座桥登录后收尾
     bash "<R>/uninstall.sh"                     # 卸载
 
+Windows 上桥不归 launchd 管，`install.sh` 不会自动拉起它们。桥全掉线时，opencodex
+（127.0.0.1:10100）仍然把 13 座桥当作 provider，于是每个 fleet 模型都报：
+
+    unexpected status 502 Bad Gateway: Provider unreachable: Unable to connect.
+    Is the computer able to access the url?, url: http://127.0.0.1:10100/v1/responses
+
+用 `tools/fleet-bridges.ps1` 启停（读 `fleet.env`，缺 key 的桥自动跳过）：
+
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" status
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" start
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" restart -Only trae
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" stop
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" install-task   # 登录时自动拉起
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" remove-task
+
+`install-task` 先试 `schtasks`；非管理员失败时回落到当前用户的「启动」目录快捷方式，
+所以未提权也能做到开机自启。
+
+上面的命令默认用 **PowerShell 7**（`pwsh`）；机器上没有 PS7 时自动回落到
+Windows PowerShell 5.1，命令本身不用改。
+
+## 默认模型与自动回退
+
+舰队上游十几个，任何一个当天挂掉（登录过期、额度、VPN、上游故障）都会让选中它的
+每一轮失败。`tools/default_model_guard.py` 把 `stepfun/step-5-preview` 作为锚点：
+
+- `~/.codex/config.toml` 的 `model` 始终钉在锚点上（新会话从这里开始）；
+- 若钉住的模型**不是**锚点，就用一次最小请求（16 token）探它，失败即改写回锚点；
+- 钉住的就是锚点时不发任何请求，常态零开销。
+
+锚点由 `runtime/fleet.env` 的 `FLEET_DEFAULT_MODEL` 指定（默认 `stepfun/step-5-preview`），
+`opencodex/setup-providers.sh` 每次 sync 后也会按它重新 pin。
+
+    python3 "<R>/tools/default_model_guard.py" --once              # 单次检查
+    python3 "<R>/tools/default_model_guard.py" --daemon --interval 120
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" install   # 登录自启守护
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" status
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" remove
+
+日志：`<R>/logs/default-model-guard.log`。守护只改 `config.toml` 的 `model` 键，
+已经在跑的会话不受影响（Codex 读它是在启动时）。
+
 ## 两座 WorkBuddy 桥
 
 FleetKit 里有两座 WorkBuddy 桥，分别打国内版和海外版，端口固定：

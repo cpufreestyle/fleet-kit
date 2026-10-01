@@ -220,15 +220,25 @@ _fleet_user_sid() {
   esac
 }
 
-# powershell.exe backs the windows service backend: Git Bash has no setsid, so
-# long-running services are hosted by a detached hidden PowerShell supervisor
+# PowerShell backs the windows service backend: Git Bash has no setsid, so
+# long-running services are hosted by a detached hidden PowerShell supervisor.
+# PowerShell 7 (pwsh) is preferred; 5.1 stays as the fallback for hosts that do
+# not have PS7, and FLEET_POWERSHELL overrides both.
 _fleet_win_powershell() {
+  local p=""
+  if [ -n "${FLEET_POWERSHELL:-}" ] && [ -x "${FLEET_POWERSHELL}" ]; then
+    printf '%s' "${FLEET_POWERSHELL}"; return 0
+  fi
+  for p in pwsh pwsh.exe; do
+    p="$(command -v "$p" 2>/dev/null || true)"
+    if [ -n "$p" ] && [ -x "$p" ]; then printf '%s' "$p"; return 0; fi
+  done
   local cand=""
   if [ -n "${SYSTEMROOT:-}" ]; then
     cand="$(cygpath -u "$SYSTEMROOT" 2>/dev/null || echo '')/System32/WindowsPowerShell/v1.0/powershell.exe"
   fi
   if [ -n "$cand" ] && [ -x "$cand" ]; then printf '%s' "$cand"; return 0; fi
-  command -v powershell.exe 2>/dev/null || command -v pwsh.exe 2>/dev/null || printf ''
+  command -v powershell.exe 2>/dev/null || printf ''
 }
 
 # detach $2 so it outlives the shell that spawned it ($1 = powershell.exe).

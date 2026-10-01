@@ -40,6 +40,23 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def powershell_exe() -> list[str]:
+    """PowerShell invocation for this process: PS7 first, 5.1 as the fallback.
+
+    A bare "powershell" resolves to Windows PowerShell 5.1; FleetKit targets
+    PowerShell 7 (pwsh) and keeps the legacy binary only for hosts without PS7.
+    FLEET_POWERSHELL overrides both when it names an existing file.
+    """
+    override = os.environ.get("FLEET_POWERSHELL")
+    if override and Path(override).exists():
+        return [override]
+    for name in ("pwsh", "pwsh.exe"):
+        found = shutil.which(name)
+        if found:
+            return [found]
+    return ["powershell"]
+
+
 def load_config() -> dict:
     if not CONFIG_PATH.is_file():
         # npm-installed scenario: the package dir itself is the bridge.
@@ -108,7 +125,7 @@ def ensure_in_user_path(bin_dir: Path) -> None:
         )
         try:
             subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
+                [*powershell_exe(), "-NoProfile", "-Command", ps],
                 capture_output=True, timeout=30,
             )
         except Exception:
@@ -138,7 +155,7 @@ def remove_from_user_path(bin_dir: Path) -> None:
         )
         try:
             subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
+                [*powershell_exe(), "-NoProfile", "-Command", ps],
                 capture_output=True, timeout=30,
             )
         except Exception:
@@ -239,7 +256,7 @@ def process_commandline(pid: int) -> str:
     try:
         if is_windows():
             out = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
+                [*powershell_exe(), "-NoProfile", "-Command",
                  f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
                 capture_output=True, text=True, timeout=15,
             ).stdout.strip()
