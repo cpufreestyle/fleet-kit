@@ -249,6 +249,65 @@ CC Switch.app，10-01 实测推翻了这个判断，见下文。
 `tools/pin_shim_base_url.py`（改 `~/.codex/config.toml`）降级为默认关闭的兜底，
 `IMAGE_CAP_REPIN_INTERVAL=0`。实测它赢不了，见上文「为什么在下面，不在前面」。
 
+### 并发闸门：429 熔断 503（2026-10-01）
+
+#### 根因
+
+症状是间歇性 `503 Service Unavailable: 所有供应商已熔断，无可用渠道`
+（CC Switch 15721 回答，Codex 侧原样透传）。在 `~/.cc-switch/cc-switch.db` 的
+`proxy_request_logs` 里，失败全是上游 429：
+
+    20:19:15  codex  step-3.5-flash  429  {"error":{"message":"concurrency reached, current: 11, limit: 10","type":"rate_limited"}}
+    20:19:15  codex  step-3.5-flash  429  concurrency reached, current: 12（同一秒连报 5 条）
+
+链条：StepFun Plan API 单账号并发上限 10，CC Switch 把上游错误计为 provider
+失败，`proxy_config`(codex) `circuit_failure_threshold = 4`，4 次打开熔断，
+之后所有请求 503「所有供应商已熔断」，与本次请求是否超并发毫无关系。
+
+为什么会挤爆：StepFun 和 nv spark 两个 codex provider 都指向这个 shim（同一
+上游账号），且 CC Switch 会把外来的模型名改写成当前 provider 的模型（当天
+740 条 `workbuddy/hy4-preview` 实际都由 step-5-preview 作答），所有 Codex
+流量最终都算这 10 个并发槽，从网关侧探活还测不到真实模型。shim 是全 fleet
+唯一看得见这个账号总需求的位置，所以闸门做在这里。
+
+#### 方案
+
+`tools/stepfun_image_shim.py` 加一层计数并发闸门：
+
+| env | 默认 | 含义 |
+|-----|------|------|
+| `IMAGE_CAP_MAX_INFLIGHT` | 8 | 同时向上游转发的请求数，压在实测上限 10 以下 |
+| `IMAGE_CAP_QUEUE_TIMEOUT` | 75 | 排队等槽位的最长秒数，压在 CC Switch 90s 首字节超时以下；超时本地回 429 `local_queue_full`，不挂死在网关层 |
+| `IMAGE_CAP_429_RETRIES` | 3 | 上游 429 退避重试次数（`min(0.5*2^n, 8)*(0.5+rand)` 秒） |
+
+槽位从建连占到流式响应结束，StepFun 按答完计并发，不按开始。队列满、
+重试耗尽都在本地应答，不把失败透传给 CC Switch 的熔断器。
+
+#### 观测
+
+    curl -s http://127.0.0.1:15722/__image_cap/health
+
+`concurrency` 块回当前三个参数；`stats` 多出 `inflight_now / queued /
+`retried_429 / queue_timeouts / upstream_429`。`retried_429` 上涨说明闸门正在
+吸收突发；`queue_timeouts` 上涨说明 8 个槽不够，调
+`IMAGE_CAP_MAX_INFLIGHT`（代价是延迟）。shim 日志同步打
+`[concurrency] upstream 429, retry k/n in x.x s` 和
+`[concurrency] queue full after 75s, refusing locally`。
+
+#### 部署
+
+kit 改完要同步运行根再重启，launchd 跑的是 runtime 副本（10-01 漏过一次，
+症状是 health 没有 `concurrency` 块、闸门静默不上线）：
+
+    cp tools/stepfun_image_shim.py "<R>/tools/"
+    cp tools/test_stepfun_concurrency_gate.py "<R>/tools/"
+    launchctl kickstart -k gui/501/com.local.stepfun-image-cap
+    sleep 3; curl -s http://127.0.0.1:15722/__image_cap/health
+
+判据：health 出现 `"concurrency":{"max_inflight":8,...}`，日志横幅打印
+`gate 8 in flight, 75s queue, 3 x429 retries`。plist 不写这三个 env 时按默认值生效。
+
+
 ### 回滚
 
 ```bash

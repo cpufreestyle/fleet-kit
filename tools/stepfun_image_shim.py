@@ -54,6 +54,17 @@ and the launchd service definition stay argument-free and identical:
     IMAGE_CAP_PIN_CONFIG      Codex config to keep pinned
                         (default ~/.codex/config.toml)
 
+Concurrency governor (added 2026-10-01 after a week of intermittent 503s):
+
+    IMAGE_CAP_MAX_INFLIGHT    requests forwarded upstream at once
+                        (default 8, under the Plan API's measured limit
+                         of 10 concurrent requests on this account)
+    IMAGE_CAP_QUEUE_TIMEOUT   seconds a request may wait for a slot
+                        (default 75, under CC Switch's 90s first-byte
+                         timeout; on expiry the shim answers 429 itself)
+    IMAGE_CAP_429_RETRIES     retries with backoff on an upstream 429
+                        (default 3)
+
 Failure policy: an unparseable body, an unknown path, an unreachable upstream
 or a cap that would leave nothing behind all mean "forward what came in". The
 shim sits in front of a working chain and must never be the thing that breaks
@@ -79,8 +90,10 @@ the hop worked).
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
+import random
 import threading
 import time
 import sys
@@ -172,8 +185,11 @@ class Config:
                  models: str, connect_timeout: float = 15.0, cc_db: str = "",
                  cc_provider: str = DEFAULT_CC_PROVIDER,
                  cc_app_type: str = DEFAULT_CC_APP_TYPE,
-                 cc_pin_interval: float | None = None,
-                 cc_pin_all: bool | None = None):
+                cc_pin_interval: float | None = None,
+                cc_pin_all: bool | None = None,
+                max_inflight: int | None = None,
+                queue_timeout: float | None = None,
+                retry_429: int | None = None):
         self.host = host
         self.port = port
         self.upstream = upstream.rstrip("/")
@@ -203,6 +219,25 @@ class Config:
                            .strip().lower() not in ("0", "false", "no", "off")
                            if cc_pin_all is None else bool(cc_pin_all))
         self.connect_timeout = connect_timeout
+        # Counted-concurrency governor. The Plan API answers the request
+        # that exceeds its limit with 429 "concurrency reached" -- measured
+        # 2026-10-01: current 11, limit 10 -- and CC Switch counts an
+        # upstream error, four of them open the codex circuit, and the open
+        # circuit answers every later request with 503 "所有供应商已熔断".
+        # Every StepFun hop on this machine forwards through here (both the
+        # StepFun row and nv spark), so the shim is the one place that sees
+        # the account's whole demand; the defaults sit under the limit so
+        # the fleet's own burst can never be the request that 429s.
+        self.max_inflight = int(
+            os.environ.get("IMAGE_CAP_MAX_INFLIGHT", "8")
+            if max_inflight is None else max_inflight)
+        self.queue_timeout = float(
+            os.environ.get("IMAGE_CAP_QUEUE_TIMEOUT", "75")
+            if queue_timeout is None else queue_timeout)
+        self.retry_429 = int(
+            os.environ.get("IMAGE_CAP_429_RETRIES", "3")
+            if retry_429 is None else retry_429)
+        self.gate = asyncio.Semaphore(self.max_inflight)
 
     @property
     def model_filters(self):
@@ -231,8 +266,21 @@ def parse_args(argv=None) -> Config:
                         default=int(os.environ.get(
                             "IMAGE_CAP_MAX", str(image_cap.DEFAULT_MAX_IMAGES))))
     parser.add_argument("--models", default=os.environ.get("IMAGE_CAP_MODELS", "step"))
+    parser.add_argument("--max-inflight", type=int, default=None,
+                        help="requests forwarded upstream at once"
+                             " (env IMAGE_CAP_MAX_INFLIGHT, default 8)")
+    parser.add_argument("--queue-timeout", type=float, default=None,
+                        help="seconds a request may wait for a slot"
+                             " (env IMAGE_CAP_QUEUE_TIMEOUT, default 75)")
+    parser.add_argument("--retry-429", type=int, default=None,
+                        help="retries with backoff on an upstream 429"
+                             " (env IMAGE_CAP_429_RETRIES, default 3)")
     args = parser.parse_args(argv)
-    return Config(args.host, args.port, args.upstream, args.max_images, args.models)
+    return Config(args.host, args.port, args.upstream, args.max_images,
+                  args.models,
+                  max_inflight=args.max_inflight,
+                  queue_timeout=args.queue_timeout,
+                  retry_429=args.retry_429)
 
 
 def health_payload(config, stats):
@@ -244,6 +292,9 @@ def health_payload(config, stats):
     """
     return {"ok": True, "upstream": config.upstream,
             "max_images": config.max_images, "models": config.models,
+            "concurrency": {"max_inflight": config.max_inflight,
+                            "queue_timeout": config.queue_timeout,
+                            "retry_429": config.retry_429},
             "cc_pin": dict(LAST_CC_PIN), "stats": stats.as_dict()}
 
 
@@ -256,6 +307,11 @@ class Stats:
         self.images_seen = 0
         self.images_kept = 0
         self.passthrough = 0
+        self.inflight_now = 0
+        self.queued = 0
+        self.retried_429 = 0
+        self.queue_timeouts = 0
+        self.upstream_429 = 0
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
@@ -417,14 +473,6 @@ def build_app(config: Config):
     def is_cap_path(path: str) -> bool:
         return any(path.endswith(suffix) for suffix in CAP_PATH_SUFFIXES)
 
-    async def pump(resp: httpx.Response):
-        try:
-            async for chunk in resp.aiter_bytes():
-                if chunk:
-                    yield chunk
-        finally:
-            await resp.aclose()
-
     @app.get(HEALTH_PATH)
     async def health():
         return health_payload(config, stats)
@@ -448,15 +496,72 @@ def build_app(config: Config):
         if request.url.query:
             url += "?" + request.url.query
 
+        # Take a slot before touching the upstream. The account's 10
+        # concurrent requests are shared by every Codex thread, subagent and
+        # probe on this machine, and the one that arrives eleventh used to be
+        # answered 429 by StepFun, counted as a failure by CC Switch, and
+        # eventually trip the circuit that 503s everything. Queueing here
+        # turns that burst into latency on one request instead of an outage
+        # on all of them; the timeout stays under CC Switch's 90s
+        # first-byte budget so a queued request never dies at that layer.
+        stats.queued += 1
         try:
-            upstream_request = client.build_request(
-                request.method, url, headers=headers, content=body)
-            resp = await client.send(upstream_request, stream=True)
-        except httpx.HTTPError as exc:
+            await asyncio.wait_for(config.gate.acquire(),
+                                   timeout=config.queue_timeout)
+        except asyncio.TimeoutError:
+            stats.queued -= 1
+            stats.queue_timeouts += 1
+            print("[concurrency] queue full after %.0fs, refusing locally"
+                  % config.queue_timeout, flush=True)
             return JSONResponse(
-                {"error": {"message": "upstream unreachable: %s" % str(exc)[:200],
-                            "type": "upstream_unreachable"}},
-                status_code=503)
+                {"error": {"message": "stepfun queue full after %.0fs; the"
+                            " account is at its concurrency limit"
+                            % config.queue_timeout,
+                            "type": "local_queue_full"}},
+                status_code=429)
+        stats.queued -= 1
+        stats.inflight_now += 1
+
+        def release():
+            config.gate.release()
+            stats.inflight_now -= 1
+
+        try:
+            resp = None
+            for attempt in range(config.retry_429 + 1):
+                # rebuilt per attempt: a sent stream request cannot be replayed
+                upstream_request = client.build_request(
+                    request.method, url, headers=headers, content=body)
+                try:
+                    resp = await client.send(upstream_request, stream=True)
+                except httpx.HTTPError as exc:
+                    release()
+                    return JSONResponse(
+                        {"error": {"message": "upstream unreachable: %s"
+                                   % str(exc)[:200],
+                                   "type": "upstream_unreachable"}},
+                        status_code=503)
+                if resp.status_code != 429:
+                    break
+                # A 429 means this request was still born over the limit --
+                # other clients share the key -- so hold it back and retry
+                # instead of forwarding a failure to CC Switch's circuit.
+                stats.retried_429 += 1
+                content = await resp.aread()
+                await resp.aclose()
+                if attempt >= config.retry_429:
+                    stats.upstream_429 += 1
+                    release()
+                    return Response(content=content, status_code=429,
+                                    media_type=resp.headers.get(
+                                        "content-type", "application/json"))
+                delay = min(0.5 * (2 ** attempt), 8.0) * (0.5 + random.random())
+                print("[concurrency] upstream 429, retry %d/%d in %.1fs"
+                      % (attempt + 1, config.retry_429, delay), flush=True)
+                await asyncio.sleep(delay)
+        except BaseException:
+            release()
+            raise
 
         if note:
             print("[image-cap] %s" % note, flush=True)
@@ -464,12 +569,25 @@ def build_app(config: Config):
         if resp.status_code != 200:
             content = await resp.aread()
             await resp.aclose()
+            release()
             return Response(content=content, status_code=resp.status_code,
                             media_type=resp.headers.get("content-type", "application/json"))
 
         relayed = {name: value for name, value in resp.headers.items()
                    if name.lower() not in PASSTHROUGH_RESPONSE_HEADERS}
-        return StreamingResponse(pump(resp), status_code=resp.status_code,
+
+        async def pump_gated(resp: httpx.Response):
+            # The slot is held for the whole stream: StepFun counts the
+            # request until the answer finishes, not until it starts.
+            try:
+                async for chunk in resp.aiter_bytes():
+                    if chunk:
+                        yield chunk
+            finally:
+                await resp.aclose()
+                release()
+
+        return StreamingResponse(pump_gated(resp), status_code=resp.status_code,
                                  headers=relayed)
 
     return app
@@ -486,7 +604,9 @@ def main(argv=None) -> None:
     banner = ("[stepfun-image-cap] :%d -> %s (max %d images, models: %s)"
               % (config.port, config.upstream, config.max_images,
                  config.models or "*"))
-    print(banner, flush=True)
+    print("%s; gate %d in flight, %.0fs queue, %d x429 retries"
+          % (banner, config.max_inflight, config.queue_timeout,
+             config.retry_429), flush=True)
     uvicorn.run(app, host=config.host, port=config.port, log_level="info",
                 access_log=False)
 

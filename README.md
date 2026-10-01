@@ -757,6 +757,18 @@ StepFun，在 CC Switch UI 里选中它就直接绕过 shim，71 图照样 400�
 实测：100 图经 launchd 全链路，`stepfun/step-5-preview` 上游只收 32，
 `workbuddy/hy4-preview` 原样透传 100。详见 docs/stepfun2codex-runbook.md。
 
+**并发闸门（10-01）**：间歇 `503 所有供应商已熔断` 的根因不在图片截断而在并发——
+StepFun Plan 单账号并发上限 10，突发把第 11 个请求打成 429，CC Switch 计 4 次
+失败即打开 codex 熔断（`circuit_failure_threshold=4`），之后所有请求 503，与是否
+超并发无关。shim 内的计数闸门把同时上游请求压到 8，遇 429 退避重试 3 次，排队
+最长 75s（压在 CC Switch 90s 首字节超时以下，超时本地回 429 不挂死）：
+`IMAGE_CAP_MAX_INFLIGHT=8`、`IMAGE_CAP_QUEUE_TIMEOUT=75`、
+`IMAGE_CAP_429_RETRIES=3`。观测看 `curl -s http://127.0.0.1:15722/__image_cap/health`
+的 `concurrency` 块和 `stats.retried_429`。**kit 改完必须同步 runtime 副本再
+`launchctl kickstart -k gui/501/com.local.stepfun-image-cap`**——launchd 跑的是
+runtime 那份，health 里没有 `concurrency` 块就说明闸门没上线。详见
+docs/stepfun2codex-runbook.md。
+
 ## 卸载
 
     bash "<PRJ>/runtime/uninstall.sh"            # 停服务并删 plist
