@@ -142,6 +142,9 @@ cc-switch provider 表里没有 MiniMax。`/Applications/MiniMax Agent.app`
       /v1/chat/completions   401 authorized_error（路由在）
       /v1/usage /v1/usages /v1/credits /v1/quota /v1/account   全部 404
 
+控制台也一样没有：platform.minimaxi.com 上同样九个路径全返回它自己的 404 页，
+www.minimaxi.com/api/* 的 200 是 SPA 兜底页（返回 HTML，不是 JSON），不是接口。
+
 所以 MiniMax 这一行永远只能是「key 活着吗」，问不出剩多少。给了 key 之后
 `plan_credits.py minimax` 会依次打 CN、海外两个 host 再判 401——因为
 MiniMax 的 key 按区域签发，海外 key 在 CN host 上就是 401，旧代码会直接把
