@@ -45,7 +45,7 @@
 | Claude Code 的模型名 | 落到 |
 | --- | --- |
 | claude-opus-5 / claude-opus-4-8 | workbuddy-gpt/hy4-preview |
-| claude-sonnet-5 / claude-sonnet-4-5 / claude-3-5-sonnet-latest | trae/trae-seed-code-pro-0430（**上游故障，见故障排查**） |
+| claude-sonnet-5 / claude-sonnet-4-5 / claude-3-5-sonnet-latest | trae/seed-code-pro-0430（200k 上下文的代码专用池） |
 | claude-haiku-4-5 / claude-3-5-haiku-latest | workbuddy/glm-5.2 |
 | claude-fable-5 | workbuddy-gpt/gpt-5.6-luna |
 | 其它 claude-* 名字 | HARBOR = stepfun/step-5-preview（picker 不能答不如给默认） |

@@ -18,6 +18,7 @@ What is checked here, and why each one earned a test:
 No test here touches the network: the upstream is a fake response object
 behind a fake opener, so the whole HTTP path runs in-process.
 """
+import importlib.util
 import json
 import os
 import threading
@@ -318,9 +319,9 @@ def test_upstream_refusal_marker_is_an_error_even_at_200(body, expected):
 # ----------------------------------------------------------------------- routing
 def test_resolve_prefers_the_exact_catalog_slug(monkeypatch, fleet_catalog):
     monkeypatch.setattr(gw, "route_alive", lambda route, timeout=1.0: True)
-    _write_catalog(fleet_catalog, _FALLBACK_SLUGS + ("trae/trae-seed-code-pro-0430",))
-    slug, note = gw.resolve("trae/trae-seed-code-pro-0430")
-    assert slug == "trae/trae-seed-code-pro-0430"
+    _write_catalog(fleet_catalog, _FALLBACK_SLUGS + ("trae/kimi-k2.7-code",))
+    slug, note = gw.resolve("trae/kimi-k2.7-code")
+    assert slug == "trae/kimi-k2.7-code"
     assert note == "catalog slug"
 
 
@@ -343,6 +344,54 @@ def test_resolve_alias_falls_back_when_its_target_is_down(monkeypatch, fleet_cat
     slug, note = gw.resolve("claude-opus-5")
     assert slug and slug != target
     assert "fell back" in note
+
+
+def _load_catalog_sort():
+    spec = importlib.util.spec_from_file_location(
+        "catalog_sort", os.path.join(KIT, "catalog_sort.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_alias_targets_never_double_the_bridge_prefix():
+    """An alias may not name a slug with the provider prefix pasted on twice.
+
+    Measured 2026-10-02: every claude-sonnet slot pointed at
+    trae/trae-seed-code-pro-0430 while the trae bridge lists
+    trae/seed-code-pro-0430, and remap_model only ever strips the one
+    prefix -- so each sonnet call reached upstream as a model that does
+    not exist and came back 502 "the param is invalid". route_alive cannot
+    catch this class: the port answers, the slug is not there. No bridge
+    in the fleet exposes a doubled spelling (every live /v1/models read
+    on 2026-10-02), so doubled means drift.
+    """
+    doubled = []
+    for slot, target in gw.CLAUDE_ALIASES.items():
+        provider, sep, name = target.partition("/")
+        if sep and name.startswith(provider + "-"):
+            doubled.append((slot, target))
+    assert doubled == [], "alias doubles the prefix: %r" % (doubled,)
+
+
+def test_alias_targets_are_models_catalog_sort_ranks_important():
+    """Each alias slot may only name a model the sorter already ranks.
+
+    PER_PROVIDER_IMPORTANT is written from each bridge's live /v1/models,
+    so an alias whose target is absent from it names a model nobody has
+    measured -- the same 502 the doubled prefix caused: the port answers
+    and the slug does not exist. Membership is exact, not the substring
+    match important_rank() uses, because the drifted
+    trae-seed-code-pro-0430 contains seed-code-pro-0430 as a substring.
+    """
+    catalog_sort = _load_catalog_sort()
+    missing = []
+    for slot, target in gw.CLAUDE_ALIASES.items():
+        provider, _sep, name = target.partition("/")
+        known = catalog_sort.PER_PROVIDER_IMPORTANT.get(provider, ())
+        if name not in known:
+            missing.append((slot, target))
+    assert missing == [], "alias target not ranked important: %r" % (missing,)
 
 
 def test_resolve_unknown_claude_slot_lands_on_the_harbor(monkeypatch, fleet_catalog):
