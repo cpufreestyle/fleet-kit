@@ -769,6 +769,17 @@ StepFun Plan 单账号并发上限 10，突发把第 11 个请求打成 429，CC
 runtime 那份，health 里没有 `concurrency` 块就说明闸门没上线。详见
 docs/stepfun2codex-runbook.md。
 
+**卡死自愈（10-02）**：shim 偶发「进程活着、launchd `state = running`、事件循环
+不应答」——请求全挂死但进程不退出，`KeepAlive` 只 relaunch 退出的进程，看不见这种
+故障。现在两层看门狗：进程内 daemon 线程用裸 socket（不经过被监视的那个循环）探
+`/__image_cap/health`，连续 `IMAGE_CAP_WATCHDOG_STRIKES`（默认 2）次失败就
+`os.execv` 原地自重启，pid 不变；外部 launchd timer 每 30s 探活一次，连续失败后
+`kickstart -k` 强杀重启——整进程 wedge 和端口被第二实例占用这两种内部线程看不见
+的，只有它救得回。探活慢才指控（curl 超时 8s + 连续 2 次），strike 超 600s 作废，
+探活一成功立刻清零，所以慢请求不会被误杀。`install-timer` 同时装 service 和
+timer；`status` 报 watchdog 安装态和当前 strikes，health 的 `watchdog` 块看
+`restarts` 涨没涨。详见 docs/stepfun2codex-runbook.md。
+
 ## 卸载
 
     bash "<PRJ>/runtime/uninstall.sh"            # 停服务并删 plist

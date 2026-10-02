@@ -171,10 +171,12 @@ shim health：`requests:19, rewritten:5, images_seen:355, images_kept:36, passth
 ### 部署
 
 ```bash
-tools/stepfun_image_shim.sh <run|start|stop|status|install-timer|uninstall-timer> [--home DIR]
+tools/stepfun_image_shim.sh <run|start|stop|status|install-timer|uninstall-timer|watchdog|install-watchdog|uninstall-watchdog> [--home DIR]
 ```
 
 `install.sh` 和 `opencodex/setup-providers.sh` 都已自动接线；两个入口都有 `--dry-run`
+
+`install-timer` 同时装 service 和看门狗 timer（见「事件循环卡死」一节）；`watchdog` 是 timer 每隔 30 秒跑一次的「探活 -> 计数 -> 重启」循环，可单动。
 分支，只打印计划、一个字节都不写。
 
 | 变量 | 作用 | 默认 |
@@ -189,10 +191,11 @@ tools/stepfun_image_shim.sh <run|start|stop|status|install-timer|uninstall-timer
 | `IMAGE_CAP_MODELS` | 生效模型子串，逗号分隔 | `step` |
 | `IMAGE_CAP_REPIN_INTERVAL` | 兜底：config.toml 定时重 pin 间隔（秒），默认关 | 0 |
 | `IMAGE_CAP_PIN_CONFIG` | 兜底重 pin 的 Codex 配置文件 | `~/.codex/config.toml` |
+| `IMAGE_CAP_WATCHDOG*` | 看门狗开关与参数（六个） | 默认全开，见下节 |
 | `FLEET_PYTHON` | shim 用的 python | 取 `runtime/.venv/bin/python` |
 
-日志：`/tmp/fleet-logs/com.local.stepfun-image-cap.log`。
-`uninstall.sh` 的 `SUFFIXES` 已含 `stepfun-image-cap`，卸载不会在 launchd 里留孤儿作业。
+日志：service `/tmp/fleet-logs/com.local.stepfun-image-cap.log`，看门狗 timer `com.local.stepfun-image-cap-watchdog.log`（同目录）。
+`uninstall.sh` 的 `SUFFIXES` 已含 `stepfun-image-cap` 和 `stepfun-image-cap-watchdog`，卸载不会在 launchd 里留孤儿作业。
 
 ### 必须重指 CC Switch 的路由表
 
@@ -307,6 +310,63 @@ kit 改完要同步运行根再重启，launchd 跑的是 runtime 副本（10-01
 判据：health 出现 `"concurrency":{"max_inflight":8,...}`，日志横幅打印
 `gate 8 in flight, 75s queue, 3 x429 retries`。plist 不写这三个 env 时按默认值生效。
 
+
+### 事件循环卡死：两层看门狗（2026-10-02）
+
+#### 根因
+
+shim 偶发「进程活着、launchd `state = running`、事件循环不应答」：请求全部挂死，
+curl 探活超时，但进程没有退出。launchd 的 `KeepAlive` 只 relaunch **退出**的进程，
+卡死的循环永远不退出，所以 `KeepAlive` 看不见这种故障——这是 10-02 之前没有任何
+自动恢复手段的原因。
+
+#### 方案
+
+两个看门狗，一边一个，都不动别的服务：
+
+1. **进程内（快，只看得见自己）**：daemon 线程用**裸 socket**（绝不经过它监视的
+   那个事件循环）每隔 `IMAGE_CAP_WATCHDOG_INTERVAL` 秒 `GET /__image_cap/health`，
+   连续 `IMAGE_CAP_WATCHDOG_STRIKES` 次失败后 `os.execv` **原地自重启**——pid 不变，
+   pidfile 和 launchd 都无感。
+2. **脚本侧（慢，但是整进程故障的唯一解）**：launchd timer 每 30 秒跑一次
+   `stepfun_image_shim.sh watchdog`，curl 探活（必须 `--noproxy '*'`，本机 proxy 会
+   把 loopback 流量吞了，见下文「代理环境变量吃 loopback」），连续失败后
+   `fleet_service_restart`（`kickstart -k` 强杀，SIGTERM 杀不掉的卡死循环也杀得掉）；
+   pidfile 实例占着端口时先 `stop` 再重启，每一步之后都等健康探针——两个实例永远
+   抢不到同一个端口。「整进程 wedge」和「端口被第二实例占用」这两种内部线程看不见
+   的故障，只有它救得回来。
+
+探活故意**慢才指控**：curl 超时 8 秒 + 连续 2 次失败才动作。一次 70 张图的重写会把
+循环堵几秒，那不叫卡死。strike 记在
+`/tmp/fleet-logs/com.local.stepfun-image-cap-watchdog.strikes`（`<epoch> <count>`），
+超过 600 秒的 strike 作废（机器休眠后第一探不该重启一个本来没病的 shim）；探活一
+成功立刻写 `0 0`。
+
+| 变量 | 作用 | 默认 |
+|------|------|------|
+| `IMAGE_CAP_WATCHDOG` | 总开关，`0` 两个看门狗都不跑 | 1 |
+| `IMAGE_CAP_WATCHDOG_INTERVAL` | 进程内探活间隔（秒） | 30 |
+| `IMAGE_CAP_WATCHDOG_TIMEOUT` | 进程内裸 socket 探活超时（秒），比 curl 宽松 | 15 |
+| `IMAGE_CAP_WATCHDOG_STRIKES` | 连续失败多少次才重启 | 2 |
+| `IMAGE_CAP_WATCHDOG_TTL` | 超过这个秒数的 strike 作废（脚本侧） | 600 |
+| `IMAGE_CAP_WATCHDOG_PROBE_TIMEOUT` | 脚本侧 curl 超时（秒） | 8 |
+
+plist 的 `EnvironmentVariables` 和 `run/start` 的 export 列表带同一组 `IMAGE_CAP_WATCHDOG*`，
+所以 launchd 服务和手动前台跑的行为一致。
+
+#### 部署与观测
+
+`install-timer` 同时装 service 和 timer（一个入口，没有第二个要记的命令）；
+`install-watchdog` / `uninstall-watchdog` 可单动 timer；`uninstall-timer` 两个都删。
+
+    bash tools/stepfun_image_shim.sh status
+
+直接报 watchdog 安装态、当前 strikes 和日志尾三行。health JSON 多一个 `watchdog` 块
+（`enabled / last_probe_ok / strikes / restarts / detail`）——`restarts` 上涨就是内层
+真的救过场。shim 日志里对应的行：`[watchdog] restarting stepfun image-cap shim in
+place (pid N)` 和 `[watchdog] recovered after N strikes`。
+
+恢复的代价只有卡死循环里已经挂住的那些请求；重启不改任何配置，也不影响别的服务。
 
 ### 回滚
 

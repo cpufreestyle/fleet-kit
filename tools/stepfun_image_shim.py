@@ -65,6 +65,37 @@ Concurrency governor (added 2026-10-01 after a week of intermittent 503s):
     IMAGE_CAP_429_RETRIES     retries with backoff on an upstream 429
                         (default 3)
 
+Self-watchdog (added 2026-10-02, after the shim was found hung):
+
+    IMAGE_CAP_WATCHDOG           0 turns the thread off (default on)
+    IMAGE_CAP_WATCHDOG_INTERVAL  seconds between probes (default 30)
+    IMAGE_CAP_WATCHDOG_TIMEOUT   seconds one probe may take (default 15)
+    IMAGE_CAP_WATCHDOG_STRIKES   consecutive failures before a restart
+                        (default 2)
+
+The shim is occasionally found with its process alive and its loop no longer
+answering: the launchd job still reports state = running, and a health probe
+simply never comes back. KeepAlive cannot see that failure -- it relaunches a
+service that exits, and a hung loop never exits. A daemon thread therefore
+probes this process's own health over a fresh raw socket, never through the
+loop it is watching (a probe that shared the loop would stay healthy exactly
+when the service is lost), and after IMAGE_CAP_WATCHDOG_STRIKES consecutive
+failures replaces the process with a fresh copy of itself through execv.
+execv rather than exit keeps the pid, so the pidfile stays valid and launchd
+never notices; the requests in flight die with the old process, which is the
+intended outcome -- a loop that stopped answering cannot finish them, and the
+only callers left holding a connection are the ones already stuck. The probe
+is deliberately slow to accuse and asks twice, because one queued 70-image
+rewrite can block the loop for seconds without the service being lost, and a
+restart that kills a working request is a worse failure than the hang it was
+meant to cure.
+
+The same hang is also watched from outside: tools/stepfun_image_shim.sh
+watchdog probes this port from a launchd timer and force-restarts the service
+when the probes keep failing. That outer watch is the only thing that
+recovers a whole-process wedge -- a C-level deadlock, or a second instance
+holding the port -- which no thread inside this process can see.
+
 Failure policy: an unparseable body, an unknown path, an unreachable upstream
 or a cap that would leave nothing behind all mean "forward what came in". The
 shim sits in front of a working chain and must never be the thing that breaks
@@ -94,6 +125,7 @@ import asyncio
 import json
 import os
 import random
+import socket
 import threading
 import time
 import sys
@@ -112,6 +144,11 @@ HEALTH_PATH = "/__image_cap/health"
 # it, the only way to tell whether the cap is actually in the request path is
 # to read the shim's log, which is not something an operator does at 3am.
 LAST_CC_PIN = {"detail": "not run yet", "changed": False}
+
+# The watchdog's last outcome, reported by /health the same way LAST_CC_PIN
+# is: "why did it restart at 3am" has to be answerable from one curl.
+LAST_WATCHDOG = {"detail": "not run yet", "strikes": 0, "restarts": 0,
+                 "last_probe_ok": None}
 
 DEFAULT_CC_DB = "~/.cc-switch/cc-switch.db"
 DEFAULT_CC_PROVIDER = "StepFun"
@@ -189,7 +226,11 @@ class Config:
                 cc_pin_all: bool | None = None,
                 max_inflight: int | None = None,
                 queue_timeout: float | None = None,
-                retry_429: int | None = None):
+                retry_429: int | None = None,
+                watchdog: bool | None = None,
+                watchdog_interval: float | None = None,
+                watchdog_timeout: float | None = None,
+                watchdog_strikes: int | None = None):
         self.host = host
         self.port = port
         self.upstream = upstream.rstrip("/")
@@ -238,6 +279,24 @@ class Config:
             os.environ.get("IMAGE_CAP_429_RETRIES", "3")
             if retry_429 is None else retry_429)
         self.gate = asyncio.Semaphore(self.max_inflight)
+        # Self-watchdog. IMAGE_CAP_WATCHDOG_TIMEOUT is generous on purpose:
+        # one queued 70-image rewrite blocks the loop for seconds without the
+        # service being lost, and a restart that kills a working request is
+        # worse than a slow answer. Two strikes at that timeout mean the loop
+        # really stopped, not that it was busy.
+        self.watchdog = (
+            os.environ.get("IMAGE_CAP_WATCHDOG", "1").strip().lower()
+            not in ("0", "false", "no", "off")
+            if watchdog is None else bool(watchdog))
+        self.watchdog_interval = float(
+            os.environ.get("IMAGE_CAP_WATCHDOG_INTERVAL", "30")
+            if watchdog_interval is None else watchdog_interval)
+        self.watchdog_timeout = float(
+            os.environ.get("IMAGE_CAP_WATCHDOG_TIMEOUT", "15")
+            if watchdog_timeout is None else watchdog_timeout)
+        self.watchdog_strikes = int(
+            os.environ.get("IMAGE_CAP_WATCHDOG_STRIKES", "2")
+            if watchdog_strikes is None else watchdog_strikes)
 
     @property
     def model_filters(self):
@@ -295,7 +354,10 @@ def health_payload(config, stats):
             "concurrency": {"max_inflight": config.max_inflight,
                             "queue_timeout": config.queue_timeout,
                             "retry_429": config.retry_429},
-            "cc_pin": dict(LAST_CC_PIN), "stats": stats.as_dict()}
+            "cc_pin": dict(LAST_CC_PIN),
+            "watchdog": dict(LAST_WATCHDOG,
+                             **{"enabled": config.watchdog}),
+            "stats": stats.as_dict()}
 
 
 class Stats:
@@ -433,6 +495,133 @@ def start_cc_pin_thread(config, log=None):
 
     thread = threading.Thread(target=loop, name="fleetkit-image-cap-cc-pin",
                              daemon=True)
+    thread.start()
+    return thread
+
+
+def health_status_ok(raw: bytes) -> bool:
+    """True when a raw HTTP response starts with a 2xx status line.
+
+    Only the status line is read on purpose: the body of /health is the one
+    part of the answer a wedged loop cannot fake, and waiting for a full body
+    would make every probe pay for JSON this function never looks at.
+    """
+    if not raw:
+        return False
+    line = raw.split(b"\r\n", 1)[0].split(b"\n", 1)[0]
+    parts = line.split(b" ", 2)
+    return (len(parts) >= 2 and parts[0].startswith(b"HTTP/")
+            and parts[1][:1] == b"2")
+
+
+def probe_health(host: str, port: int, timeout: float) -> bool:
+    """Ask this process's own health endpoint over a fresh raw socket.
+
+    Deliberately not httpx and not the app's event loop: the point is to watch
+    the loop that serves the endpoint, so a probe that shared that loop would
+    stay healthy exactly when the service was already lost. socket timeouts
+    cover both failure shapes -- a refused connect (nothing listening) and a
+    connect that never answers (loop wedged) -- and every failure is False
+    here; what a failure means is the watchdog's decision, not the probe's.
+    """
+    request = ("GET %s HTTP/1.0\r\nHost: %s:%d\r\nConnection: close\r\n"
+               "\r\n" % (HEALTH_PATH, host, port)).encode("ascii")
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(request)
+            raw = b""
+            while b"\r\n\r\n" not in raw and len(raw) < 65536:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                raw += chunk
+    except OSError:
+        return False
+    return health_status_ok(raw)
+
+
+def restart_argv():
+    """The execv target: same python, same script, same arguments.
+
+    The environment comes along for free (execv keeps environ), so every
+    IMAGE_CAP_* setting of the instance being replaced carries over.
+    """
+    return [sys.executable, os.path.abspath(__file__)] + sys.argv[1:]
+
+
+def restart_process(log=None):
+    """Replace this process with a fresh copy of itself, in place.
+
+    execv rather than exit: the pid stays the same, so the pidfile written by
+    tools/stepfun_image_shim.sh start stays valid and launchd's KeepAlive
+    never even notices -- the restart works the same whether the shim runs as
+    a launchd service or from the wrapper. The listening socket carries
+    FD_CLOEXEC, so it closes on the exec and the new instance binds cleanly.
+    """
+    if log:
+        log("[watchdog] restarting stepfun image-cap shim in place (pid %d)"
+            % os.getpid())
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:  # pragma: no cover - a closed stdout is still exiting
+        pass
+    os.execv(sys.executable, restart_argv())
+
+
+def start_watchdog_thread(config: Config, log=None, probe=None, restart=None,
+                          running=None):
+    """Watch this process's own health and restart it when it stops answering.
+
+    launchd's KeepAlive relaunches a service that exits; it does nothing for a
+    process that is still there but no longer serves, which is the failure
+    this thread covers. The first probe happens one interval in, so a shim
+    that is still importing or binding is never accused. After
+    config.watchdog_strikes consecutive failures it calls restart(), which by
+    default replaces the process through execv; while running() reports the
+    server is on its way out (should_exit set by a signal) the thread leaves
+    it alone, so a Ctrl-C never turns into a restart.
+
+    probe and restart are seams for the tests; running defaults to always
+    True. Returns the daemon thread, or None when the watchdog is disabled.
+    """
+    if not config.watchdog:
+        return None
+    probe = probe or probe_health
+    restart = restart or restart_process
+    running = running or (lambda: True)
+
+    def loop():
+        strikes = 0
+        while running():
+            time.sleep(config.watchdog_interval)
+            ok = probe(config.host, config.port, config.watchdog_timeout)
+            LAST_WATCHDOG["last_probe_ok"] = bool(ok)
+            if ok:
+                if strikes:
+                    LAST_WATCHDOG["detail"] = "recovered after %d strikes" \
+                        % strikes
+                    if log:
+                        log("[watchdog] %s" % LAST_WATCHDOG["detail"])
+                strikes = 0
+                LAST_WATCHDOG["strikes"] = 0
+                continue
+            strikes += 1
+            LAST_WATCHDOG["strikes"] = strikes
+            LAST_WATCHDOG["detail"] = ("health probe failed %d/%d"
+                                       % (strikes, config.watchdog_strikes))
+            if log:
+                log("[watchdog] %s" % LAST_WATCHDOG["detail"])
+            if strikes < config.watchdog_strikes:
+                continue
+            LAST_WATCHDOG["restarts"] += 1
+            LAST_WATCHDOG["detail"] = "restarting: the loop stopped answering"
+            restart(log)
+        return None
+
+    thread = threading.Thread(target=loop, name="fleetkit-image-cap-watchdog",
+                              daemon=True)
     thread.start()
     return thread
 
@@ -601,14 +790,24 @@ def main(argv=None) -> None:
     # Best effort: log the outcomes, never let a failed pin stop the proxy.
     start_cc_pin_thread(config, log=lambda line: print(line, flush=True))
     start_repin_thread(config, log=lambda line: print(line, flush=True))
+    # Held as a Server (not uvicorn.run) so the watchdog can see should_exit:
+    # a shim that is shutting down on a signal must exit, not restart.
+    server = uvicorn.Server(uvicorn.Config(
+        app, host=config.host, port=config.port, log_level="info",
+        access_log=False))
     banner = ("[stepfun-image-cap] :%d -> %s (max %d images, models: %s)"
               % (config.port, config.upstream, config.max_images,
                  config.models or "*"))
     print("%s; gate %d in flight, %.0fs queue, %d x429 retries"
           % (banner, config.max_inflight, config.queue_timeout,
              config.retry_429), flush=True)
-    uvicorn.run(app, host=config.host, port=config.port, log_level="info",
-                access_log=False)
+    if config.watchdog:
+        start_watchdog_thread(config, log=lambda line: print(line, flush=True),
+                              running=lambda: not server.should_exit)
+        print("%s; watchdog every %.0fs, %d strikes -> restart in place"
+              % (banner, config.watchdog_interval, config.watchdog_strikes),
+              flush=True)
+    server.run()
 
 
 if __name__ == "__main__":
