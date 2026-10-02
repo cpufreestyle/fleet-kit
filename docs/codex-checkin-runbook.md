@@ -179,7 +179,26 @@ MD5(unix + url + method + data + "oouiplugin")。基址只有两个：`https://h
     https://hailuoai.com/v1/api/user/credits   GET   → 404
     hailuo-pre.xaminim.com 全部 SSL UNEXPECTED_EOF（预发不对公网开放）
 
-三条来源指向同一件事：**MiniMax 不提供任何可编程的余额接口**，网页控制台上的数字
+**来源四：MiniMax 各主机的真实身份（2026-10-02 补齐）**
+
+顺着扩展里出现的主机名单逐个看，确认了几个站各自是什么，免得下次再猜路径：
+
+- account.minimaxi.com / account.minimax.cn 是 **MiniMax Account SSO**（页面标题就是
+  "MiniMax Account SSO"），资源在 cdn.hailuoai.com/mmx-account/prod-web-sh-0.1.42/。
+  它只负责发登录态，buildManifest 里只有 /_app 和 /_error，没有任何业务路由。
+- platform.minimaxi.com 是**文档站**（/docs/ 前缀、katex、mintcdn），不是控制台。
+- www.minimaxi.com 是营销站，chunks 在
+  filecdn.minimax.chat/open_platform_web/prod-zh-minimax-0.1.80/。
+
+营销站 chunk 里唯一一条 /backend/ 路由是活的：
+
+    GET https://www.minimaxi.com/backend/user/biz_info
+      -> 401 {"base_resp":{"status_code":1004,"status_msg":"not login"}}
+
+路由存在、要登录态。同目录下 /backend/user/quota、/backend/user/balance 都是 404，
+所以连 /backend/ 这个前缀下也没有余额路由——余额只能是登录态页面渲染出来的。
+
+四个来源指向同一件事：**MiniMax 不提供任何可编程的余额接口**，网页控制台上的数字
 是登录态页面渲染的，没有对应 API。所以这一行永远只能是「key 或登录态还在吗」，
 问不出剩多少——这不是没找到，是它不存在。
 
