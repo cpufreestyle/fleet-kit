@@ -420,39 +420,138 @@ PLAN_ACCOUNTS = {
 }
 
 
-def cc_switch_kimi_key():
-    """The Kimi coding key CC Switch still holds, or "" when there is none."""
+KIMI_HOSTS = ("kimi.com",)
+
+
+def _is_kimi_host(base):
+    """True when an endpoint belongs to Kimi's own API."""
+    host = str(base or "").lower()
+    return any(name in host for name in KIMI_HOSTS)
+
+
+def _cc_switch_providers():
+    """[(app_type, name, credential, endpoint)] for every CC Switch row.
+
+    A codex row keeps its endpoint inside the TOML ``config`` blob, and a
+    codex row without one is the official endpoint. Reading it matters: it is
+    how a string shared with OpenAI or a loopback proxy is told apart from a
+    real vendor key. Model names, "dummy" and urls are dropped so only
+    credential-shaped values survive.
+    """
+    import re
+    import sqlite3
+    db = os.path.expanduser("~/.cc-switch/cc-switch.db")
+    if not os.path.exists(db):
+        return []
     try:
-        import sqlite3
-        db = os.path.expanduser("~/.cc-switch/cc-switch.db")
-        if not os.path.exists(db):
-            return ""
         con = sqlite3.connect("file:" + db + "?mode=ro", uri=True)
-        try:
-            row = con.execute(
-                "select settings_config from providers"
-                " where app_type='claude' and name='default'").fetchone()
-        finally:
-            con.close()
-        if not row:
-            return ""
-        cfg = json.loads(row[0] or "{}")
-        return str((cfg.get("env") or {}).get("ANTHROPIC_AUTH_TOKEN") or "")
     except Exception:
+        return []
+    try:
+        raw = con.execute(
+            "select app_type, name, settings_config from providers").fetchall()
+    except Exception:
+        raw = []
+    finally:
+        con.close()
+    rows = []
+    for app_type, name, blob in raw:
+        try:
+            data = json.loads(blob or "{}")
+        except Exception:
+            continue
+        env = data.get("env") or {}
+        auth = data.get("auth") or {}
+        match = re.search(r'base_url\s*=\s*["\']([^"\']+)["\']',
+                          str(data.get("config") or ""))
+        base = (env.get("ANTHROPIC_BASE_URL") or env.get("base_url")
+                or (match.group(1) if match else ""))
+        if not base and app_type == "codex":
+            base = "api.openai.com 官方"
+        for value in list(env.values()) + list(auth.values()):
+            if not isinstance(value, str) or len(value) < 20:
+                continue
+            if value.startswith("http") or "/" in value:
+                continue
+            rows.append((app_type, name, value, str(base)))
+    return rows
+
+
+def cc_switch_key_reuse():
+    """credential -> the ("app/name", endpoint) rows holding the same string.
+
+    A secret stored behind a Kimi endpoint *and* behind OpenAI, NVIDIA or a
+    loopback proxy is not a Kimi key: no vendor hands one string to three
+    competitors. Measured 2026-10-02 the ``claude/default`` slot CC Switch
+    points at https://api.kimi.com/coding/ carries one 65-character string that
+    ``codex/OpenAI Official``, ``codex/NVIDIA NIM`` and ``codex/nv spark``
+    carry too, and Kimi answers it with 401.
+    """
+    reuse = {}
+    for app_type, name, value, base in _cc_switch_providers():
+        reuse.setdefault(value, []).append(("%s/%s" % (app_type, name), base))
+    return reuse
+
+
+def cc_switch_placeholder_note(key):
+    """Why a stored string cannot be a Kimi Code key, or "" when it could."""
+    elsewhere = sorted({label for label, base
+                        in cc_switch_key_reuse().get(key, [])
+                        if not _is_kimi_host(base)})
+    if not elsewhere:
         return ""
+    return ("cc-switch 里同一串字符还写在 %s 上；Kimi Code 的 key 形如 "
+            "sk-kimi-…，这不是 Kimi 的 key，换成真 key 才有额度可读"
+            % "、".join(elsewhere))
+
+
+def cc_switch_kimi_slot(key):
+    """The CC Switch row a Kimi credential came from, e.g. "claude/default"."""
+    for app_type, name, value, base in _cc_switch_providers():
+        if value == key and _is_kimi_host(base):
+            return "%s/%s" % (app_type, name)
+    return ""
+
+
+def cc_switch_kimi_key():
+    """The Kimi coding key CC Switch still holds, or "" when there is none.
+
+    Any credential behind a Kimi endpoint counts, not only the ``default``
+    provider, so a real ``sk-kimi-`` key pasted into another slot is found while
+    ``default`` still carries the placeholder. A key-shaped one wins.
+    """
+    rows = [row for row in _cc_switch_providers() if _is_kimi_host(row[3])]
+    for _app, _name, value, _base in rows:
+        if value.startswith("sk-"):
+            return value
+    return rows[0][2] if rows else ""
+
+
+def _key_hint(name):
+    """Where a missing plan key comes from, so the row says more than none."""
+    if PLAN_ACCOUNTS[name]["plan"] == "kimi":
+        return ("（Kimi Code 的 key 形如 sk-kimi-…，控制台 "
+                "https://platform.kimi.ai 取）")
+    return ""
 
 
 def plan_key(name):
-    """(key, where it came from) for a plan account, ("", "") when none."""
+    """(key, where it came from, why it cannot work) for a plan account.
+
+    The third element is "" for a key that could still be alive. The caller
+    prints it instead of letting a 401 read as an expired subscription.
+    """
     spec = PLAN_ACCOUNTS[name]
     key = os.environ.get(spec["env"]) or ""
     if key:
-        return key, "env " + spec["env"]
+        return key, "env " + spec["env"], ""
     if spec["plan"] == "kimi":
         stored = cc_switch_kimi_key()
         if stored:
-            return stored, "cc-switch default provider"
-    return "", ""
+            slot = cc_switch_kimi_slot(stored)
+            return (stored, "cc-switch " + (slot or "default provider"),
+                    cc_switch_placeholder_note(stored))
+    return "", "", ""
 
 
 def _plan_numbers(body, limit=6):
@@ -494,11 +593,12 @@ def read_plan_account(name):
     row["vendor"] = PLAN_ACCOUNTS[name]["vendor"]
     row["credits_kind"] = "subscription"
     row["checkin"] = "上游无每日签到端点（额度只读，见 plan_credits.py）"
-    key, source = plan_key(name)
+    key, source, why = plan_key(name)
     row["credits_source"] = "plan_credits（%s）" % (source or "无凭据")
     if not key:
-        row["credits_note"] = ("未配置 key：export %s=<key>"
-                               % PLAN_ACCOUNTS[name]["env"])
+        row["credits_note"] = ("未配置 key：export %s=<key>%s"
+                               % (PLAN_ACCOUNTS[name]["env"],
+                                  _key_hint(name)))
         row["detail"] = "没有可用凭据，未发起调用"
         return row
     row["account"] = "%s…%s" % (key[:4], key[-4:])
@@ -507,7 +607,8 @@ def read_plan_account(name):
         status, out = plan_credits.kimi(key)
         row["up"] = status == 200
         row["logged_in"] = status == 200
-        row["detail"] = "GET %s -> HTTP %s" % (out.get("endpoint"), status)
+        row["detail"] = "GET %s -> HTTP %s%s" % (
+            out.get("endpoint"), status, "；" + why if why else "")
         if status == 200:
             numbers = _plan_numbers(out.get("body"))
             row["credits_note"] = ("；".join("%s=%s" % (p, _pretty(v))
@@ -520,8 +621,10 @@ def read_plan_account(name):
                     row["credits_unit"] = path.rsplit("/", 1)[-1]
                     break
         else:
-            row["credits_note"] = "key 被拒：HTTP %s %s" % (
-                status, _refusal_text(out))
+            note = "key 被拒：HTTP %s %s" % (status, _refusal_text(out))
+            if why:
+                note = why + "；" + note
+            row["credits_note"] = note
         return row
     status, out = plan_credits.minimax(key)
     row["up"] = status == 200

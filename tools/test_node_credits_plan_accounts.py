@@ -75,3 +75,45 @@ def test_plan_nodes_ride_the_same_order_as_the_bridges():
     assert "kimi-code" in nc.NODE_ORDER
     assert "minimax" in nc.NODE_ORDER
     assert nc.VENDORS["minimax"]
+
+def test_a_key_shared_with_another_vendor_is_named_as_the_reason(monkeypatch):
+    _isolate(monkeypatch, key="shared-placeholder-token")
+    monkeypatch.setattr(nc, "cc_switch_key_reuse", lambda: {
+        "shared-placeholder-token": [("claude/default", "https://api.kimi.com/coding/"),
+                                    ("codex/OpenAI Official", "api.openai.com 官方")]})
+    monkeypatch.setattr(plan_credits, "kimi", lambda k: KIMI_DEAD)
+    row = nc.read_node("kimi-code")
+    assert row["credits_value"] is None
+    assert "key 被拒" in row["credits_note"]
+    assert "codex/OpenAI Official" in row["credits_note"]
+    assert "不是 Kimi 的 key" in row["credits_note"]
+    assert "codex/OpenAI Official" in row["detail"]
+
+
+def test_a_kimi_endpoint_token_is_never_called_a_placeholder(monkeypatch):
+    _isolate(monkeypatch)
+    monkeypatch.setattr(nc, "cc_switch_key_reuse", lambda: {
+        "sk-live-1234567890": [("claude/default", "https://api.kimi.com/coding/")]})
+    monkeypatch.setattr(plan_credits, "kimi", lambda k: KIMI_DEAD)
+    row = nc.read_node("kimi-code")
+    assert row["credits_note"] == "key 被拒：HTTP 401 invalid or expired"
+    assert "placeholder" not in row["credits_note"].lower()
+
+
+def test_a_key_shaped_token_wins_over_the_placeholder_slot(monkeypatch):
+    rows = [("claude", "default", "placeholder-token-64-chars",
+             "https://api.kimi.com/coding/"),
+            ("claude", "real", "sk-kimi-live-key-0001",
+             "https://api.kimi.com/coding/")]
+    monkeypatch.setattr(nc, "_cc_switch_providers", lambda: rows)
+    assert nc.cc_switch_kimi_key() == "sk-kimi-live-key-0001"
+    assert nc.cc_switch_kimi_slot("sk-kimi-live-key-0001") == "claude/real"
+    assert nc.cc_switch_kimi_slot("placeholder-token-64-chars") == "claude/default"
+
+
+def test_a_machine_with_no_cc_switch_db_has_no_kimi_key(monkeypatch):
+    monkeypatch.setattr(nc, "_cc_switch_providers", lambda: [])
+    assert nc.cc_switch_kimi_key() == ""
+    assert nc.cc_switch_kimi_slot("anything") == ""
+    assert nc.cc_switch_key_reuse() == {}
+    assert nc.cc_switch_placeholder_note("anything") == ""

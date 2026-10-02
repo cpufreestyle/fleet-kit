@@ -56,16 +56,29 @@ def fetch(url, headers=None, method="GET", body=None, timeout=25):
 
 
 def kimi(key, base=KIMI_BASE):
-    """Kimi Code coding-plan windows, straight from /v1/usages."""
+    """Kimi Code coding-plan windows, straight from /v1/usages.
+
+    The endpoint takes the key either as a bearer token or in the
+    Anthropic-style ``x-api-key`` header, so a refusal under one shape is
+    retried under the other before the key is called dead. A key that only
+    answers one shape must not read as expired.
+    """
     url = base.rstrip("/") + "/v1/usages"
-    status, text = fetch(url, {"Authorization": "Bearer " + key,
-                               "Accept": "application/json"})
-    out = {"platform": "kimi-code", "endpoint": url, "http": status}
-    try:
-        out["body"] = json.loads(text)
-    except ValueError:
-        out["body"] = text[:400]
-    return status, out
+    outcome = (None, {})
+    for header, value in (("Authorization", "Bearer " + key),
+                          ("x-api-key", key)):
+        status, text = fetch(url, {header: value,
+                                     "Accept": "application/json"})
+        out = {"platform": "kimi-code", "endpoint": url, "http": status,
+               "auth": header}
+        try:
+            out["body"] = json.loads(text)
+        except ValueError:
+            out["body"] = text[:400]
+        if status == 200:
+            return status, out
+        outcome = (status, out)
+    return outcome
 
 
 def minimax(key, base=MINIMAX_BASE, model=MINIMAX_MODEL):
