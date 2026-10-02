@@ -455,7 +455,70 @@ def test_every_listed_model_has_a_route_and_is_ordered():
     assert priorities == sorted(priorities), "strongest model is not first"
     listed = {m["id"] for m in payload["data"]}
     for slug in listed:
-        assert gw.route_for(slug) is not None, slug + " is listed but has no route"
+        # resolve(), not route_for(): a minted route has no provider prefix,
+        # so route_for() would answer with the ocx fallback and call that a
+        # route. What matters is that the id resolves to a real slug.
+        target, note = gw.resolve(slug)
+        assert target, slug + " is listed but resolves to nothing"
+
+
+def test_every_minted_route_survives_the_desktop_picker_filter():
+    """The whole point of minting: the app's id check must keep the row.
+
+    anthropic_shaped() mirrors the app's Va() from app.asar 1.46388.4. If a
+    digest ever lands on a vendor substring the row is published and dropped,
+    which is the bug this whole mechanism exists to avoid.
+    """
+    for alias, slug in gw.alias_index().items():
+        assert gw.anthropic_shaped(alias), alias + " would be dropped by the app"
+        assert alias not in {r.get("slug") for r in gw.catalog_rows()}, \
+            alias + " collides with a catalog slug"
+
+
+def test_a_minted_route_resolves_back_to_the_row_it_was_minted_for():
+    index = gw.alias_index()
+    assert index, "nothing was minted"
+    for alias, slug in index.items():
+        target, note = gw.resolve(alias)
+        assert target == slug, alias + " resolves to " + str(target)
+        assert slug in note
+
+
+def test_a_minted_route_is_stable_for_the_same_slug():
+    """A client saves the id it picked; it must not move next restart."""
+    entries = gw.catalog_entries()
+    for slug, _display, _route, tier in entries:
+        if gw.anthropic_shaped(slug):
+            continue
+        assert gw.route_alias(slug, tier) == gw.route_alias(slug, tier)
+        # and it is derived from the slug, not from a counter
+        assert gw.route_alias(slug, tier) != gw.route_alias(slug + "x", tier)
+
+
+def test_every_catalog_row_is_visible_to_the_desktop_picker():
+    """One way or another, each model must have an id the app will keep.
+
+    This is the regression the whole alias mechanism guards: before it, 146
+    catalog rows produced 5 picker rows.
+    """
+    listed = {m["id"] for m in gw.models_payload()["data"]}
+    aliased = set(gw.alias_index().values())
+    for slug in {r.get("slug") for r in gw.catalog_rows() if r.get("slug")}:
+        assert slug in listed or slug in aliased, (
+            slug + " has no id the desktop picker keeps")
+
+
+def test_the_alias_digest_alphabet_cannot_spell_a_blacklisted_token():
+    """'abab' is the one vendor token made only of hex letters.
+
+    The minting alphabet leaves out a and b, so a digest can never contain it
+    and be rejected for a reason that has nothing to do with the model.
+    """
+    assert "abab" in gw.VENDOR_ID_BLACKLIST
+    assert not (set("ab") & set(gw._ALIAS_ALPHABET))
+    for alias in gw.alias_index():
+        digest = alias.rsplit("-", 1)[-1]
+        assert set(digest) <= set(gw._ALIAS_ALPHABET)
 
 
 def test_the_listing_offers_the_claude_alias_rows():

@@ -39,8 +39,10 @@ Rules this file keeps, because breaking them is how a model picker lies:
     Scheduler supervisor and a bare setsid wrapper on Linux.
 """
 import argparse
+import hashlib
 import json
 import os
+import re
 import socket
 import sys
 import time
@@ -106,6 +108,69 @@ OCX_KEY = "PROXY_MANAGED"
 
 HARBOR = "stepfun/step-5-preview"
 
+# The five Claude tiers the desktop app knows, strongest first
+FAMILY_TIERS = ("opus", "sonnet", "haiku", "fable", "mythos")
+
+# The Claude desktop app refuses to list a gateway route whose id does not
+# look like an Anthropic model. Measured 2026-10-03 against app.asar
+# 1.46388.4: resolvedModels() keeps a row only when the id matches
+# ^(sonnet|opus|haiku|fable|mythos)(-[\d.]+)?$ , or contains one of
+# claude/opus/sonnet/haiku/fable/mythos/anthropic, AND matches none of the
+# vendor names below. The family-tier tag does not help here -- it only buys a
+# row through discovery, and this is the second filter.
+VENDOR_ID_BLACKLIST = (
+    "ark-code", "astron", "command-r", "deepseek", "doubao", "gemini", "gemma",
+    "glm", "gpt", "grok", "hermes", "hy3", "kimi", "lfm", "ling", "llama",
+    "longcat", "mimo", "minimax", "mistral", "mixtral", "moonshot", "nemotron",
+    "openai", "phi", "qianfan", "qwen", "tc-code", "unic", "yi-", "stepfun",
+    "step-3", "seed-", "bytedance", "hunyuan", "granite", "amazon.nova", "nova-",
+    "devstral", "ministral", "ernie", "codex", "arcee", "trinity", "abab",
+    "k2.", "m2.", "jamba", "arctic", "solar", "mercury", "zamba",
+    "kat-coder", "ds-", "dpsk",
+)
+TIER_ID_RE = re.compile(r"^(sonnet|opus|haiku|fable|mythos)(-[\d.]+)?$")
+ANTHROPIC_ID_WORDS = ("claude",) + FAMILY_TIERS + ("anthropic",)
+
+
+def anthropic_shaped(model_id):
+    """Would the Claude desktop picker keep this id? The app's own Va().
+
+    Substring matching, where the app uses a few word boundaries: that is the
+    strict direction, so an id this accepts is one the app accepts too.
+    """
+    low = (model_id or "").lower()
+    if not low:
+        return False
+    if any(token in low for token in VENDOR_ID_BLACKLIST):
+        return False
+    return bool(TIER_ID_RE.match(low)) or any(w in low for w in ANTHROPIC_ID_WORDS)
+
+
+# Digits and c..f only. "abab" is the one token in the app's blacklist built
+# entirely from hex letters, so an alphabet without a and b makes it impossible
+# for a digest to be rejected by accident.
+_ALIAS_ALPHABET = "0123456789cdef"
+
+
+def _digest(text, length=6):
+    raw = int.from_bytes(hashlib.sha1(text.encode("utf-8")).digest()[:8], "big")
+    out = ""
+    while len(out) < length:
+        out += _ALIAS_ALPHABET[raw % len(_ALIAS_ALPHABET)]
+        raw //= len(_ALIAS_ALPHABET)
+    return out
+
+
+def route_alias(slug, tier):
+    """An Anthropic-shaped id for a row whose own slug the picker would drop.
+
+    A content digest rather than a sequence number: the catalog is reordered by
+    catalog_sort and compressed by CC Switch, and a numbered alias would
+    silently repoint a model the user already picked.
+    """
+    tier = tier if tier in FAMILY_TIERS else FAMILY_TIERS[0]
+    return "claude-%s-%s" % (tier, _digest(slug))
+
 # The four Claude Code slots, onto each platform's strongest model. The picker
 # floats the strongest rows to the front (catalog_sort.py), so these follow
 # whatever is strongest on the day rather than a name written down once.
@@ -137,7 +202,6 @@ CLAUDE_ALIASES.update({
 # -- unless the row carries anthropic_family_tier. Tagging each row with the
 # tier its rank inside its own provider earns is what makes the whole pool
 # pickable in that app; without the tag only the four claude-* names show.
-FAMILY_TIERS = ("opus", "sonnet", "haiku", "fable", "mythos")
 
 # Brackets on a provider's own strength ladder, strongest first. A row's
 # tier is where it lands among its provider's models, so a provider with
@@ -424,6 +488,9 @@ def resolve(name):
     slugs = [r.get("slug") for r in rows if r.get("slug")]
     if wanted in slugs:
         return wanted, "catalog slug"
+    aliased = alias_index().get(wanted)
+    if aliased:
+        return aliased, "anthropic route for %s" % aliased
     target = CLAUDE_ALIASES.get(wanted)
     if target is None and wanted.startswith("claude"):
         # a slot this table does not name yet lands on the harbor rather than
@@ -828,6 +895,69 @@ def alias_rows():
     return out
 
 
+_ENTRIES = {"stamp": None, "rows": []}
+
+
+def catalog_entries():
+    """[(slug, display, route, tier)] for every routable catalog row.
+
+    The payload and the alias index both come out of this one pass, so a row's
+    tier cannot mean one thing in the listing and another in the id minted for
+    it. Cached on the slug list, which is the cheapest stamp that still moves
+    whenever the catalog is rewritten underneath us.
+    """
+    rows = catalog_rows()
+    stamp = tuple(row.get("slug") for row in rows)
+    if _ENTRIES["stamp"] != stamp:
+        listed = []
+        for row in rows:
+            slug = row.get("slug")
+            if not slug:
+                continue
+            route = route_for(slug)
+            if route is None:
+                continue
+            listed.append((slug, row, route))
+        counts = {}
+        for _slug, _row, route in listed:
+            counts[route["provider"]] = counts.get(route["provider"], 0) + 1
+        built = []
+        ranks = {}
+        for slug, row, route in listed:
+            rank = ranks.get(route["provider"], 0)
+            ranks[route["provider"]] = rank + 1
+            built.append((slug,
+                          DISPLAY_NAMES.get(slug) or row.get("display_name") or slug,
+                          route,
+                          family_tier(rank, counts.get(route["provider"], 1))))
+        _ENTRIES["stamp"] = stamp
+        _ENTRIES["rows"] = built
+    return _ENTRIES["rows"]
+
+
+_ALIAS_INDEX = {"stamp": None, "map": {}}
+
+
+def alias_index():
+    """{anthropic route: slug} for every row whose own id the picker drops.
+
+    Deterministic in the slug, so the same model keeps the same route across
+    restarts and catalog rewrites -- a client that saved "claude-opus-3f9a2c"
+    must not find it pointing somewhere else next week.
+    """
+    entries = catalog_entries()
+    stamp = tuple(slug for slug, _d, _r, _t in entries)
+    if _ALIAS_INDEX["stamp"] != stamp:
+        built = {}
+        for slug, display, route, tier in entries:
+            if anthropic_shaped(slug):
+                continue
+            built[route_alias(slug, tier)] = slug
+        _ALIAS_INDEX["stamp"] = stamp
+        _ALIAS_INDEX["map"] = built
+    return _ALIAS_INDEX["map"]
+
+
 def models_payload():
     """The catalog as Anthropic models, strongest first.
 
@@ -845,16 +975,25 @@ def models_payload():
     desktop app's picker drops every id carrying a vendor name no matter what
     tier it carries, so without them the picker shows five antigravity rows
     and none of the fleet.
+
+    Every remaining row whose own slug carries a vendor name is published a
+    second time under a minted Anthropic-shaped route (route_alias), because
+    that is the only way the desktop picker will keep it. Both rows resolve to
+    the same model: the slug for a client that speaks fleet ids, the minted
+    route for the app that insists on Anthropic-shaped ones.
     """
-    rows = [(row.get("slug"),
-             DISPLAY_NAMES.get(row.get("slug"))
-             or row.get("display_name") or row.get("slug"),
-             route_for(row.get("slug")), None)
-            for row in catalog_rows() if row.get("slug")]
-    rows = [(i, d, r, t) for i, d, r, t in rows if r is not None]
+    rows = [(alias, display, route, tier)
+            for alias, display, route, tier in alias_rows()]
     # the Anthropic-shaped routes go first: they are the only ones the desktop
     # picker will keep, and each should own its tier's default
-    rows = alias_rows() + rows
+    for slug, display, route, tier in catalog_entries():
+        rows.append((slug, display, route, tier))
+        if anthropic_shaped(slug):
+            continue
+        # the picker would drop this row on its id, so publish a second row
+        # under an id it keeps: same model, same route, same tier
+        rows.append((route_alias(slug, tier),
+                     "%s (%s)" % (display, route["provider"]), route, tier))
 
     data = []
     ranks = {}

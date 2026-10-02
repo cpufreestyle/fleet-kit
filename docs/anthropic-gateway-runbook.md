@@ -175,13 +175,28 @@ Anthropic 形状（`claude-opus-5`、`haiku`…），`resolve()` 本来就认它
 它们排在目录行前面，所以每个 tier 的 `is_family_default` 由别名拿下，裸 tier 名
 解析到的是机队的路由而不是 antigravity 那一行。
 
-效果（实测）：picker 从 5 行变成 17 行；真实调用 `haiku` 返回 200，
-body 里 `"model":"workbuddy/glm-5.2"`。
+**第二步：给每条约由都起一个 Anthropic 形状的名字。** 上一步只把 picker 从 5 行
+变成 17 行，另外 129 行（纯厂商名 id）仍然进不去。所以网关现在给每个过不了
+`Va()` 的 slug 再发一行，id 用 `claude-<tier>-<6位摘要>`：
 
-还剩的红利：app 对 gateway provider 的硬性要求就是 id 必须引用 Anthropic 模型，
-所以 146 行里的另外 129 行（纯厂商名 id）在桌面 picker 里仍然看不到。要让它们
-也出现，得给每条约路由都起一个 Anthropic 形状的名字——那是另一次改动，
-需要先点头。
+    workbuddy/glm-5.2   ->  claude-opus-c49d7d
+    xhx/raccoon-19b265  ->  claude-opus-d8e67e
+
+摘要取自 slug 本身（sha1，字母表只用 0-9cdef），不是序号——目录会被
+catalog_sort 重排、被 CC Switch 压成 1 行，序号会让用户已经选中的模型悄悄换靶。
+字母表特意去掉 a 和 b：app 黑名单里 `abab` 是唯一一个纯十六进制字母就能拼出来的
+厂商名，去掉 a/b 就让摘要不可能被误杀。
+
+slug 行照样保留（给说 fleet id 的客户端用），mint 行是给桌面 app 的，
+`resolve()` 两条都认。显示名带上 provider，所以两个平台都有 glm-5.2 时能区分。
+
+实测（app 的过滤逻辑原样复刻）：
+
+    网关 275 行  ->  桌面 picker 保留 146 行（原来是 5 行）
+    opus 41 / mythos 32 / sonnet 27 / fable 25 / haiku 21
+
+真实调用：`claude-opus-c49d7d` 200 返回 `workbuddy/glm-5.2`，
+`claude-opus-d8e67e` 200 返回 `xhx/raccoon-19b265`。
 
     curl -s 'http://127.0.0.1:8801/v1/models?limit=1000' | python3 -c \
       "import sys,json;d=json.load(sys.stdin);r=d['data'][0];print(r)"
