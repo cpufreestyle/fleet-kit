@@ -76,6 +76,15 @@ PLAN_BLOCK_MARKERS = ("model not allowed", "not allowed on your", "not in your p
 # outage: reported as UPSTREAM_DOWN it sends the operator to the vendor status
 # page for a key that was never set.
 NO_KEY_MARKERS = ("key_missing",)
+# Google's VALI gate (measured 2026-10-02 on gemini and antigravity, ports
+# 8794/8797): the OAuth login still refreshes fine, but cloudcode-pa answers
+# 403 "Verify your account to continue." with a validation_url only the
+# account owner can clear in a browser. Both bridges wrap it in a 502 whose
+# message now carries that link. Graded UPSTREAM_DOWN it sends the operator
+# to a vendor status page for a gate that is not an outage; graded
+# PLAN_BLOCKED it sends them to a pricing page. Neither is actionable.
+VALI_MARKERS = ("validation_required", "verify your account",
+                "account verification")
 BUDGETS = [256, 2048, 4096]
 PROBE_HTTP_TIMEOUT = 20
 PROBE_CHAT_TIMEOUT = 70
@@ -271,6 +280,8 @@ def classify(code, secs, text, nonce, n, add, err):
         return "AUTH_EXPIRED", "session/key 失效(需重新登录)"
     if code == 403:
         el = (err or "").lower()
+        if any(k in el for k in VALI_MARKERS):
+            return "VERIFY_ACCOUNT", "上游要求浏览器验证账号(打开消息里的链接) " + (err or "")[:60]
         if any(k in el for k in PLAN_BLOCK_MARKERS):
             return "PLAN_BLOCKED", "模型/套餐受限(非登录态) " + (err or "")[:44]
         return "AUTH_EXPIRED", "403 " + (err or "")[:56]
@@ -285,6 +296,8 @@ def classify(code, secs, text, nonce, n, add, err):
             return "NO_KEY", "桥未配上游 key（set 后重跑 finish.sh） " + (err or "")[:40]
         if any(k in el for k in ("invalidproxy", "proxyerror", "proxy tunnel")):
             return "UPSTREAM_DOWN", "本地代理隧道异常 " + (err or "")[:44]
+        if any(k in el for k in VALI_MARKERS):
+            return "VERIFY_ACCOUNT", "上游要求浏览器验证账号(打开消息里的链接) " + (err or "")[:60]
         return "UPSTREAM_DOWN", (err or "")[:56]
     if code is None:
         return "BRIDGE_DOWN", err
@@ -417,8 +430,9 @@ def main():
         return 0
 
     order = {"REAL": 0, "STREAM_BROKEN": 1, "ECHO/MIRROR": 1, "CANNED/MOCK": 2,
-             "CHANNEL_BLOCKED": 3, "UNCLEAR": 3, "PLAN_BLOCKED": 4, "AUTH_EXPIRED": 5,
-             "NO_KEY": 5, "UPSTREAM_DOWN": 6, "BRIDGE_DOWN": 7, "GATE": 8}
+            "CHANNEL_BLOCKED": 3, "UNCLEAR": 3, "PLAN_BLOCKED": 4, "AUTH_EXPIRED": 5,
+             "NO_KEY": 5, "VERIFY_ACCOUNT": 5, "UPSTREAM_DOWN": 6,
+             "BRIDGE_DOWN": 7, "GATE": 8}
     print("FleetKit 真实调用检测  (port base %d)" % a.port_base)
     print("%-14s %-5s %-28s %-5s %-6s %-13s %s" % ("BRIDGE", "PORT", "MODEL", "HTTP", "LAT(s)", "VERDICT", "NOTE"))
     print("-" * 116)

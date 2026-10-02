@@ -413,6 +413,162 @@
       "free": "unknown",
       "credits": "own",
       "credits_note": "ChatGPT 原生订阅，非反代理客户端"
+    },
+    "trae/Doubao-Seed-Evolving": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/Doubao-Seed-2.1-Pro": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/seed-code-pro-0430": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/Doubao-Seed-2.1-Turbo": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/Doubao-Seed-2.0-Code": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/step-5-preview": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/glm-5.3": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/glm-5.2": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/glm-5-turbo": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/glm-5": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/deepseek-v4.1-flash": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/DeepSeek-V4-Flash-Official": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/DeepSeek-V4-Flash": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/DeepSeek-V4-Pro-Official": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/DeepSeek-V4-Pro": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/kimi-k3": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/kimi-k2.7-code": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/kimi-k2.6": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/minimax-m3": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/qwen3.8-max": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/qwen-3.7-plus": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/computer_use_subagent": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "gemini/gemini-3-pro-preview": {
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI；OAuth 刷新正常，桥已透传 validation_url 验证链接）。与 antigravity 共用同一 Google 账号，验证一次 两个桥一起恢复。个人账号免费档不计点，官方限额 60 次/分、1000 次/天",
+      "source": "https://codeassist.google.com/",
+      "verified": true
+    },
+    "gemini/gemini-2.5-pro": {
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI；OAuth 刷新正常，桥已透传 validation_url 验证链接）。与 antigravity 共用同一 Google 账号，验证一次 两个桥一起恢复。个人账号免费档不计点，官方限额 60 次/分、1000 次/天",
+      "source": "https://codeassist.google.com/",
+      "verified": true
+    },
+    "gemini/gemini-2.5-flash": {
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI；OAuth 刷新正常，桥已透传 validation_url 验证链接）。与 antigravity 共用同一 Google 账号，验证一次 两个桥一起恢复。个人账号免费档不计点，官方限额 60 次/分、1000 次/天",
+      "source": "https://codeassist.google.com/",
+      "verified": true
+    },
+    "gemini/gemini-3-flash-preview": {
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI；OAuth 刷新正常，桥已透传 validation_url 验证链接）。与 antigravity 共用同一 Google 账号，验证一次 两个桥一起恢复。个人账号免费档不计点，官方限额 60 次/分、1000 次/天",
+      "source": "https://codeassist.google.com/",
+      "verified": true
     }
   },
   "gaps": [

@@ -87,11 +87,13 @@ _OCX_LOCK = threading.Lock()
 
 VERDICT_RANK = {"REAL": 0, "STREAM_BROKEN": 1, "ECHO/MIRROR": 1, "CANNED/MOCK": 2,
                 "CHANNEL_BLOCKED": 3, "UNCLEAR": 3, "PLAN_BLOCKED": 4, "AUTH_EXPIRED": 5,
+                "VERIFY_ACCOUNT": 5, "NO_KEY": 5,
                 "UPSTREAM_DOWN": 6, "BRIDGE_DOWN": 7, "GATE": 8}
 VERDICT_KIND = {"REAL": "ok", "ECHO/MIRROR": "warn", "CANNED/MOCK": "warn",
                 "UNCLEAR": "warn", "AUTH_EXPIRED": "bad", "UPSTREAM_DOWN": "bad",
                 "BRIDGE_DOWN": "bad", "GATE": "bad", "PLAN_BLOCKED": "warn",
-                "STREAM_BROKEN": "bad", "CHANNEL_BLOCKED": "bad"}
+                "STREAM_BROKEN": "bad", "CHANNEL_BLOCKED": "bad",
+                "VERIFY_ACCOUNT": "warn", "NO_KEY": "warn"}
 
 
 # --------------------------------------------------------------------------- #
@@ -1258,7 +1260,8 @@ function renderFree(){
     return '['+g.provider+'] '+g.reason;}).join('   |   ');
 }
 var VF_KIND={REAL:'ok',STREAM_BROKEN:'bad','ECHO/MIRROR':'warn','CANNED/MOCK':'warn',UNCLEAR:'warn',
-  CHANNEL_BLOCKED:'bad',PLAN_BLOCKED:'warn',AUTH_EXPIRED:'bad',UPSTREAM_DOWN:'bad',BRIDGE_DOWN:'bad',GATE:'bad'};
+  CHANNEL_BLOCKED:'bad',PLAN_BLOCKED:'warn',AUTH_EXPIRED:'bad',UPSTREAM_DOWN:'bad',BRIDGE_DOWN:'bad',GATE:'bad',
+  VERIFY_ACCOUNT:'warn',NO_KEY:'warn'};
 function vfKind(v){return VF_KIND[v]||'idle';}
 function verifyCell(name){
   var v=(SNAP&&SNAP.verify&&SNAP.verify.by_bridge)||{};
