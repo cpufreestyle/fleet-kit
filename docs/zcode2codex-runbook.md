@@ -57,6 +57,10 @@
   原先读 `window.__capParam` 实测不可靠（人工存票成功它仍超时），自动拖滑块
   （`drag_slider`）从来没成功过、已删除。副作用是好事：任何浏览器在窗口期内
   存的票都会被这次 mint 捡走。
+- **无感验证只认有头**（2026-10-02 实测）：同样养过的 profile，有头 4/4 自动出票
+  （2~4 秒），无头 3/3 被弹滑块；换桌面 UA 救不了无头（判别比 UA 深）。所以
+  minter 自己会点「开始验证」（页面的人工手动语义不变），keeper 用有头+屏幕外
+  （`ZCAP_ARGS=--window-position=20000,20000`）把窗口藏出屏幕。
 - mint 成功率间歇（traceless 卡 F001/F015），--serve 模式维持池子比
   每请求现场 mint 更稳；失败重试可成。
 
@@ -83,6 +87,24 @@ captcha 换取页：http://127.0.0.1:8910/ （launchd `com.local.zcode-captcha-r
 无头 mint 静默失败一次，回落成「开一次页换一张」。备票的有效窗口按消费方
 不同：CLI 路线（cli_client）600s 新鲜度 + 900s 寿龄，桥的直连路线 75s。
 `tools/test_zcode_captcha_flow.py` 钉住这几条契约。
+
+## 票池 keeper（2026-10-02）
+
+`com.local.zcode-captcha-keeper`（launchd timer，每 120s）跑
+`bridges/zcode/captcha-pool-keeper.sh`：池里可用票少于 2 张时才启动一次 mint
+（有头、屏幕外、约 5 秒），否则只做一次目录统计。调用方（桥的直连路线、CLI 路线）
+永远从池里领票，池干时才现场 mint——而现场 mint 是无头的，无感验证过不去，
+于是回落成「开一次 8910 换一张」。keeper 的存在就是把「现场 mint」这个慢路径
+变成例外。
+
+    bash bridges/zcode/captcha-keeper.sh status    # 安装态 + 池内新鲜/陈旧张数
+    bash bridges/zcode/captcha-keeper.sh kick      # 立刻跑一轮
+    bash bridges/zcode/captcha-keeper.sh uninstall
+
+安装必须从 **runtime 树**执行（`bash runtime/bridges/zcode/captcha-keeper.sh install`）：
+timer 的 ProgramArguments 记的是绝对路径，从 kit 装会上来就跑 kit 的 keeper、往 kit 的
+池里补票，而桥读的是 runtime 的池。控制脚本因此向上查找 platform.sh 定位自己的树。
+ keeper 探测带 playwright 的解释器（venv 优先），裸 `python3` 没有 playwright。
 
 ## 凭证
 

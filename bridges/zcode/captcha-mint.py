@@ -134,6 +134,31 @@ def _claim_pool_ticket(seen: set) -> str:
     return ""
 
 
+def _press_verify(page, wait: float = 15.0) -> None:
+    """Press the page's verify button once the SDK is ready.
+
+    The page deliberately never auto-starts for a human operator -- that
+    auto-start was the verification jumping at people. The minter is the
+    automation that is expected to press it: traceless then either issues
+    a ticket on its own (a profile Aliyun trusts) or pops the slider, and
+    in a headed run that popup is where the operator takes over.
+    """
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        try:
+            status = page.text_content("#out") or ""
+        except Exception:  # noqa: BLE001
+            status = ""
+        if "ready" in status:
+            break
+        page.wait_for_timeout(300)
+    try:
+        page.click("#verify", timeout=5000)
+        log("verify pressed")
+    except Exception as exc:  # noqa: BLE001
+        log("verify-click-failed:", exc)
+
+
 def mint_once(page, timeout: float = 40.0) -> str:
     """Open the relay page and wait for one ticket to land in the pool.
 
@@ -145,6 +170,7 @@ def mint_once(page, timeout: float = 40.0) -> str:
     window is picked up here -- including the operator's own.
     """
     page.goto(PAGE, wait_until="domcontentloaded", timeout=45000)
+    _press_verify(page)
     seen = set(os.listdir(POOL)) if POOL.is_dir() else set()
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -161,11 +187,21 @@ def mint_once(page, timeout: float = 40.0) -> str:
 
 
 def open_browser(pw, headless: bool, profile: str):
+    # Real Chrome keeps "HeadlessChrome" in its UA under --headless, which is
+    # a tell the traceless verdict reads (headed passes, headless failed 2/2
+    # with the default UA). ZCAP_UA overrides for experiments; the default is
+    # empty, which means "leave whatever the browser reports".
+    ua = os.environ.get("ZCAP_UA", "").strip()
     kwargs = dict(
         headless=headless,
         viewport={"width": 1280, "height": 900},
         args=["--disable-blink-features=AutomationControlled",
               "--no-first-run", "--no-default-browser-check"])
+    if ua:
+        kwargs["user_agent"] = ua
+    extra = [a for a in os.environ.get("ZCAP_ARGS", "").split() if a]
+    if extra:
+        kwargs["args"] = kwargs["args"] + extra
     try:
         return pw.chromium.launch_persistent_context(
             profile, channel="chrome", **kwargs)
