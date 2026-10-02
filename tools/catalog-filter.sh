@@ -43,8 +43,12 @@ LOG_FILE="${CATALOG_FILTER_LOG:-${HOME}/Library/Logs/catalog-filter.log}"
 # script, and `set -u` turns a use-before-definition into an immediate exit.
 # Resolve without dirname for the same reason as ocx-catalog-guard.sh: a
 # Task Scheduler action inherits a PATH with no Git for Windows coreutils.
-case "$0" in
-  */*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
+# The cmd wrapper passes a Windows-style $0 with backslashes, which ${0%/*}
+# cannot strip -- normalise the separators first or SCRIPT_DIR degrades to
+# the cwd and platform.sh silently goes unsourced.
+CATALOG_FILTER_ZERO="${0//\\//}"
+case "$CATALOG_FILTER_ZERO" in
+  */*) SCRIPT_DIR="$(cd "${CATALOG_FILTER_ZERO%/*}" && pwd)" ;;
   *) SCRIPT_DIR="$(pwd)" ;;
 esac
 # Platform abstraction: launchd / Task Scheduler / Linux supervisor.

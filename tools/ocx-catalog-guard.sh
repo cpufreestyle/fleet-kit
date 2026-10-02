@@ -46,9 +46,13 @@ set -euo pipefail
 
 # Resolve without dirname: a Task Scheduler action inherits the bare machine
 # PATH, which has no Git for Windows coreutils, so $(dirname) would abort the
-# script under set -e before it can log anything.
-case "$0" in
-  */*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
+# script under set -e before it can log anything. The cmd wrapper passes a
+# Windows-style $0 with backslashes, which ${0%/*} cannot strip -- normalise
+# the separators first or SCRIPT_DIR degrades to the cwd and every helper
+# lookup (platform.sh, pin_fleet_route.py) silently misses.
+GUARD_ZERO="${0//\\//}"
+case "$GUARD_ZERO" in
+  */*) SCRIPT_DIR="$(cd "${GUARD_ZERO%/*}" && pwd)" ;;
   *) SCRIPT_DIR="$(pwd)" ;;
 esac
 

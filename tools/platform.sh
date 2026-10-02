@@ -881,7 +881,10 @@ PLIST
     local wrapper launcher tdir
     tdir="$(_fleet_timer_dir)"
     wrapper="$(_fleet_win_path "${tdir}/${label}.cmd")"
-    _fleet_write_cmd_wrapper "$wrapper" "$(pwd)" "$interpreter" "$script" "$extra" "" "$logfile"
+    # HOME must travel with the wrapper: a Task Scheduler action runs without
+    # it, and every script that resolves ~ (config.toml, log dirs) would
+    # silently aim at a nonexistent root while still exiting 0.
+    _fleet_write_cmd_wrapper "$wrapper" "$(pwd)" "$interpreter" "$script" "$extra" "HOME=${HOME}" "$logfile"
     launcher="$(fleet_write_hidden_launcher "$label" "${tdir}/${label}.cmd")"
     fleet_task_install "$label" "false" "$interval" "" "wscript.exe" "/B /NOLOGO \"${launcher}\"" "$(_fleet_win_path "$(pwd)")"
   else
