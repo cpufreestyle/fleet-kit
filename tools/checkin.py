@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """codex-checkin — 各 AI 订阅平台的自动签到守护。
 
-当前已实现的签到任务：
-  * xhx        商汤小浣熊：POST /api/web/desktop/v1/login/points/grant（每日登录积分）
-               契约逆向自官方桌面端 app.asar（build/desktop-renderer chunk）：
-               头 X-Client-Platform: desktop-macos / X-Client-Version: v<版本>，Bearer 鉴权；
-               响应 data.granted=false 表示今日已发放（桌面端启动时也会调，天然幂等）。
+签到覆盖整个机队（15 个节点），分三类：
+  * 真签到（有端点，会真的领）
+      - xhx   商汤小浣熊：POST /api/web/desktop/v1/login/points/grant（每日登录积分），
+              契约逆向自官方桌面端 app.asar；data.granted=false 表示今日已发放，
+              签到后拉 points/balance 记账
+      - workbuddy / workbuddy-gpt  腾讯 Buddy 加油站：经桥 /ui/checkin/claim 领取，
+              每账号 credit 与连签天数来自桥 /ui/checkin
+  * 无签到端点（12 个节点）：qoder / codely / trae / lingxi / cline / qwen / gemini /
+      catpaw / antigravity / zcode / stepfun / tokendance。已逐个核实上游没有每日签到
+      接口（codely 的 LiteLLM /key/info、/user/info 实测 403），记为 na：不是失败，
+      但仍读出该节点账号与积分，让 15 个节点在面板里都有带数字的一行。
+
+每个节点的账目见 tools/node_credits.py（stdlib，可单独跑：python3 node_credits.py）。
 
 用法：
   python3 checkin.py --run-now [task ...]   # 立即签到（可指定任务，默认全部）
@@ -35,16 +43,14 @@ HOME = Path(os.environ.get("CODEX_CHECKIN_HOME") or (Path.home() / ".codex-check
 STATE_FILE = HOME / "state.json"
 LOG_FILE = HOME / "checkin.log"
 CST = timezone(timedelta(hours=8))  # 国内平台按北京时间记“今日”
-WORKBUDDY_HEALTH_URL = os.environ.get("WORKBUDDY_HEALTH_URL") or "http://127.0.0.1:8788/health"
-WORKBUDDY_KEY = os.environ.get("CODEBUDDY2OPENAI_KEY", "")
-
 # A loopback health check must never inherit HTTP_PROXY. Measured 2026-09-29:
 # under a shell with HTTP_PROXY set, the bridge call failed with
 # httpx.ConnectError("All connection attempts failed") while the bridge answered
 # fine on 127.0.0.1 -- httpx routed the loopback request through the proxy.
 # httpx mounts with a None transport disable proxy use for those hosts only;
 # every other host still honours the operator's proxy settings.
-# ("all://::1" is not a valid httpx pattern; the bracketed form is.)
+# tools/node_credits.py builds its urllib openers the same way, and its own
+# test drives a dead proxy against a live loopback server to prove it.
 LOOPBACK_MOUNTS = {pattern: None for pattern in (
     "all://127.0.0.1", "all://localhost", "all://[::1]")}
 
@@ -161,59 +167,112 @@ async def task_xhx(client: httpx.AsyncClient) -> dict:
             "reward_points": bal.get("reward_points")}
 
 
-# ---------------- WorkBuddy（Buddy 加油站）自动签到健康确认 ----------------
+# ---------------- WorkBuddy：Buddy 加油站真签到 ----------------
 
-def workbuddy_bridge_key() -> str:
-    """The live CODEBUDDY2OPENAI_KEY: env first, then the service definition.
+# The dashboard claim API is cookie-protected, but the bridge hands that cookie
+# to anyone who asks for GET / (the same one the browser dashboard gets), and
+# the endpoints still demand loopback + JSON + a matching Origin. Measured
+# 2026-10-01 on 127.0.0.1:8787: GET /ui/checkin answered with the real
+# activity and per-account state (MichaelQiu, today_checked_in=true,
+# credit=100, streak_days=2), so this task can do the actual claim instead of
+# only confirming the bridge is alive.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import node_credits
 
-    The daily timer runs with the environment captured when it was installed,
-    so a key rotated in fleet.env afterwards never reaches it -- measured
-    2026-09-28/29: every 09:00 run failed with HTTP 401 "invalid api key"
-    while manual runs (which source fleet.env) succeeded. The bridge's own
-    service definition always carries the live key, so read it from there when
-    the environment has none.
-    """
-    if WORKBUDDY_KEY:
-        return WORKBUDDY_KEY
-    key = os.environ.get("CODEBUDDY2OPENAI_KEY", "")
-    if key:
-        return key
-    try:
-        # tools/ is sys.path[0] only when run as a script; tests import this
-        # module by file path, so make the sibling helper importable either way.
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from fleet_platform import service_keys
-        for label, svc_key in service_keys().items():
-            if "workbuddy2codex" in label:
-                return svc_key
-    except Exception:
-        pass
-    return ""
+
+def _workbuddy_task(name: str) -> dict:
+    state = node_credits.workbuddy_checkin(name)
+    if not state.get("ok"):
+        return {"ok": False, "detail": state.get("detail") or "bridge unreachable"}
+    accounts = state.get("accounts") or []
+    broken = [a for a in accounts if not a.get("ok")]
+    if broken:
+        # Not "unclaimed", just unreadable: the overseas bridge reports
+        # ok=false with 状态读取失败 while its activity is unavailable.
+        return {"ok": False,
+                "detail": "%s: %s" % (broken[0].get("name") or name,
+                                      broken[0].get("message") or "状态读取失败")}
+    unclaimed = int(state.get("unclaimed_count") or 0)
+    claimed = None
+    if unclaimed:
+        claimed = node_credits.workbuddy_claim(name)
+        state = node_credits.workbuddy_checkin(name)
+        accounts = state.get("accounts") or []
+    activity = state.get("activity") or {}
+    credits = sum(node_credits._num(a.get("credit")) or 0 for a in accounts)
+    streak = max((a.get("streak_days") or 0) for a in accounts) if accounts else 0
+    detail = "账号 %d 个；今日 %s；连签 %s 天；活动每日 %s credits" % (
+        len(accounts),
+        "已领取" if not state.get("unclaimed_count") else "仍有 %s 个待领" % state.get("unclaimed_count"),
+        streak, node_credits._pretty(node_credits._num(activity.get("daily_credit"))))
+    if claimed is not None:
+        detail += "；本次领取 %s" % ("成功" if claimed.get("ok") else "失败")
+    return {"ok": True, "granted": bool(claimed and claimed.get("ok")),
+            "detail": detail, "available_points": credits,
+            "credits_unit": "credits", "streak_days": streak,
+            "credits_source": "bridge /ui/checkin"}
 
 
 async def task_workbuddy(client: httpx.AsyncClient) -> dict:
-    """Confirm the bridge is up; its startup worker owns idempotent auto-claim.
+    """Claim today's Buddy 加油站 credits for every account in the pool.
 
-    The WorkBuddy dashboard claim API is intentionally cookie-protected. Its
-    bridge already runs a best-effort account-pool auto-claim on startup, so
-    this task records whether that service is reachable instead of duplicating
-    credentials or bypassing dashboard authentication.
+    node_credits is stdlib urllib and this daemon is async httpx, so the call
+    runs in a worker thread rather than blocking the loop.
     """
-    key = workbuddy_bridge_key()
-    headers = {"Authorization": f"Bearer {key}"} if key else {}
-    r = await client.get(WORKBUDDY_HEALTH_URL, headers=headers)
-    if r.status_code != 200:
-        return {"ok": False, "detail": f"bridge health http {r.status_code}: {r.text[:120]}"}
-    return {"ok": True, "detail": "WorkBuddy 自动签到服务在线（bridge 启动时领取）",
-            "available_points": None}
+    return await asyncio.to_thread(_workbuddy_task, "workbuddy")
+
+
+async def task_workbuddy_gpt(client: httpx.AsyncClient) -> dict:
+    """The same Buddy 加油站 on the overseas bridge (port 8788)."""
+    return await asyncio.to_thread(_workbuddy_task, "workbuddy-gpt")
+
+
+# ---------------- 其余节点：无每日签到端点，但仍看积分 ----------------
+
+# Verified 2026-10-01 against each upstream's own surface: these twelve expose
+# no daily check-in endpoint. docs/codex-checkin-runbook.md records the same
+# conclusion for 灵犀/qoder/codely/trae, and codely (budget) / trae (points
+# plan) were probed directly -- codely's LiteLLM /key/info and /user/info both
+# answer 403 from nginx, so there is no balance to read there either.
+#
+# Each still returns the account and credits the node *does* expose, so the
+# 签到 panel has a row with a real number for every node instead of silently
+# dropping them. "na" marks "this node has no such endpoint", which is a
+# different thing from a failed attempt and must not read as one.
+NO_CHECKIN_NODES = ("qoder", "codely", "trae", "lingxi", "cline", "qwen",
+                    "gemini", "catpaw", "antigravity", "zcode", "stepfun",
+                    "tokendance")
+
+
+def _no_checkin_task(name: str) -> dict:
+    row = node_credits.read_node(name)
+    return {"ok": False, "na": True,
+            "detail": "%s；%s" % (node_credits.NO_CHECKIN_NOTE, row["detail"]),
+            "available_points": row["credits_value"],
+            "credits_unit": row["credits_unit"],
+            "credits_source": row["credits_source"],
+            "credits_note": row["credits_note"],
+            "account": row["account"], "up": row["up"]}
+
+
+def no_checkin_task(name: str):
+    async def task(client: httpx.AsyncClient) -> dict:
+        return await asyncio.to_thread(_no_checkin_task, name)
+    task.__name__ = "task_%s" % name.replace("-", "_")
+    return task
 
 
 # ---------------- 任务注册表（新平台按此格式扩展） ----------------
 
 TASKS = {
     "xhx": {"desc": "商汤小浣熊 每日登录积分", "fn": task_xhx},
-    "workbuddy": {"desc": "WorkBuddy Buddy 加油站", "fn": task_workbuddy},
+    "workbuddy": {"desc": "WorkBuddy Buddy 加油站（国内）", "fn": task_workbuddy},
+    "workbuddy-gpt": {"desc": "WorkBuddy Buddy 加油站（海外）", "fn": task_workbuddy_gpt},
 }
+for _name in NO_CHECKIN_NODES:
+    TASKS[_name] = {"desc": "%s（无签到端点，仅看积分）"
+                    % node_credits.VENDORS.get(_name, _name),
+                    "fn": no_checkin_task(_name)}
 
 
 async def run_tasks(names: list[str]) -> int:
@@ -237,6 +296,10 @@ async def run_tasks(names: list[str]) -> int:
                 state[name]["last_success_date"] = date
                 state[name]["last_balance"] = result.get("available_points")
                 log(f"{name} OK: {result.get('detail')} 余额={result.get('available_points')}")
+            elif result.get("na"):
+                # Neither a success nor a failure: the node has no endpoint to
+                # call. The credits it did report are still worth keeping.
+                log(f"{name} N/A: {result.get('detail')}")
             else:
                 rc = 1
                 log(f"{name} FAIL: {result.get('detail')}")
@@ -250,16 +313,23 @@ def show_status() -> None:
     for name, task in TASKS.items():
         s = state.get(name) or {}
         done = s.get("last_success_date") == today()
-        print(f"- {name} ({task['desc']}): {'✅ 今日已签' if done else '❌ 今日未签'}"
+        if s.get("na"):
+            mark = "➖ 无签到端点"
+        else:
+            mark = "✅ 今日已签" if done else "❌ 今日未签"
+        credits = s.get("available_points")
+        unit = s.get("credits_unit") or ""
+        print(f"- {name} ({task['desc']}): {mark}"
               f" | 上次: {s.get('at', '从未')} | {s.get('detail', '')}"
-              f" | 余额: {s.get('available_points', '-')}")
+              f" | 积分: {credits if credits is not None else '-'} {unit}".rstrip())
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description="机队签到 + 积分查看（15 个节点）")
     ap.add_argument("--run-now", action="store_true", help="立即执行签到")
     ap.add_argument("--force", action="store_true", help="忽略今日已签状态强制执行")
-    ap.add_argument("--status", action="store_true", help="查看状态")
+    ap.add_argument("--status", action="store_true", help="查看状态与积分")
     ap.add_argument("--daemon", action="store_true", help="守护模式（由 LaunchAgent 每日触发）")
     ap.add_argument("tasks", nargs="*", help="指定任务名（默认全部）")
     args = ap.parse_args()

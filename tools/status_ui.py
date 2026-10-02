@@ -446,12 +446,18 @@ def collect(cfg):
         ocx = ocx_future.result()
     checkin = checkin_state(cfg["checkin_candidates"], today)
     free = free_models()
+    credits = node_credits(cfg)
     verify = verify_snapshot(cfg)
     xhx = xhx_usage(cfg)
 
     warnings = list(cfg["warnings"])
     for bridge in bridges:
-        if not bridge["key"]["set"] and bridge["probe"]["http"] in (401, 403):
+        # When the fleet env is missing entirely, the warning above already says
+        # every key is unknown and how to point at the real install. Repeating it
+        # once per bridge -- with a path derived from that same wrong home -- is
+        # noise that reads like twelve separate logins are needed.
+        if (not bridge["key"]["set"] and bridge["probe"]["http"] in (401, 403)
+                and cfg["env_found"]):
             warnings.append("%s: HTTP %d 且 key 未读取到 - 登录后执行 bash %s/bridges/finish.sh %s"
                             % (bridge["name"], bridge["probe"]["http"], cfg["home"], bridge["name"]))
         if not fleet_platform.service_kind(bridge["label"]):
@@ -476,6 +482,7 @@ def collect(cfg):
     return {"generated_at": now_str(), "elapsed_ms": round((time.time() - started) * 1000),
             "config": cfg["public"], "summary": summary, "warnings": warnings,
 "bridges": bridges, "ocx": ocx, "checkin": checkin, "free": free, "verify": verify,
+            "credits": credits,
             "xhx_usage": xhx, "actions": snapshot_actions()}
 
 
@@ -507,6 +514,38 @@ def free_models():
         _FREE_CACHE["value"] = value
     return value
 
+
+NODE_CREDITS_TTL_SECONDS = 30.0
+_NC_LOCK = threading.Lock()
+_NC_CACHE = {"at": 0.0, "value": None}
+
+
+def node_credits(cfg):
+    """Per-node account + credits for every node in the fleet.
+
+    tools/node_credits.py is stdlib-only and reads the endpoints each
+    bridge already serves (/health, /ui/checkin, /entitlements) plus the
+    official balance, so it runs as a subprocess under this process
+    interpreter without pulling httpx in. Cached because every row is a
+    network call and the page refreshes on a timer.
+    """
+    with _NC_LOCK:
+        cached = _NC_CACHE["value"]
+        if cached is not None and (time.time() - _NC_CACHE["at"]) < NODE_CREDITS_TTL_SECONDS:
+            return cached
+    value = {"available": False, "error": "", "nodes": []}
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "node_credits.py")
+    try:
+        out = subprocess.run([cfg["python"] or sys.executable, script, "--json"],
+                             capture_output=True, timeout=120)
+        value = json.loads(out.stdout.decode("utf-8", "ignore"))
+        value["available"] = True
+    except Exception as exc:
+        value["error"] = str(exc)[:160]
+    with _NC_LOCK:
+        _NC_CACHE["at"] = time.time()
+        _NC_CACHE["value"] = value
+    return value
 
 def _verify_paths(cfg):
     here = os.path.dirname(os.path.abspath(__file__))
@@ -602,8 +641,31 @@ def collect_cached(cfg):
 # configuration
 # --------------------------------------------------------------------------- #
 
+def _default_home():
+    """Fleet root when neither --home nor FLEET_HOME is given.
+
+    The launchd service always passes --home, so only a hand-run
+    `status_ui.py --once` lands here. The old single guess made that hand run
+    report every bridge as unauthenticated -- one "log in and run finish.sh"
+    warning each -- on a fleet that was perfectly healthy, because the guess
+    did not match where install.sh had actually put things.
+
+    Evaluated per call, not at import: HOME is read when the question is asked,
+    so a process that changes HOME (tests, a wrapper) is honoured.
+    """
+    home = os.path.expanduser("~")
+    candidates = (
+        os.path.join(home, "FleetKit", "runtime"),
+        os.path.join(home, "fleet"),
+    )
+    for candidate in candidates:
+        if os.path.isfile(os.path.join(candidate, "fleet.env")):
+            return candidate
+    return candidates[-1]
+
+
 def build_config(args):
-    home = args.home or os.environ.get("FLEET_HOME") or os.path.join(os.path.expanduser("~"), "fleet")
+    home = args.home or os.environ.get("FLEET_HOME") or _default_home()
     env_file = args.env_file or os.environ.get("FLEET_ENV_FILE") or os.path.join(home, "fleet.env")
     keys = {}
     env_found = os.path.isfile(env_file)
@@ -614,8 +676,12 @@ def build_config(args):
         except OSError as exc:
             warnings.append("fleet.env 不可读 %s (%s)" % (env_file, exc))
     else:
-        warnings.append("fleet.env 不存在: %s（桥 key 未知，探测不带 Authorization 头；"
-                        "其余状态仍可查看）" % env_file)
+        warnings.append(
+            "fleet.env 不存在: %s（桥 key 未知，探测不带 Authorization 头；"
+            "其余状态仍可查看）。如果本机安装不在默认位置，请加 --home DIR "
+            "或设 FLEET_HOME；launchd 里登记的正确值见 "
+            "~/Library/LaunchAgents/com.local.fleet-ui.plist 的 --home 参数。"
+            % env_file)
 
     # config layers: CLI flag > process env > fleet.env > default
     port_base = args.port_base
@@ -979,6 +1045,15 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
       <pre id="ck-out" style="margin-top:8px"></pre>
     </div>
     <div class="panel">
+      <h2>节点积分 / 账号（15 个节点）</h2>
+      <div class="row"><span class="meta" id="nc-note"></span></div>
+      <table><thead><tr><th>节点</th><th>状态</th><th>账号</th><th>登录</th>
+        <th>积分口径</th><th>积分 / 额度</th><th>来源</th><th>签到</th></tr></thead>
+      <tbody id="nc-rows"></tbody></table>
+      <pre id="nc-out" style="margin-top:8px"></pre>
+    </div>
+
+    <div class="panel">
       <h2>小浣熊用量（本地计数，llm/v2 不结算积分）</h2>
       <div class="row"><span class="meta" id="xhx-path"></span></div>
       <table><thead><tr><th>模型</th><th>次数</th><th>总 tokens</th><th>输出</th><th>推理</th><th>最近一次</th></tr></thead>
@@ -1087,6 +1162,25 @@ function render(){
           (t.ok_today?pill('ok','今天'):pill('warn','未签'))+'<td>'+esc(t.points)+'</td>'+
           '<td class="dim">'+esc(t.at)+'</td><td class="dim">'+esc(t.detail)+'</td></tr>';}).join('')
     : '<tr><td colspan="5" class="dim">暂无记录</td></tr>';
+  var nc=s.credits||{};
+  document.getElementById('nc-out').textContent = nc.available
+    ? '' : ('读取失败：'+(nc.error||'node_credits.py 不可用'));
+  var ncrows=(nc.nodes||[]).map(function(n){
+    var cred = n.credits_value==null ? '-'
+      : esc(n.credits_value)+' '+(n.credits_unit||'');
+    var login = n.logged_in===true ? pill('ok','是')
+      : (n.logged_in===false ? pill('bad','否') : pill('warn','?'));
+    var vendor = n.vendor ? '<div class=dim>'+esc(n.vendor)+'</div>' : '';
+    return '<tr><td><b>'+esc(n.node)+'</b>'+vendor+'</td>'
+      +(n.up?pill('ok','up'):pill('bad','down'))
+      +'<td>'+esc(n.account||'-')+'</td><td>'+login
+      +'<td>'+esc(n.credits_kind)+'</td><td>'+cred.trim()
+      +'<td class=dim>'+esc(n.credits_source||'-')+'</td>'
+      +'<td class=dim>'+esc(n.checkin||'-')+'</td></tr>';}).join('');
+  document.getElementById('nc-rows').innerHTML = ncrows
+    || '<tr><td colspan=8 class=dim>暂无数据</td></tr>';
+  document.getElementById('nc-note').textContent =
+    '来源：各桥 /health · /ui/checkin（Buddy 加油站）· /entitlements（ZCode 额度）· 官方余额；口径见 free-windows.json';
   var xu=s.xhx_usage||{};
   document.getElementById('xhx-path').textContent = xu.path||'';
   document.getElementById('xhx-note').textContent = xu.note||'';
@@ -1253,7 +1347,7 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="status_ui.py",
         description="FleetKit local status dashboard (stdlib only, zero new deps)")
-    parser.add_argument("--home", help="fleet root (default ~/FleetKit/runtime or $FLEET_HOME)")
+    parser.add_argument("--home", help="fleet root (default ~/FleetKit/runtime, then ~/fleet; or $FLEET_HOME)")
     parser.add_argument("--env-file", help="fleet.env path (default <home>/fleet.env)")
     parser.add_argument("--host", default="127.0.0.1",
                         help="bind address (default 127.0.0.1)")

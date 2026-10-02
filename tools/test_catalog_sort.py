@@ -132,3 +132,154 @@ def test_strict_coverage_still_refuses_a_real_gap(tmp_path):
 
     assert proc.returncode == 4
     assert "zcode" in proc.stderr
+
+
+def _aged_reach(tmp_path, hours, **over):
+    """A reach snapshot whose verdicts are 'hours' old."""
+    import json
+    reach = tmp_path / "reach.json"
+    stamp = (datetime.datetime.now(datetime.timezone.utc)
+             - datetime.timedelta(hours=hours)).isoformat()
+    snap = {
+        "reachable": ["workbuddy"],
+        "unreachable": ["cline"],
+        "skipped": {},
+        "measured_at": stamp,
+        "verified_models": {},
+    }
+    snap.update(over)
+    reach.write_text(json.dumps(snap), encoding="utf-8")
+    return reach
+
+
+def _order_fixture(tmp_path):
+    """cline (early in --order) unreachable, qwen (late) unknown.
+
+    The two only change places if the unreachable verdict stops being
+    believed: both are then tier 1, and --order puts cline first.
+    """
+    import json
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(json.dumps({"models": [
+        {"slug": "qwen/qwen3.8-max"},
+        {"slug": "cline/cline-free-deepseek-v4.1-flash"},
+        {"slug": "workbuddy/glm-5.2"},
+    ]}), encoding="utf-8")
+    return catalog
+
+
+def _order(catalog, reach, *extra):
+    import json
+    proc = _sort(catalog, reach, *extra)
+    assert proc.returncode == 0, proc.stderr
+    rows = json.loads(open(catalog, encoding="utf-8").read())["models"]
+    return [m["slug"] for m in rows], proc
+
+
+def test_a_stale_unreachable_verdict_stops_sinking(tmp_path):
+    """An aged 'unreachable' is a claim about a moment, not a fact.
+
+    Measured 2026-10-01: zcode/GLM-5.3-Flash answered a real chat completion,
+    yet the picker still could not show it, because the reach snapshot was
+    still calling providers dead from days earlier. The drop path already
+    refuses to trust an aged verdict; ordering must not trust it either, or a
+    provider that recovered stays buried below every unknown one forever.
+    """
+    catalog = _order_fixture(tmp_path)
+    reach = _aged_reach(tmp_path, hours=96)
+
+    order, proc = _order(catalog, reach)
+
+    assert order == ["workbuddy/glm-5.2",
+                     "cline/cline-free-deepseek-v4.1-flash",
+                     "qwen/qwen3.8-max"]
+    assert "not sinking stale" in proc.stderr
+    # it is still not promoted to reachable: nothing here re-measured it
+    assert order[0] == "workbuddy/glm-5.2"
+
+
+def test_a_fresh_snapshot_still_sinks_an_unreachable_provider(tmp_path):
+    """The control: while the verdict is current, nothing changes."""
+    catalog = _order_fixture(tmp_path)
+    reach = _aged_reach(tmp_path, hours=0.1)
+
+    order, proc = _order(catalog, reach)
+
+    assert order == ["workbuddy/glm-5.2", "qwen/qwen3.8-max",
+                     "cline/cline-free-deepseek-v4.1-flash"]
+    assert "not sinking stale" not in proc.stderr
+
+
+def _rank_ordered(models):
+    """Sort slugs the way main() does before it interleaves.
+
+    interleave_reps() takes its input already sorted by (tier, provider
+    position, hy4, important rank); it does not sort on its own.
+    """
+    order = catalog_sort.DEFAULT_ORDER.split(",")
+
+    def key(m):
+        slug = m["slug"]
+        prov = slug.split("/", 1)[0]
+        return (order.index(prov) if prov in order else len(order),
+                catalog_sort.important_rank(slug), slug)
+
+    return sorted(models, key=key)
+
+
+def test_interleave_reps_floats_each_providers_strongest_pair():
+    """A provider runner-up belongs beside its strongest, not 60 rows down.
+
+    Measured 2026-10-01 on the live catalog: zcode/GLM-5.3-Flash was the
+    provider row 10 representative while zcode/GLM-5.3 sat at row 69 of
+    117, because only one row per provider was floated.
+    """
+    models = [{"slug": s} for s in (
+        "zcode/GLM-5.3", "zcode/GLM-5.3-Flash",
+        "stepfun/step-5-preview", "stepfun/step-3.7-flash",
+        "stepfun/step-3.5-flash",
+        "qwen/qwen3.8-max")]
+
+    slugs = [m["slug"] for m in catalog_sort.interleave_reps(
+        _rank_ordered(models), catalog_sort.DEFAULT_ORDER.split(","),
+        good={"zcode", "stepfun"})]
+
+    flash = slugs.index("zcode/GLM-5.3-Flash")
+    assert slugs.index("zcode/GLM-5.3") == flash + 1
+    assert flash < 5
+    # the third model of a provider is not floated: the band stays short
+    assert (slugs.index("stepfun/step-3.5-flash")
+            > slugs.index("stepfun/step-3.7-flash"))
+
+
+def test_a_band_of_one_restores_the_single_representative(monkeypatch):
+    """FLEET_REP_BAND=1 must bring back the old one-row-per-provider head."""
+    monkeypatch.setattr(catalog_sort, "REP_BAND", 1)
+    models = [{"slug": s} for s in (
+        "zcode/GLM-5.3", "zcode/GLM-5.3-Flash",
+        "stepfun/step-5-preview", "stepfun/step-3.7-flash")]
+
+    slugs = [m["slug"] for m in catalog_sort.interleave_reps(
+        _rank_ordered(models), catalog_sort.DEFAULT_ORDER.split(","),
+        good={"zcode", "stepfun"})]
+
+    # stepfun sits earlier in --order than zcode, so it still leads the band;
+    # what changes is that zcode contributes a single row again.
+    assert slugs.index("zcode/GLM-5.3-Flash") == 1
+    assert slugs.index("zcode/GLM-5.3") == 3
+
+
+def test_zcode_flash_ranks_before_the_bare_id():
+    """GLM-5.3 is a substring of GLM-5.3-Flash.
+
+    With the bare needle first both rows shared rank 0, so which one became
+    the provider representative depended on the prober proven flag instead
+    of on the listed order.
+    """
+    assert (catalog_sort.important_rank("zcode/GLM-5.3-Flash")
+            < catalog_sort.important_rank("zcode/GLM-5.3"))
+
+
+def test_rep_band_is_a_positive_int():
+    assert isinstance(catalog_sort.REP_BAND, int)
+    assert catalog_sort.REP_BAND >= 1

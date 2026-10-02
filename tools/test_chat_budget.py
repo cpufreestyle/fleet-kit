@@ -45,6 +45,29 @@ antigravity = _load("antigravity_bridge",
                     os.path.join("antigravity", "antigravity_bridge.py"))
 
 
+class _FakeClock:
+    """A stand-in for the time module whose clock only moves when told.
+
+    Both bridges charge every attempt the wall clock left on a
+    deadline (``deadline - time.time()``), so a real ``sleep`` turns every
+    "remaining budget" assertion into a window a loaded machine can miss.
+    Advancing the clock by hand keeps the arithmetic exact and the suite
+    green on a busy host. Everything else delegates to the real module.
+    """
+
+    def __init__(self, start=1000000.0):
+        self._now = start
+
+    def time(self):
+        return self._now
+
+    def sleep(self, dt):
+        self._now += float(dt)
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 class _Bridge:
     """One module's real http.server handler, listening on an ephemeral port."""
 
@@ -80,11 +103,13 @@ GEMINI_PAYLOAD = {"model": "gemini-3-pro-preview",
 def test_gemini_fallback_channel_gets_the_remaining_budget(monkeypatch):
     """call_b used to start with the 180s default, i.e. a second full hang."""
     monkeypatch.setattr(gemini, "CHAT_BUDGET", 10.0)
+    clock = _FakeClock()
+    monkeypatch.setattr(gemini, "time", clock)
     seen = []
 
     def fake_a(model, msgs, stream, timeout=180, deadline=None):
-        seen.append(("code-assist", deadline and deadline - time.time()))
-        time.sleep(1.0)
+        seen.append(("code-assist", deadline and deadline - clock.time()))
+        clock.sleep(1.0)                  # one second of budget, no real waiting
         raise gemini.UpstreamError("codeassist error: HTTP 503")
 
     def fake_b(prompt, timeout=180):
@@ -104,10 +129,12 @@ def test_gemini_fallback_channel_gets_the_remaining_budget(monkeypatch):
     assert [name for name, _ in seen] == ["code-assist", "gemini-web"]
     # channel A still owns the whole budget ...
     assert seen[0][1] == pytest.approx(10.0)
-    # ... and channel B gets the ~9s that are left of it, not another 180s.
-    assert 8.0 < seen[1][1] <= 9.0
-    assert elapsed < 2.5
-
+    # ... and channel B gets exactly the 9s that are left of it, not another
+    # 180s. The clock is fake, so this is an exact value rather than a window
+    # that a loaded machine used to miss.
+    assert seen[1][1] == pytest.approx(9.0)
+    # nothing really waited; the generous bound still catches a genuine hang
+    assert elapsed < 5.0
 
 def test_gemini_an_overrun_still_leaves_the_fallback_a_floor(monkeypatch):
     """A connect that outlives its own timeout must not starve channel B."""
@@ -139,20 +166,22 @@ def test_gemini_an_overrun_still_leaves_the_fallback_a_floor(monkeypatch):
 
 def test_gemini_both_channels_failing_answers_502_not_a_hang(monkeypatch):
     monkeypatch.setattr(gemini, "CHAT_BUDGET", 1.0)
+    clock = _FakeClock()
+    monkeypatch.setattr(gemini, "time", clock)
     seen = []
 
     def burn_budget(deadline):
         """An honoured upstream hangs for exactly the time it was handed."""
-        left = max(0.0, deadline - time.time())
+        left = max(0.0, deadline - clock.time())
         seen.append(left)
-        time.sleep(left)
+        clock.sleep(left)
         raise gemini.UpstreamError("timed out")
 
     def fake_a(model, msgs, stream, timeout=180, deadline=None):
         burn_budget(deadline)
 
     def fake_b(prompt, timeout=180):
-        burn_budget(time.time() + timeout)
+        burn_budget(clock.time() + timeout)
 
     monkeypatch.setattr(gemini, "call_a", fake_a)
     monkeypatch.setattr(gemini, "call_b", fake_b)
@@ -163,13 +192,18 @@ def test_gemini_both_channels_failing_answers_502_not_a_hang(monkeypatch):
         bridge.close()
 
     assert code == 502
-    assert set(body["error"]["message"]) == {"code_assist", "web"}
+    # error.message is text now: an OpenAI-compatible client reads it as
+    # such, and the per-channel dict it used to carry turned the whole
+    # envelope into a nested object. The breakdown moved one level down,
+    # to error.channels.
+    assert isinstance(body["error"]["message"], str)
+    assert set(body["error"]["channels"]) == {"code_assist", "web"}
     # the whole budget for A, the floor for B -- where it used to be 180 + 180
     assert len(seen) == 2
-    assert seen[0] == pytest.approx(1.0, abs=0.1)
-    assert seen[1] == pytest.approx(gemini.FALLBACK_FLOOR, abs=0.1)
-    assert elapsed < 3.0
-
+    assert seen[0] == pytest.approx(1.0)
+    assert seen[1] == pytest.approx(gemini.FALLBACK_FLOOR)
+    # exact arithmetic now: no tolerance window to miss on a busy machine
+    assert elapsed < 5.0
 
 def test_gemini_web_channel_page_fetch_is_charged_to_the_budget(monkeypatch):
     """The /app page fetch had its own hardcoded 30s timeout.
@@ -225,12 +259,16 @@ def test_gemini_a_slow_token_refresh_is_charged_to_the_budget(monkeypatch):
     """do_refresh tried every client for 30s each, outside any budget."""
     _no_token_file(monkeypatch)
     monkeypatch.setattr(gemini, "CLIENT_CANDIDATES", [("cid-1", "sec-1"), ("cid-2", "sec-2")])
-    gemini.ST.update({"at": None, "exp": 0.0, "project": None})
+    # the bridge keeps its per-account state thread-local now, so seed it
+    # through the same accessor do_POST uses instead of a module dict
+    gemini._st().update({"at": None, "exp": 0.0, "project": None})
+    clock = _FakeClock()
+    monkeypatch.setattr(gemini, "time", clock)
     seen = []
 
     def fake_http_json(url, payload, headers=None, method='POST', timeout=90):
         seen.append(timeout)
-        time.sleep(timeout)                     # honour the timeout it was handed
+        clock.sleep(timeout)              # honour the timeout it was handed
         raise gemini.UpstreamError("URLError: timed out")
 
     monkeypatch.setattr(gemini, "http_json", fake_http_json)
@@ -238,19 +276,20 @@ def test_gemini_a_slow_token_refresh_is_charged_to_the_budget(monkeypatch):
     started = time.monotonic()
     with pytest.raises(gemini.UpstreamError):
         gemini.call_a("gemini-3-pro-preview", [{"role": "user", "content": "ping"}],
-                      False, deadline=time.time() + 1.0)
+                      False, deadline=clock.time() + 1.0)
     elapsed = time.monotonic() - started
 
     assert seen, "do_refresh never tried a client"
     assert seen[0] == pytest.approx(1.0)        # the remaining budget, not 30
     assert len(seen) == 1                       # client 2 was never tried
-    assert elapsed < 2.0
+    assert elapsed < 5.0
 
 
 def test_gemini_load_code_assist_is_charged_to_the_budget(monkeypatch):
     _no_token_file(monkeypatch)
-    monkeypatch.setattr(gemini, "ST",
-                        {"at": "fresh", "exp": time.time() + 3600, "project": None})
+    clock = _FakeClock()
+    monkeypatch.setattr(gemini, "time", clock)
+    gemini._st().update({"at": "fresh", "exp": clock.time() + 3600, "project": None})
     seen = []
 
     def fake_http_json(url, payload, headers=None, method='POST', timeout=90):
@@ -260,25 +299,26 @@ def test_gemini_load_code_assist_is_charged_to_the_budget(monkeypatch):
     monkeypatch.setattr(gemini, "http_json", fake_http_json)
 
     with pytest.raises(gemini.UpstreamError):
-        gemini.load_code_assist(time.time() + 2.0)
+        gemini.load_code_assist(clock.time() + 2.0)
 
-    assert seen == [pytest.approx(2.0, abs=0.2)]   # the remaining budget, not 30
-
+    # exactly the remaining budget; the fake clock removes the old abs=0.2
+    assert seen == [pytest.approx(2.0)]   # the remaining budget, not 30
 
 # ---------------------------------------------------------- antigravity
 
 ANTIGRAVITY_PAYLOAD = {"model": "claude-opus-4-8@default",
                        "messages": [{"role": "user", "content": "ping"}]}
 
-
 def test_antigravity_a_blocked_upstream_abandons_the_chain(monkeypatch):
     """An unreachable upstream used to walk every variant and IDE type too."""
     monkeypatch.setattr(antigravity, "CHAT_BUDGET", 0.5)
+    clock = _FakeClock()
+    monkeypatch.setattr(antigravity, "time", clock)
     attempts = []
 
     def fake_upstream(model, msgs, stream, timeout=180, ide=None):
         attempts.append((timeout, ide))
-        time.sleep(0.6)                     # blows past the deadline
+        clock.sleep(0.6)                    # blows past the deadline
         raise antigravity.UpstreamError("HTTP 404: model not found")
 
     monkeypatch.setattr(antigravity, "call_upstream", fake_upstream)
@@ -294,17 +334,19 @@ def test_antigravity_a_blocked_upstream_abandons_the_chain(monkeypatch):
     # timeouts in the old code. The deadline must cut the chain to one.
     assert len(attempts) == 1
     assert attempts[0][1] is None
-    assert elapsed < 1.5
-
+    # the clock is fake so nothing waited; a real hang still trips this
+    assert elapsed < 5.0
 
 def test_antigravity_later_attempts_are_charged_the_time_left(monkeypatch):
     """No attempt after the first may be handed the 180s default again."""
     monkeypatch.setattr(antigravity, "CHAT_BUDGET", 2.0)
+    clock = _FakeClock()
+    monkeypatch.setattr(antigravity, "time", clock)
     seen = []
 
     def fake_upstream(model, msgs, stream, timeout=180, ide=None):
         seen.append(timeout)
-        time.sleep(0.3)
+        clock.sleep(0.3)
         raise antigravity.UpstreamError("HTTP 404: model not found")
 
     monkeypatch.setattr(antigravity, "call_upstream", fake_upstream)
@@ -317,11 +359,11 @@ def test_antigravity_later_attempts_are_charged_the_time_left(monkeypatch):
     assert code == 502
     # 2 variants + 1 IDE type, all fast enough to fit inside the budget
     assert len(seen) == len(antigravity.model_variants("x")) + len(antigravity.IDE_TYPES) - 1
-    assert seen[0] == pytest.approx(2.0, abs=0.05)
+    # exact arithmetic on a fake clock: 2.0, then 1.7, then 1.4
+    assert seen[0] == pytest.approx(2.0)
     assert seen == sorted(seen, reverse=True)
     assert all(antigravity.FALLBACK_FLOOR <= t <= 2.0 for t in seen)
     assert all(t < 2.0 for t in seen[1:])
-
 
 def test_antigravity_the_ide_fallback_still_succeeds_inside_the_budget(monkeypatch):
     """The deadline must not cost the bridge its working fallback path."""
@@ -412,7 +454,7 @@ def test_send_still_writes_for_a_client_that_is_listening():
 # ------------------------------------------- socket-level deadline (both bridges)
 
 @pytest.mark.parametrize("which", ["gemini", "antigravity"])
-def test_every_address_is_charged_to_the_deadline(which):
+def test_every_address_is_charged_to_the_deadline(which, monkeypatch):
     """One blocked urlopen() must not cost N x timeout.
 
     cloudcode-pa.googleapis.com resolves to 16 addresses, 8 of them IPv6 that
@@ -421,20 +463,22 @@ def test_every_address_is_charged_to_the_deadline(which):
     the rest of the walk unbounded.
     """
     mod = gemini if which == "gemini" else antigravity
+    clock = _FakeClock()
+    monkeypatch.setattr(mod, "time", clock)
     blackhole = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.255.255.1", 443)),
                  (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.255.255.2", 443))]
     seen = []
 
     def fake_connect(self, address):
         seen.append(self.gettimeout())
-        time.sleep(self.gettimeout())          # a blackhole burns it all
+        clock.sleep(self.gettimeout())      # a blackhole burns it all
         raise OSError("timed out")
 
     orig_getaddrinfo, orig_connect = socket.getaddrinfo, socket.socket.connect
     socket.getaddrinfo = lambda host, port, *a, **k: blackhole
     socket.socket.connect = fake_connect
     try:
-        mod._arm_deadline(time.time() + 1.0)
+        mod._arm_deadline(clock.time() + 1.0)
         started = time.monotonic()
         try:
             with pytest.raises(OSError):
@@ -447,11 +491,11 @@ def test_every_address_is_charged_to_the_deadline(which):
 
     # The first address alone can burn the whole budget; what matters is that
     # the walk stops there instead of handing the next address a fresh 30s.
-    assert seen[0] == pytest.approx(1.0, abs=0.05)
+    assert seen[0] == pytest.approx(1.0)
     assert seen == sorted(seen, reverse=True)
     assert all(t <= 1.0 for t in seen)
-    assert elapsed <= 1.2
-
+    # exact arithmetic on a fake clock, so the old abs=0.05 window is gone
+    assert elapsed < 5.0
 
 @pytest.mark.parametrize("which", ["gemini", "antigravity"])
 def test_the_deadline_does_not_break_a_reachable_connect(which):

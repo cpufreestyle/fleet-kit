@@ -39,8 +39,199 @@ launchd(com.local.fleet-checkin)  每日 09:00 + RunAtLoad
 - token 来自 `~/.box-agent/config/auth.json`；过期走单次轮换刷新（立即落盘），刷新失败重读盘（桌面端可能已重同步）
 - 签到后顺带拉 `GET /api/web/points/v1/balance` 记账（available_points 等）
 
-### 待扩展（有验证接口后按 TASKS 注册表加）
-- 灵犀 / qoder / workbuddy / codely / trae：目前均未发现每日签到端点（codely 为预算制、trae 为积分制无签到接口）
+### workbuddy / workbuddy-gpt — Buddy 加油站真签到（2026-10-01）
+- 经桥自己的端点，不另存凭证：GET / 领 dashboard session cookie →
+  GET /ui/checkin（活动 + 每账号 today_checked_in / credit / streak_days）→
+  POST /ui/checkin/claim（无 ref = 整个账号池领取）
+- 端点仍要求本机 + Content-Type: application/json + Origin 匹配，见桥内 _check_dashboard_management
+- **两座桥端点路径相同、后端不同**：国内 copilot.tencent.com、海外 www.workbuddy.ai。
+  实测 2026-10-01：海外桥拿国内端点问海外账号 → 401 Authorization Required，面板只能显示
+  「状态读取失败」。已改为按 _PROVIDER["backend"] 传后端，海外随即读到本期活动
+  （Buddy 加油站 season 1、每日 100 credits）
+- 海外 POST /v2/billing/meter/daily-checkin 目前回 400：应用里这条路要带 X-Device-Token
+  （Turing Shield，见 "WorkBuddy AI.app" 的 app.asar），本工具不伪造该头，所以海外节点报
+  「待领取」而不是假装领到；桌面端启动时会自行领取
+
+### 其余 12 个节点 — 无每日签到端点（已逐个核实）
+qoder / codely / trae / lingxi / cline / qwen / gemini / catpaw / antigravity / zcode / stepfun / tokendance
+- 上游没有每日签到接口，记为 na：既不算成功也不算失败，--run-now 退出码不因此变红
+- codely 的 LiteLLM /key/info、/user/info 实测 nginx 403，也没有余额可读
+- 每个节点仍然读出账号与积分，让 15 个节点在面板里都有带数字的一行
+
+## 节点积分查看（tools/node_credits.py）
+stdlib（urllib），可单独跑，不进任何 venv：
+
+    python3 tools/node_credits.py                 # 全机队一张表
+    python3 tools/node_credits.py --json          # 机器可读
+    python3 tools/node_credits.py --node zcode    # 单节点
+
+每行：状态 / 账号 / 登录 / 积分口径（free-windows.json）/ 积分值 / 来源 / 签到状态。
+真数字来源：xhx 官方 points balance、workbuddy 两桥 /ui/checkin、zcode /entitlements
+（一次性 100,000,000 tokens）；其余节点口径来自 free-windows.json，数值留空并写清原因。
+status_ui 面板「节点积分 / 账号」就是这份数据（30s 缓存）。
+
+
+### 两个编程套餐账号（Kimi Code / MiniMax，2026-10-01 加入）
+它们不是桥：机队没有为它们跑桥进程，所以每一行仍是同样三个问题——账号活着吗、哪个 key、
+平台说还剩多少。调用由 `tools/plan_credits.py` 直接问平台，`node_credits.py` 只负责渲染：
+
+    kimi-code   GET  https://api.kimi.com/coding/v1/usages
+                # coding 套餐的窗口余额，一次 GET，不花钱
+    minimax     POST https://api.minimaxi.com/v1/chat/completions（max_tokens=1）
+                # MiniMax 没有余额接口：1-token 调用既验证 key 又真的扣一点，扣减以控制台为准
+
+key 来源：环境变量 `KIMI_CODING_API_KEY` / `MINIMAX_API_KEY`；Kimi 在没有环境变量时回落到
+cc-switch 里 claude 的 default provider（那份本来就是 Kimi coding key）。401/403 一律显示
+「key 被拒」并附平台原文——把死 key 渲染成 0 credits，是套餐被悄无声息取消的方式。
+
+当前实测（2026-10-01）：cc-switch 里那份 Kimi key 已失效，`GET /coding/v1/usages -> HTTP 401
+The API Key appears to be invalid or may have expired.`；MiniMax 本机没有任何凭据，行里直说
+「未配置 key」且不发起调用。
+
+#### 2026-10-02：Kimi Code 找到真 key，答案是「没有套餐」
+
+key 不用再找。Kimi 桌面版自己把 coding key 存在
+
+    ~/Library/Application Support/kimi-desktop/daimon-share/daimon/kimi-code-key.json
+    （结构 {"v":2,"keys":[{"userId":...,"apiKey":"sk-kimi-...","keyId":...}]}）
+
+`plan_credits.py` 现在会自己读这份文件，所以本机直接
+`python3 tools/plan_credits.py kimi` 就能出结果，不用 `export` 任何东西。
+（cc-switch claude default 那个 65 位无前缀串不是 key，实测仍 401。）
+
+实测输出（真实返回，未删减）：
+
+    kimi key from ~/Library/Application Support/kimi-desktop/daimon-share/daimon/kimi-code-key.json
+    { "platform": "kimi-code", "http": 200, "auth": "Authorization",
+      "body": {},
+      "plan": {"user_level": 10, "user_level_name": "Free",
+               "goods_version": 0, "status": "USER_STATUS_NORMAL"},
+      "subscription": "terminated",
+      "reason": { "http": 403, "body": { "error": {
+        "type": "access_terminated_error",
+        "message": "Your current subscription does not have access to Kimi
+                    Code right now. Upgrade your plan to keep coding with
+                    Kimi Code: https://www.kimi.com/code/#pricing" } } } }
+
+the key works but this plan is not active -- ...
+renew the plan, then this reports real windows again
+
+结论：这个 Kimi 账号**当前没有生效的 Kimi Code 套餐**（Free 档、goods_version 0），
+所以 `/coding/v1/usages` 返回 `{}`——不是接口不对，是没套餐可报。计费页在
+https://www.kimi.com/code/#pricing 。
+
+顺带定死的两件事：
+
+- `/coding/v1/usages` 是对的路由（它的兄弟 `/coding/v1/usage` 返回 404
+  `resource_not_found_error`），Bearer 和 `x-api-key` 两种头都收。
+- 「key 有效但套餐停了」是 403 `access_terminated_error`，和「key 死了」的
+  401 是两件事。旧代码把 403 一律说成 dead key，会把一个好 key 说成死的；
+  现在这种情况单独走退出码 4，并把平台给的续费地址原样打出来。
+
+#### MiniMax：仍然没有凭据，而且本来也没有余额接口
+
+本机翻遍了也没有 MiniMax key：keychain 无条目、所有 `.env`（fleet.env、
+.openclaw/.env、.omniroute/.env 等 13 份）无 MINIMAX 相关、shell history 无、
+cc-switch provider 表里没有 MiniMax。`/Applications/MiniMax Agent.app`
+（com.ai.wanjuan 0.10.4）装着但从未启动——没有 userData 目录，所以连
+「从它自己存储里读」这条路都不存在。
+
+而且平台本来就没有余额接口。这条结论有三个独立来源，逐条列清免得下次重查：
+
+**来源一：MiniMax 开放平台 API 主机（无 key 探活实测）**
+
+    api.minimaxi.com / api.minimax.io
+      /v1/chat/completions   401 authorized_error（路由在，验签在）
+      /v1/usage /v1/usages /v1/credits /v1/quota /v1/account   全部 404
+
+    platform.minimaxi.com  同样九个路径全返回它自己的 404 页
+    www.minimaxi.com/api/*  的 200 是 SPA 兜底页（返回 HTML 不是 JSON），不是接口
+
+**来源二：MiniMax Agent 自己发布的 Safari 扩展（2026-10-02 逆）**
+
+`/Applications/MiniMax Agent.app/Contents/PlugIns/MiniMax Agent Extension.appex/
+Contents/Resources/popup.5eb990aa.js` 里能数出它全部的 web 路由：
+
+    /v1/api/user/login/sms/send     POST  发验证码
+    /v1/api/user/login/phone        POST  手机号登录，换 token
+    /v1/api/user/renewal            POST  续 token
+    /v1/api/user/account            DELETE 登出
+    /v1/api/user/guide_status       GET
+    /v1/api/user/toast              GET
+    /v1/api/chat/msg                POST  聊天
+    /v1/api/chat/msg_choice / msg_tts / voice_msg / retry_msg / feedback / stop_generating
+
+鉴权是请求头 `token`（存在扩展自己的存储里），外加一个 `yy` 签名头——
+MD5(unix + url + method + data + "oouiplugin")。基址只有两个：`https://hailuoai.com`
+和它的预发 `https://hailuo-pre.xaminim.com`。
+
+**整份路由表里没有任何 quota / balance / credits / usage / plan / vip 路径。**
+唯一的账号路由 `/v1/api/user/account` 从代码看是登出（`ul.delete(e)`），不是查余额。
+
+**来源三：对活主机按这份路由表逐条打**
+
+    https://hailuoai.com/v1/api/user/account  DELETE → 401（路由在，要 token）
+    https://hailuoai.com/v1/api/user/renewal  POST  → 400 {"statusInfo":{"code":2,
+        "message":"请求异常，请检查请求参数","requestID":...}}（路由在，缺参数）
+    https://hailuoai.com/v1/api/chat/msg       POST  → 401（路由在，要 token）
+    https://hailuoai.com/v1/api/user/quota     GET   → 404
+    https://hailuoai.com/v1/api/user/balance   GET   → 404
+    https://hailuoai.com/v1/api/user/credits   GET   → 404
+    hailuo-pre.xaminim.com 全部 SSL UNEXPECTED_EOF（预发不对公网开放）
+
+**来源四：MiniMax 各主机的真实身份（2026-10-02 补齐）**
+
+顺着扩展里出现的主机名单逐个看，确认了几个站各自是什么，免得下次再猜路径：
+
+- account.minimaxi.com / account.minimax.cn 是 **MiniMax Account SSO**（页面标题就是
+  "MiniMax Account SSO"），资源在 cdn.hailuoai.com/mmx-account/prod-web-sh-0.1.42/。
+  它只负责发登录态，buildManifest 里只有 /_app 和 /_error，没有任何业务路由。
+- platform.minimaxi.com 是**文档站**（/docs/ 前缀、katex、mintcdn），不是控制台。
+- www.minimaxi.com 是营销站，chunks 在
+  filecdn.minimax.chat/open_platform_web/prod-zh-minimax-0.1.80/。
+
+营销站 chunk 里唯一一条 /backend/ 路由是活的：
+
+    GET https://www.minimaxi.com/backend/user/biz_info
+      -> 401 {"base_resp":{"status_code":1004,"status_msg":"not login"}}
+
+路由存在、要登录态。同目录下 /backend/user/quota、/backend/user/balance 都是 404，
+所以连 /backend/ 这个前缀下也没有余额路由——余额只能是登录态页面渲染出来的。
+
+四个来源指向同一件事：**MiniMax 不提供任何可编程的余额接口**，网页控制台上的数字
+是登录态页面渲染的，没有对应 API。所以这一行永远只能是「key 或登录态还在吗」，
+问不出剩多少——这不是没找到，是它不存在。
+
+所以给了 key 也只能验证「key 还活着吗」。`plan_credits.py minimax` 会依次打
+CN、海外两个 host 再判 401—— MiniMax 的 key 按区域签发，海外 key 在 CN host
+上就是 401，旧代码会直接把好 key 判成死 key。
+
+#### 2026-10-01 记录（已被上一节取代）
+
+以下为 10-01 的原始记录，保留作对照：
+
+    拿到新 key 之后：
+
+    export KIMI_CODING_API_KEY=<key>
+    export MINIMAX_API_KEY=<key>        # 海外平台：plan_credits.py minimax --base https://api.minimax.io
+    python3 tools/plan_credits.py all   # 两边额度一次打出
+
+
+### 桥调用会不会扣积分（2026-10-02 实测）
+用户此前提问「用小浣熊的模型，积分没少」。实测：经机队网关打 Kimi / MiniMax 模型，
+调用全部正常返回，但四个能看到数字的节点计数一个都没动：
+
+    调用                                    结果   workbuddy   workbuddy-gpt   xhx
+    xhx/xhx-sn-kimi-k3（Kimi 模型）         200     100         100             7824 → 7824
+    workbuddy/minimax-m3（MiniMax 模型）    200     100         100             7824 → 7824
+    catpaw/MiniMax-M2.7（MiniMax 模型）     502     -           -               -（catpaw 上游需 VPN）
+
+结论：这些桥消耗的是平台侧的限额/授权，不是面板上那个客户端积分（xhx 自己的 notes 也
+写明「llm/v2 调用不结算积分」）。积分要动，只能走官方客户端或平台自己的结算接口。
+所以「调用了模型但积分没少」是预期行为，不是桥把调用吞了。
+
+Kimi Code 的官方接口是另一回事：`/coding/v1/usages` 能直接读到套餐余额（见上一节），
+那份 key 换成有效的之后，`plan_credits.py kimi` 就是官方口径的额度调用。
 
 ## 使用方法
 ```bash

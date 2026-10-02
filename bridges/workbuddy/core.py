@@ -61,7 +61,12 @@ DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _SHARED_DIR = Path(__file__).resolve().parent
 if str(_SHARED_DIR) not in sys.path:
     sys.path.insert(0, str(_SHARED_DIR))
+# bridges/ 自己也带公共模块（_common），和上面 6 个共享模块同一个套路。
+_BRIDGES_DIR = Path(__file__).resolve().parent.parent
+if str(_BRIDGES_DIR) not in sys.path:
+    sys.path.insert(0, str(_BRIDGES_DIR))
 
+import _common
 from account_pool import AccountPool, harden_private_path
 from dashboard import DASHBOARD_HTML
 from workbuddy_account_service import WorkBuddyAccountService
@@ -834,7 +839,7 @@ PASSTHROUGH_BODY_KEYS = {
 # FastAPI 应用
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="WorkBuddy2Codex", version=BRIDGE_VERSION)
+app = _common.make_app("WorkBuddy2Codex", BRIDGE_VERSION)
 CONFIG: dict = {"api_key": "", "gateways": _load_gateways(), "pool": None, "account_service": None, "checkin_service": None, "log_path": None,
                  "desensitize": False,
                  "route_model": _load_route_model(),
@@ -3002,11 +3007,15 @@ async def _stream_upstream(url: str, pool: AccountPool, body: dict,
                 last_status, last_error = 502, str(exc).encode("utf-8", "replace")
                 if started:
                     _log(f"{prefix}✗ 流中断 | account={candidate.ref} | {model_name} | {exc}")
-                yield _err_event(last_error, 502)
-                return
-            _refresh_pin_async()
-            pool.mark_failure(candidate.ref, "上游网络错误", 30)
-            _log(f"{prefix}✗ 网络错误 | account={candidate.ref} | {model_name} | {exc}")
+                    yield _err_event(last_error, 502)
+                    return
+                # 首字节还没发出：换下一个账号重试（与 _collect_with_pool 同合约）。
+                # 已发出字节后重试会向客户端重复输出，所以上面 started 分支只能结束。
+                # 上游 IP 可能已轮换：立即在后台重新解析固定 IP，缩短恢复时间。
+                _refresh_pin_async()
+                pool.mark_failure(candidate.ref, "上游网络错误", 30)
+                _log(f"{prefix}✗ 网络错误 | account={candidate.ref} | {model_name} | {exc}")
+                break
 
     if not completed:
         yield _err_event(last_error, last_status)
@@ -3093,8 +3102,13 @@ def main():
     )
     CONFIG["pool"] = pool
     CONFIG["account_service"] = WorkBuddyAccountService(pool, BRIDGE_VERSION)
-    CONFIG["checkin_service"] = WorkBuddyCheckinService(pool)
-
+    # The check-in endpoints live behind the same backend the bridge itself
+    # talks to, and the two variants are different hosts: measured
+    # 2026-10-01, the overseas bridge asked copilot.tencent.com with a
+    # www.workbuddy.ai credential and got 401 Authorization Required, which
+    # the dashboard then had to report as "status read failed".
+    CONFIG["checkin_service"] = WorkBuddyCheckinService(
+        pool, backend=_PROVIDER.get("backend"))
     # Buddy 签到助手: 启动时兜一轮，把账号池已完成当天签到的额度全部取出（失败只记日志，不影响启动）
     def _auto_checkin_startup() -> None:
         try:

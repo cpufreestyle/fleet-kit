@@ -66,12 +66,19 @@ PLAN_BLOCK_MARKERS = ("model not allowed", "not allowed on your", "not in your p
 BUDGETS = [256, 2048, 4096]
 PROBE_HTTP_TIMEOUT = 20
 PROBE_CHAT_TIMEOUT = 70
+# A few bridges carry a budget of their own that is larger than the probe:
+# zcode drives the official CLI (ZCODE_CLI_TIMEOUT, default 180s) and mints an
+# Aliyun captcha first (up to 75s). A 70s probe timeout would therefore report
+# BRIDGE_DOWN (a timeout) for a bridge that is merely slow -- a different verdict
+# from the truth, and one that hides the real reason. Give those bridges a probe
+# that outlives their own budget.
+PROBE_CHAT_TIMEOUT_OVERRIDE = {"zcode": 200}
 STREAM_PROBE_TIMEOUT = 25
 
 BRIDGES = [
     ("workbuddy",     "workbuddy2codex",      0, "hy4-preview",               "CODEBUDDY2OPENAI_KEY"),
     ("workbuddy-gpt", "workbuddy2codex-gpt",  1, "gpt-6-astra",               "CODEBUDDY2OPENAI_KEY"),
-    ("qoder",         "qoder2codex",          2, "Qwen3.8-Max",               "QODER2CODEX_KEY"),
+    ("qoder",         "qoder2codex",          2, "DeepSeek-V4-Pro",           "QODER2CODEX_KEY"),
     ("codely",        "codely2codex",         3, "codely-core",               "CODELY2CODEX_KEY"),
     ("trae",          "trae2codex",           4, "trae/Doubao-Seed-Evolving", "TRAE2CODEX_KEY"),
     ("lingxi",        "lingxi2codex",         5, "lingxi/deepseek-v4-flash",  "LINGXI2CODEX_KEY"),
@@ -81,7 +88,7 @@ BRIDGES = [
     ("antigravity",    "antigravity2codex",     10, "claude-opus-4-8@default",    "ANTIGRAVITY2CODEX_KEY"),
     ("qwen",           "qwen2codex",             11, "qwen3.8-flash",              "QWEN2CODEX_KEY"),
     ("cline",          "cline2codex",           12, "cline-free/deepseek-v4.1-flash", "CLINE2CODEX_KEY"),
-    ("zcode",          "zcode2codex",           13, "zcode/GLM-5.3",                  "ZCODE2CODEX_KEY"),
+    ("zcode",          "zcode2codex",           13, "zcode/GLM-5.3-Flash",       "ZCODE2CODEX_KEY"),
 ]
 
 
@@ -133,7 +140,8 @@ def get_models(port, key):
     return [m.get("id") for m in data.get("data", []) if m.get("id")]
 
 
-def chat(port, model, key, content, max_tokens=2048):
+def chat(port, model, key, content, max_tokens=2048, timeout=None):
+    timeout = PROBE_CHAT_TIMEOUT if timeout is None else timeout
     payload = json.dumps({"model": model, "messages": [{"role": "user", "content": content}],
                           "max_tokens": max_tokens, "temperature": 0, "stream": False}).encode()
     h = {"Content-Type": "application/json", "User-Agent": "fleet-verify/1.0"}
@@ -329,7 +337,15 @@ def verify_one(name, label, offset, preferred, keyenv, port_base, keys):
         attempted.append(attempt)
         for budget in BUDGETS:
             prompt, n, add, nonce = make_probe()
-            r = chat(port, model, key, prompt, max_tokens=budget)
+            # Only pass the kwarg when a bridge actually overrides it: every
+            # other call site keeps the historical signature, so fakes that
+            # patch chat() with a narrower lambda stay valid.
+            override = PROBE_CHAT_TIMEOUT_OVERRIDE.get(name)
+            if override is None:
+                r = chat(port, model, key, prompt, max_tokens=budget)
+            else:
+                r = chat(port, model, key, prompt, max_tokens=budget,
+                         timeout=override)
             last = (model, n, add, nonce, budget, r)
             attempt["code"], attempt["secs"] = r["code"], r["secs"]
             row["model"], row["code"], row["secs"], row["rmodel"] = model, r["code"], r["secs"], r["rmodel"]

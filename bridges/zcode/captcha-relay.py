@@ -15,8 +15,15 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import os
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+
+# One escaped exception used to reset the connection (http.server has no
+# exception stage); _basehttp is the stdlib-only shared guard in bridges/,
+# reached through the same bootstrap the bridges use.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
+import _basehttp
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PAGE = os.path.join(HERE, "captcha", "index.html")
@@ -101,6 +108,9 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             pass
         return json.dumps(info, ensure_ascii=False)
+
+
+Handler = _basehttp.install_basehttp_guard(Handler)
 
 
 def main() -> None:

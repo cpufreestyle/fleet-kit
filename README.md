@@ -9,6 +9,17 @@
 真实调用基线（2026-09-26）：`tools/verify_real_calls.py` 用随机运算题核验，5/10 桥真实推理
 （workbuddy、workbuddy-gpt、qoder、trae、xhx），其余 5 桥为登录门禁/会话失效/上游关停/需 VPN/Google 网络阻断，见「真实调用检测」。
 
+## 镜像同步
+
+GitHub 是本仓库的主 remote（origin）。当国际出口阻断、GitHub 不可达时，同一个
+仓库同步推送到 Gitee 私有镜像，凭证已存在本机 ~/.git-credentials：
+
+    git push gitee main      # 推到 Gitee 镜像 cpufreestyle/fleet-kit
+    git push origin main     # 网络恢复后补推 GitHub
+
+两个 remote 内容一致；git remote -v 里的 gitee 即镜像。2026-10-01 首次同步，
+当时 main 领先 origin 5 个提交，全部历史已落在镜像上。
+
 ## 架构
 
     Codex ──▶ opencodex 代理 (127.0.0.1:10100)
@@ -51,48 +62,6 @@ Codex 里模型以 `桥名/模型` 出现，例如 `workbuddy/hy4-preview`。
     bash "<R>/tools/checkin.sh" status          # 签到状态
     bash "<R>/bridges/finish.sh" <name>         # 某座桥登录后收尾
     bash "<R>/uninstall.sh"                     # 卸载
-
-Windows 上桥不归 launchd 管，`install.sh` 不会自动拉起它们。桥全掉线时，opencodex
-（127.0.0.1:10100）仍然把 13 座桥当作 provider，于是每个 fleet 模型都报：
-
-    unexpected status 502 Bad Gateway: Provider unreachable: Unable to connect.
-    Is the computer able to access the url?, url: http://127.0.0.1:10100/v1/responses
-
-用 `tools/fleet-bridges.ps1` 启停（读 `fleet.env`，缺 key 的桥自动跳过）：
-
-    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" status
-    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" start
-    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" restart -Only trae
-    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" stop
-    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" install-task   # 登录时自动拉起
-    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" remove-task
-
-`install-task` 先试 `schtasks`；非管理员失败时回落到当前用户的「启动」目录快捷方式，
-所以未提权也能做到开机自启。
-
-上面的命令默认用 **PowerShell 7**（`pwsh`）；机器上没有 PS7 时自动回落到
-Windows PowerShell 5.1，命令本身不用改。
-
-## 默认模型与自动回退
-
-舰队上游十几个，任何一个当天挂掉（登录过期、额度、VPN、上游故障）都会让选中它的
-每一轮失败。`tools/default_model_guard.py` 把 `stepfun/step-5-preview` 作为锚点：
-
-- `~/.codex/config.toml` 的 `model` 始终钉在锚点上（新会话从这里开始）；
-- 若钉住的模型**不是**锚点，就用一次最小请求（16 token）探它，失败即改写回锚点；
-- 钉住的就是锚点时不发任何请求，常态零开销。
-
-锚点由 `runtime/fleet.env` 的 `FLEET_DEFAULT_MODEL` 指定（默认 `stepfun/step-5-preview`），
-`opencodex/setup-providers.sh` 每次 sync 后也会按它重新 pin。
-
-    python3 "<R>/tools/default_model_guard.py" --once              # 单次检查
-    python3 "<R>/tools/default_model_guard.py" --daemon --interval 120
-    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" install   # 登录自启守护
-    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" status
-    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" remove
-
-日志：`<R>/logs/default-model-guard.log`。守护只改 `config.toml` 的 `model` 键，
-已经在跑的会话不受影响（Codex 读它是在启动时）。
 
 ## 两座 WorkBuddy 桥
 
@@ -415,17 +384,30 @@ docs/stepfun2codex-runbook.md。
 `ocx provider add --force` 都会重写 config.toml，不 pin 默认模型会被打回。
 改默认：`fleet.env` 里设 `FLEET_DEFAULT_MODEL=<slug>`，或直接手改 config.toml。
 
-**规则（2026-10-01 起）：默认模型恒为 `step-5-preview`，任何 provider 探测失败就跳回它。**
-`tools/fleet_default_model.py` 强制执行这条规则：
+### 默认模型出问题，跳回 step-5-preview
 
-    python3 tools/fleet_default_model.py --status           # 当前 pin + 探测
-    python3 tools/fleet_default_model.py --guard --dry-run   # 只报告，不改文件
-    python3 tools/fleet_default_model.py --guard             # 回退 + 隐藏坏 provider 的模型行（自动备份）
+默认模型 = `stepfun/step-5-preview`（下称港湾），其他模型出问题时按两层跳回：
 
-判定按「每 provider 采样最多 3 个模型」（单个模型可能只是没开 Responses API，不能据此判死整个
-provider）；跳过 tts/asr/embedding 之类噪声行；回退目标自己不通时退出 2 并拒绝改动。
-`opencodex/setup-providers.sh` 结尾会自动跑一次 `--guard`。改完 config.toml / catalog
-都要重启 Codex 才生效。
+1. **pin 时守卫**（`tools/default_model_guard.py`）：每次 `setup-providers.sh`
+    pin 完默认模型后跑一遍，也可以手动
+    `python3 tools/default_model_guard.py`（`--dry-run` 只看不改，
+    `--json` 出机器可读结论）。它拿活配置里的 `model` 键，去**这条模型自己的
+   路由**上打一次真实聊天（nonce `E2E_OK`，与 `fleet_probe.py` 同一约定）：
+   stepfun 系走 image-cap shim 15722，其余走各自的桥端口。探到已死且当前默认
+   不是港湾，就把 `model` 改钉回港湾并打印证据；港湾自己也死了就只报告、不改
+   写——没有地方可跳。`fleet.env` 里的 `FLEET_DEFAULT_MODEL` 指着一条死路线
+   时同样会告警：下次 setup 会把它 pin 上去。
+2. **运行时 failover**（CC Switch 自己的 `auto_failover_enabled`）：会话中临时
+   切到别的 provider 后它挂了，CC Switch 按熔断判据把请求转给 failover 队列里
+   的 provider。港湾（StepFun）必须在 codex 的 failover 队列里，否则第 2 层为空转。
+   守卫每次运行只读检查这两项（`proxy_config.auto_failover_enabled=1`、
+   StepFun `in_failover_queue=1`，库在 `~/.cc-switch/cc-switch.db`），漂移时
+   打印修复 SQL 并以退出码 1 报警；它**不写** CC Switch 的库——那是个 App 正开
+   着的 55MB 数据库，改了不重启不生效，重启是人的决定。
+
+为什么探路由而不是探 15721 网关：CC Switch 会把外来模型改写成当前 provider 的
+模型再转出网关，一条死掉的默认从网关侧看永远是 200 step-5-preview——trae 路线
+挂了那一周就是这么被漏掉的。
 
 ### 为什么有的模型不在选择器
 
@@ -569,6 +551,8 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 | antigravity | Antigravity 桌面 App 登录（或 gemini login） | ~/.gemini/jetski-standalone-oauth-token | 与 gemini 共用 token；需能连 cloudcode-pa.googleapis.com |
 | qwen | qwencloud.com 控制台创建 API key，写入 `fleet.env` 的 `QWEN2CODEX_KEY` | `fleet.env`（无本地登录态） | 上游 maas.qwencloudapi.com；key 丢失可在控制台重建 |
 
+（gemini 支持多账号池：`GEMINI_AUTH_DIR` + `POST /__gemini/accounts/*`，用法见 docs/gemini2codex-runbook.md「多账号池」一节。）
+
 每个服务登录后运行对应的 bridges/finish.sh <name>：重启桥 → 等待 /v1/models →
 列出模型 → 注入 Codex 模型目录 → ocx sync → 冒烟聊天一次。
 
@@ -627,7 +611,6 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 - tools/catalog-filter.sh run|install-timer|uninstall-timer|status：按 verify.real 隐藏不可用桥模型＋按 slug 清理噪声行（默认 300s，与 ocx-catalog-guard 互补）
 - tools/free_models.py [--free-only] [--credits client|limit|own|unknown] [--provider P] [--missing] [--json] [--check-sources]：模型标注：免费状态 + 是否走客户端积分（数据在仓库根 free-windows.json，状态面板同源）
 - tools/short_aliases.py [--dry-run]：选择器短名（ocx 别名，路由不受影响）
-- tools/fleet_default_model.py [--status|--guard [--dry-run]] [--fallback SLUG]：默认模型恒为 step-5-preview，坏 provider 自动回退并隐藏
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
 - opencodex/setup-providers.sh：重新注册 11 桥
 - uninstall.sh [--home DIR] [--purge]：卸载 launchd 服务和 plist；--purge 连目录一起删
@@ -750,21 +733,52 @@ bash "<PRJ>/runtime/opencodex/setup-providers.sh" 即追加 tokendance provider
 
 StepFun 的 Plan API 在 CC Switch 这一跳有 70 图上限（第 71 张回 400
 `images_too_many`；`disable_response_storage = true` 让 Codex 每轮重发整段会话，
-长会话必然撞上）。`tools/stepfun_image_shim.py` 架在 CC Switch（15721）前面的
+长会话必然撞上）。`tools/stepfun_image_shim.py` 架在 CC Switch（15721）**下面**的
 透传层，监听 15722，转发前去重 + 截断到 32 张（`tools/image_cap.py` 是测量）。
+链路：Codex → 15721(CC Switch) → 15722(shim) → `https://api.stepfun.com/step_plan/v1`，
+shim 的上游是真正的上游而不是 CC Switch，两边绕不成环。
 
 ```bash
 bash tools/stepfun_image_shim.sh status           # 看 URL / pid / 健康
 bash tools/stepfun_image_shim.sh install-timer   # launchd 常驻
 bash tools/stepfun_image_shim.sh uninstall-timer
-python3 tools/pin_shim_base_url.py --dry-run      # 预览 base_url pin
+python3 tools/pin_cc_switch_endpoint.py --dry-run --all-stepfun   # 预览会重指哪些行
 ```
 
 `install.sh` 和 `opencodex/setup-providers.sh` 已自动接线（含 `--dry-run` 守卫）。
-CC Switch 每次切 provider 都会把 `base_url` 写回 15721，所以 pin 必须跟着 setup 重跑；
-`tools/pin_shim_base_url.py` 幂等，只改 `model_provider` 指向的那个 provider。
+真正有效的杠杆是 CC Switch 自己的路由表：`tools/pin_cc_switch_endpoint.py` 改写
+`~/.cc-switch/cc-switch.db` 里指向 StepFun 的 codex 行的转发目标。默认是 **sweep 模式**，
+按转发目标判而不是按 provider 名判 —— 本机 `nv spark` 这个 codex provider 也转发到
+StepFun，在 CC Switch UI 里选中它就直接绕过 shim，71 图照样 400（`--all-stepfun` 是同一个
+开关，`IMAGE_CAP_CC_PIN_ALL=0` 收窄回只动命名那一行）。`tools/pin_shim_base_url.py`
+（钉 `~/.codex/config.toml`）实测赢不了，降级为默认关闭的兜底。
+**改完数据库不用重启 CC Switch.app**（10-01 实测推翻旧结论：进程自 09-29 未重启，
+71 图请求仍被 shim 截断并返回 200，详见 runbook）。
 实测：100 图经 launchd 全链路，`stepfun/step-5-preview` 上游只收 32，
 `workbuddy/hy4-preview` 原样透传 100。详见 docs/stepfun2codex-runbook.md。
+
+**并发闸门（10-01）**：间歇 `503 所有供应商已熔断` 的根因不在图片截断而在并发——
+StepFun Plan 单账号并发上限 10，突发把第 11 个请求打成 429，CC Switch 计 4 次
+失败即打开 codex 熔断（`circuit_failure_threshold=4`），之后所有请求 503，与是否
+超并发无关。shim 内的计数闸门把同时上游请求压到 8，遇 429 退避重试 3 次，排队
+最长 75s（压在 CC Switch 90s 首字节超时以下，超时本地回 429 不挂死）：
+`IMAGE_CAP_MAX_INFLIGHT=8`、`IMAGE_CAP_QUEUE_TIMEOUT=75`、
+`IMAGE_CAP_429_RETRIES=3`。观测看 `curl -s http://127.0.0.1:15722/__image_cap/health`
+的 `concurrency` 块和 `stats.retried_429`。**kit 改完必须同步 runtime 副本再
+`launchctl kickstart -k gui/501/com.local.stepfun-image-cap`**——launchd 跑的是
+runtime 那份，health 里没有 `concurrency` 块就说明闸门没上线。详见
+docs/stepfun2codex-runbook.md。
+
+**卡死自愈（10-02）**：shim 偶发「进程活着、launchd `state = running`、事件循环
+不应答」——请求全挂死但进程不退出，`KeepAlive` 只 relaunch 退出的进程，看不见这种
+故障。现在两层看门狗：进程内 daemon 线程用裸 socket（不经过被监视的那个循环）探
+`/__image_cap/health`，连续 `IMAGE_CAP_WATCHDOG_STRIKES`（默认 2）次失败就
+`os.execv` 原地自重启，pid 不变；外部 launchd timer 每 30s 探活一次，连续失败后
+`kickstart -k` 强杀重启——整进程 wedge 和端口被第二实例占用这两种内部线程看不见
+的，只有它救得回。探活慢才指控（curl 超时 8s + 连续 2 次），strike 超 600s 作废，
+探活一成功立刻清零，所以慢请求不会被误杀。`install-timer` 同时装 service 和
+timer；`status` 报 watchdog 安装态和当前 strikes，health 的 `watchdog` 块看
+`restarts` 涨没涨。详见 docs/stepfun2codex-runbook.md。
 
 ## 卸载
 

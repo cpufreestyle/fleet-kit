@@ -17,108 +17,177 @@ checkin = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checkin)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+spec_nc = importlib.util.spec_from_file_location(
+    "node_credits", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "node_credits.py"))
+node_credits = importlib.util.module_from_spec(spec_nc)
+spec_nc.loader.exec_module(node_credits)
 import fleet_platform  # noqa: E402
 
 
-def health_handler(request):
-        assert request.url.path == "/health"
-        assert request.headers.get("authorization") == "Bearer test-key"
-        return httpx.Response(200, json={"status": "ok"})
+def test_the_registry_covers_every_node_in_the_fleet():
+    """A node added to fleet_probe cannot be missing from the daily run.
 
+    Measured 2026-10-01: the registry held 2 of 15 nodes, so "签到和积分" was
+    a question the other thirteen could not answer at all.
+    """
+    import fleet_probe
+    every = set(fleet_probe.PORTS) | set(fleet_probe.GATEWAY)
+    assert set(checkin.TASKS) == every, sorted(every - set(checkin.TASKS))
+    assert len(checkin.TASKS) == 15
+    # the nodes that really claim must not share the placeholder task
+    placeholder = checkin.TASKS["qoder"]["fn"]
+    for name in ("xhx", "workbuddy", "workbuddy-gpt"):
+        assert checkin.TASKS[name]["fn"] is not placeholder, name
+    assert len({checkin.TASKS[n]["fn"]
+                for n in ("xhx", "workbuddy", "workbuddy-gpt")}) == 3
 
-def test_workbuddy_health(monkeypatch):
-    monkeypatch.setattr(checkin, "WORKBUDDY_HEALTH_URL", "http://127.0.0.1:1/health")
-    monkeypatch.setattr(checkin, "WORKBUDDY_KEY", "test-key")
-    async def run():
-        async with httpx.AsyncClient(transport=httpx.MockTransport(health_handler)) as ac:
-            return await checkin.task_workbuddy(ac)
-    import asyncio
-    result = asyncio.run(run())
-    assert result["ok"] is True
-    assert "自动签到服务在线" in result["detail"]
+class _WorkbuddyBridge(http.server.BaseHTTPRequestHandler):
+    """The bridge routes the Buddy 加油站 task really uses."""
 
-def test_task_registry_contains_both_tasks():
-    assert set(checkin.TASKS) == {"xhx", "workbuddy"}
+    SESSION = "test-session"
+    claimed = []
 
-
-class _HealthHandler(http.server.BaseHTTPRequestHandler):
-    """A stand-in for the workbuddy-gpt bridge /health endpoint."""
-
-    def do_GET(self):
-        assert self.path == "/health"
-        assert self.headers.get("authorization") == "Bearer test-key"
-        body = b'{"status":"ok"}'
-        self.send_response(200)
+    def _json(self, payload, code=200, cookie=False):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if cookie:
+            self.send_header("Set-Cookie",
+                             "workbuddy_bridge_session=%s; Path=/" % self.SESSION)
         self.end_headers()
         self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/":
+            self._json({"bridge": "workbuddy2codex"}, cookie=True)
+            return
+        if self.path == "/ui/checkin":
+            self._json({
+                "ok": True,
+                "activity": {"active": True, "theme_name": "Buddy加油站",
+                             "daily_credit": 100.0},
+                "accounts": [{"ref": "r1", "name": "MichaelQiu", "ok": True,
+                             "today_checked_in": False, "claimed": False,
+                             "credit": 100.0, "streak_days": 0, "message": ""}],
+                "unclaimed_count": 1, "any_unclaimed": True})
+            return
+        self._json({"detail": "Not Found"}, 404)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(length)
+        if self.path == "/ui/checkin/claim":
+            type(self).claimed.append(self.headers.get("Cookie"))
+            self._json({"ok": True, "claimed_accounts": 1, "claimed_total": 100.0})
+            return
+        self._json({"detail": "Not Found"}, 404)
 
     def log_message(self, *args):
         pass
 
 
-def _dead_port():
-    """A loopback port nobody listens on (the stand-in for a broken proxy)."""
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    return port
+def test_the_daily_task_really_claims_through_the_bridge(monkeypatch, tmp_path):
+    """Buddy 加油站 is claimed, not merely observed.
 
-
-def test_the_loopback_health_call_survives_a_proxy_environment(monkeypatch):
-    """Regression: HTTP_PROXY must not swallow the bridge health check.
-
-    Measured 2026-09-29: under a shell with HTTP_PROXY set the task failed with
-    httpx.ConnectError("All connection attempts failed") for 127.0.0.1:8788
-    while the very same call without the proxy env answered 200. The client
-    built by run_tasks now carries LOOPBACK_MOUNTS, so this drives the real
-    client (not a mock transport) against a real server and a dead proxy.
+    Measured 2026-10-01 on 127.0.0.1:8787: GET /ui/checkin answers the real
+    activity and per-account state, and POST /ui/checkin/claim takes it. The
+    old task only confirmed the bridge was reachable, so a pool with an
+    unclaimed account reported success every day while the credit went
+    uncollected. This drives the same three routes against a local stand-in
+    and asserts the claim carries the session cookie the bridge handed out.
     """
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _HealthHandler)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _WorkbuddyBridge)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:%d" % _dead_port())
-    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:%d" % _dead_port())
-    monkeypatch.setattr(checkin, "WORKBUDDY_HEALTH_URL",
-                        "http://127.0.0.1:%d/health" % port)
-    monkeypatch.setattr(checkin, "WORKBUDDY_KEY", "test-key")
-
-    home = Path(tempfile.mkdtemp())
-    monkeypatch.setattr(checkin, "HOME", home)
-    monkeypatch.setattr(checkin, "STATE_FILE", home / "state.json")
-    monkeypatch.setattr(checkin, "LOG_FILE", home / "checkin.log")
-    monkeypatch.setattr(checkin, "TASKS", {"workbuddy": {"desc": "test", "fn": checkin.task_workbuddy}})
-
+    monkeypatch.setattr(checkin.node_credits, "PORTS",
+                        dict(checkin.node_credits.PORTS, workbuddy=port))
+    monkeypatch.setattr(checkin, "HOME", tmp_path)
+    monkeypatch.setattr(checkin, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(checkin, "LOG_FILE", tmp_path / "checkin.log")
     try:
         rc = asyncio.run(checkin.run_tasks(["workbuddy"]))
         assert rc == 0
-        state = json.loads((home / "state.json").read_text(encoding="utf-8"))
+        state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
         assert state["workbuddy"]["ok"] is True
+        assert state["workbuddy"]["granted"] is True
+        assert state["workbuddy"]["available_points"] == 100.0
+        assert state["workbuddy"]["streak_days"] == 0
+        # the claim went out with the cookie collected from GET /
+        assert _WorkbuddyBridge.claimed == ["workbuddy_bridge_session=test-session"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        _WorkbuddyBridge.claimed.clear()
+
+
+def test_an_unclaimable_account_is_not_reported_as_checked_in(monkeypatch, tmp_path):
+    """A pool whose status cannot be read fails loudly.
+
+    Measured 2026-10-01: the overseas bridge asked the CN backend with a
+    www.workbuddy.ai credential and got 401 Authorization Required. The task
+    must not turn that into "today is done".
+    """
+    class _Broken(_WorkbuddyBridge):
+        def do_GET(self):
+            if self.path == "/":
+                return _WorkbuddyBridge.do_GET(self)
+            self._json({"ok": True,
+                        "activity": {"active": False, "daily_credit": 0},
+                        "accounts": [{"ref": "r1", "name": "overseas",
+                                      "ok": False, "today_checked_in": False,
+                                      "claimed": False, "credit": 0,
+                                      "streak_days": 0,
+                                      "message": "状态读取失败：401"}],
+                        "unclaimed_count": 0, "any_unclaimed": False})
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Broken)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(checkin.node_credits, "PORTS",
+                        dict(checkin.node_credits.PORTS,
+                             **{"workbuddy-gpt": port}))
+    monkeypatch.setattr(checkin, "HOME", tmp_path)
+    monkeypatch.setattr(checkin, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(checkin, "LOG_FILE", tmp_path / "checkin.log")
+    try:
+        rc = asyncio.run(checkin.run_tasks(["workbuddy-gpt"]))
+        assert rc == 1
+        state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+        assert state["workbuddy-gpt"]["ok"] is False
+        assert "401" in state["workbuddy-gpt"]["detail"]
+        assert "last_success_date" not in state["workbuddy-gpt"]
     finally:
         server.shutdown()
         server.server_close()
 
 
-def test_the_bridge_key_falls_back_to_the_service_definition(monkeypatch):
-    """The daily timer env has no CODEBUDDY2OPENAI_KEY; the plist does.
+def test_a_node_without_an_endpoint_is_not_a_failure(monkeypatch, tmp_path):
+    """na is its own state: the node has no such endpoint to call.
 
-    Measured 2026-09-28/29: every 09:00 run failed with HTTP 401 "invalid api
-    key" while manual runs (which source fleet.env) succeeded.
+    Twelve of the fifteen nodes have no daily check-in endpoint. Marking them
+    failed would make the 09:00 timer report red every single day for a
+    condition nobody can fix, which trains the operator to ignore it.
     """
-    monkeypatch.delenv("CODEBUDDY2OPENAI_KEY", raising=False)
-    monkeypatch.setattr(checkin, "WORKBUDDY_KEY", "")
-    monkeypatch.setattr(fleet_platform, "service_keys",
-                        lambda: {"com.local.workbuddy2codex-gpt": "sk-from-plist",
-                                 "com.local.trae2codex": "sk-other-bridge"})
-    assert checkin.workbuddy_bridge_key() == "sk-from-plist"
-
-
-def test_the_environment_key_still_wins(monkeypatch):
-    monkeypatch.setenv("CODEBUDDY2OPENAI_KEY", "sk-from-env")
-    monkeypatch.setattr(checkin, "WORKBUDDY_KEY", "")
-    monkeypatch.setattr(fleet_platform, "service_keys",
-                        lambda: {"com.local.workbuddy2codex-gpt": "sk-from-plist"})
-    assert checkin.workbuddy_bridge_key() == "sk-from-env"
+    monkeypatch.setattr(checkin, "HOME", tmp_path)
+    monkeypatch.setattr(checkin, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(checkin, "LOG_FILE", tmp_path / "checkin.log")
+    monkeypatch.setattr(checkin.node_credits, "read_node",
+                        lambda name: {"detail": "health /health v0.1.0",
+                                        "credits_value": 42, "credits_unit": "points",
+                                        "credits_source": "free-windows.json",
+                                        "credits_note": "-", "account": "a", "up": True})
+    try:
+        rc = asyncio.run(checkin.run_tasks(["qoder"]))
+        assert rc == 0
+        state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+        assert state["qoder"]["na"] is True
+        assert state["qoder"]["ok"] is False
+        # the credits the node does expose are still recorded
+        assert state["qoder"]["available_points"] == 42
+        assert "last_success_date" not in state["qoder"]
+    finally:
+        pass

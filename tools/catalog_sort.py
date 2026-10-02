@@ -86,7 +86,9 @@ PER_PROVIDER_IMPORTANT = {
     "codely": ("codely-core", "codely-air", "codely-flash", "codely-basic",
                 "codely-vl"),
     "lingxi": ("lingxi-deepseek-flash", "lingxi-glm-5.3-flash"),
-    "zcode": ("GLM-5.3", "GLM-5.3-Flash"),
+    # Flash before the bare id: "GLM-5.3" is a substring of "GLM-5.3-Flash",
+    # so the longer needle has to come first or both rows share rank 0.
+    "zcode": ("GLM-5.3-Flash", "GLM-5.3"),
     "catpaw": ("glm-5.3-flashx", "glm-5.2", "glm-5.1", "deepseek-v3.2"),
     "gemini": ("gemini-3-pro-preview", "gemini-3-flash-preview",
                 "gemini-2.5-pro", "gemini-2.5-flash"),
@@ -147,16 +149,23 @@ HY4_SLUGS = ("workbuddy/hy4-preview", "workbuddy-gpt/hy4-preview")
 def is_hy4(slug):
     return slug in HY4_SLUGS
 
+# How many of a provider's strongest models get floated into the head band.
+# 1 left a platform's runner-up far below its own sibling: zcode/GLM-5.3 sat at
+# row 69 of 117 while GLM-5.3-Flash was the provider's row 10 representative.
+# 2 keeps each platform's best pair on the first screen; the band stays short
+# because only listed-important models are eligible.
+REP_BAND = max(1, int(os.environ.get("FLEET_REP_BAND", "2")))
+
 def interleave_reps(models, order, good=None, families=()):
-    """Float one representative per reachable provider to the front.
+    """Float each reachable provider's strongest models to the front.
 
     With client-first ordering, each provider's models form a contiguous
     block. Without reps, the biggest provider (e.g. tokendance with 96
     models) would push every other provider off the first screen. Leading
-    with one row per reachable provider keeps the whole fleet visible at
-    the top; the full blocks follow in order.
+    with a short band per reachable provider keeps the whole fleet visible
+    at the top; the full blocks follow in order.
 
-    The representative is the most important model in that provider per
+    The band is the first REP_BAND models of that provider per
     PER_PROVIDER_IMPORTANT. workbuddy hy4 is always the very first row,
     because the user wants it pinned first.
     """
@@ -171,25 +180,24 @@ def interleave_reps(models, order, good=None, families=()):
             reps.append(model)
             taken.add(slug_of(model))
             break
-    # One row per reachable provider, in --order order, skipping hy4 since
-    # it already leads. Picking the "most important" model per provider
-    # gives the user a quick scan of the whole fleet on the first screen.
+    # A short band per reachable provider, in --order order, skipping hy4
+    # since it already leads. Picking the "most important" models per
+    # provider gives the user a quick scan of the whole fleet on the first
+    # screen, and keeps each platform's best pair together.
     for prov in order:
         if good is not None and prov not in good:
             continue
-        best = None
-        best_rank = None
+        band = []
         for model in pool:
             slug = slug_of(model)
             if provider_of(slug) != prov or slug in taken:
                 continue
-            r = important_rank(slug)
-            if best is None or r < best_rank:
-                best = model
-                best_rank = r
-        if best is not None:
-            reps.append(best)
-            taken.add(slug_of(best))
+            band.append((important_rank(slug), model))
+        # sort() is stable, so equal ranks keep the incoming rank order
+        band.sort(key=lambda pair: pair[0])
+        for _rank, model in band[:REP_BAND]:
+            reps.append(model)
+            taken.add(slug_of(model))
     for model in models:
         slug = model.get("slug") or model.get("id") or ""
         if slug not in taken:
@@ -396,6 +404,24 @@ def main():
     bad = set(reach.get("unreachable") or [])
     verified = reach.get("verified_models") or {}
 
+    # An "unreachable" verdict is a claim about a moment, and the sweep only
+    # runs every 30 minutes. Past the freshness window the claim stops being
+    # evidence, and ordering on it buries a provider that may have recovered
+    # days ago -- zcode sat at row 67 of 117 on a four-day-old 503. The rows
+    # are not promoted to reachable, nothing here re-measured them, but they
+    # stop sinking below every unknown provider. This is the same rule the
+    # drop path below already follows, applied to ordering as well.
+    reach_age = snapshot_age_seconds(reach)
+    sinking = set(bad)
+    stale_verdicts = []
+    if reach_age is not None and reach_age > args.max_reach_age:
+        sinking = set()
+        stale_verdicts = sorted(bad)
+        print("fleet-sort: not sinking stale unreachable verdicts: snapshot "
+              "is %.1fh old (limit %.1fh): %s"
+              % (reach_age / 3600.0, args.max_reach_age / 3600.0,
+                 ", ".join(stale_verdicts)), file=sys.stderr)
+
     # Deletion is the one irreversible action here, so it needs a verdict
     # that is still current. A stale snapshot keeps ordering rows (harmless)
     # but stops deleting them: bridges recover, and the probe timer only runs
@@ -404,7 +430,6 @@ def main():
     drop_unreachable = args.drop_unreachable
     drop_providers = set()
     bridged = bridged_providers()
-    reach_age = snapshot_age_seconds(reach)
     if drop_unreachable:
         if reach_age is None:
             drop_unreachable = False
@@ -467,7 +492,7 @@ def main():
         prov = provider_of(slug)
         if prov in good:
             tier = 0
-        elif prov in bad:
+        elif prov in sinking:
             tier = 2
         else:
             tier = 1
@@ -504,7 +529,7 @@ def main():
     for _rank_i, model in enumerate(ordered):
         slug = model.get("slug") or model.get("id") or ""
         prov = provider_of(slug)
-        tier = 0 if prov in good else (2 if prov in bad else 1)
+        tier = 0 if prov in good else (2 if prov in sinking else 1)
         pos = order.index(prov) if prov in order else len(order)
         proven = 0 if slug in proven_candidates(verified.get(prov), prov) else 1
         model["priority"] = _rank_i * 1000 + priority_for(slug, tier, pos) + proven
@@ -521,6 +546,7 @@ def main():
         "measured_at": reach.get("measured_at"),
         "reachable": sorted(good),
         "unreachable": sorted(bad),
+        "stale_verdicts_not_sunk": stale_verdicts,
         "reach_age_seconds": None if reach_age is None else round(reach_age),
         "dropped_enabled": drop_unreachable,
         "skipped_providers": sorted(skipped & catalog_providers),
@@ -537,13 +563,13 @@ def main():
     good_idx = [i for i, m in enumerate(kept)
                 if provider_of(slug_of(m)) in good and not is_hy4(slug_of(m))]
     bad_idx = [i for i, m in enumerate(kept)
-               if provider_of(slug_of(m)) in bad and not is_hy4(slug_of(m))]
+               if provider_of(slug_of(m)) in sinking and not is_hy4(slug_of(m))]
     good_pri = [m["priority"] for m in kept
                 if provider_of(slug_of(m)) in good
                 and provider_of(slug_of(m)) is not None
                 and not is_hy4(slug_of(m))]
     bad_pri = [m["priority"] for m in kept
-               if provider_of(slug_of(m)) in bad and not is_hy4(slug_of(m))]
+               if provider_of(slug_of(m)) in sinking and not is_hy4(slug_of(m))]
     by_priority = sorted(kept, key=lambda m: m["priority"])
     summary["priority_rewritten"] = True
     summary["order_ok"] = bool(
