@@ -199,7 +199,20 @@ if [ -n "${STEPFUN_PLAN_API_KEY:-}" ]; then
   # A freshly added provider only enters the routing table after a restart;
   # without it `ocx models` shows no stepfun rows at all (Windows, 2026-10-01).
   run ocx restart
-  sleep 3
+  # A fixed sleep races a slow restart: under `set -e` a not-yet-up ocx would
+  # abort the whole setup mid-way. Poll instead, and only for real runs (the
+  # dry run never executed the restart). A failed poll warns and carries on --
+  # the remaining registrations matter more than this one provider's picker.
+  if [ "$DRY_RUN" != "1" ]; then
+    ocx_up=0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if ocx models >/dev/null 2>&1; then ocx_up=1; break; fi
+      sleep 1.5
+    done
+    if [ "$ocx_up" != "1" ]; then
+      echo "  [warn] ocx did not answer within 15s of the restart; stepfun rows may be missing from the picker" >&2
+    fi
+  fi
   # bare `ocx models` refreshes the discovery cache; without it
   # `ocx models provider stepfun on` reports "no models are available".
   run ocx models >/dev/null
