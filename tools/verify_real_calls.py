@@ -62,7 +62,20 @@ MAX_CANDIDATES = 6
 PLAN_BLOCK_MARKERS = ("model not allowed", "not allowed on your", "not in your plan",
                       "current plan", "quota", "insufficient", "permission",
                       "not permitted", "not entitled", "套餐", "配额", "无权限",
-                      "未订阅", "无权访问")
+                      "未订阅", "无权访问",
+                      # Kimi Code answers in English, and its phrasing names the
+                      # subscription rather than the plan: Your current
+                      # subscription does not have access to Kimi Code ...
+                      # Upgrade your plan. No marker above matches that, so a
+                      # lapsed plan read as an expired session -- the exact
+                      # misreading the lingxi case above was fixed for.
+                      "does not have access", "upgrade your plan",
+                      "no active plan", "access_terminated")
+# A bridge with no upstream key answers 503 with its own *_key_missing
+# envelope before it ever dials the vendor. That is a local config gap, not an
+# outage: reported as UPSTREAM_DOWN it sends the operator to the vendor status
+# page for a key that was never set.
+NO_KEY_MARKERS = ("key_missing",)
 BUDGETS = [256, 2048, 4096]
 PROBE_HTTP_TIMEOUT = 20
 PROBE_CHAT_TIMEOUT = 70
@@ -268,6 +281,8 @@ def classify(code, secs, text, nonce, n, add, err):
         return "UPSTREAM_DOWN", "400 " + (err or "")[:56]
     if code in (502, 503, 504):
         el = (err or "").lower()
+        if any(k in el for k in NO_KEY_MARKERS):
+            return "NO_KEY", "桥未配上游 key（set 后重跑 finish.sh） " + (err or "")[:40]
         if any(k in el for k in ("invalidproxy", "proxyerror", "proxy tunnel")):
             return "UPSTREAM_DOWN", "本地代理隧道异常 " + (err or "")[:44]
         return "UPSTREAM_DOWN", (err or "")[:56]
@@ -403,7 +418,7 @@ def main():
 
     order = {"REAL": 0, "STREAM_BROKEN": 1, "ECHO/MIRROR": 1, "CANNED/MOCK": 2,
              "CHANNEL_BLOCKED": 3, "UNCLEAR": 3, "PLAN_BLOCKED": 4, "AUTH_EXPIRED": 5,
-             "UPSTREAM_DOWN": 6, "BRIDGE_DOWN": 7, "GATE": 8}
+             "NO_KEY": 5, "UPSTREAM_DOWN": 6, "BRIDGE_DOWN": 7, "GATE": 8}
     print("FleetKit 真实调用检测  (port base %d)" % a.port_base)
     print("%-14s %-5s %-28s %-5s %-6s %-13s %s" % ("BRIDGE", "PORT", "MODEL", "HTTP", "LAT(s)", "VERDICT", "NOTE"))
     print("-" * 116)
