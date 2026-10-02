@@ -154,6 +154,32 @@ class RelayBanksIntoThePool(unittest.TestCase):
                 proc.kill()
 
 
+class MinterContracts(unittest.TestCase):
+    """The mint waits on the pool, and no consumer opens a headed window."""
+
+    def test_the_minter_waits_on_the_pool_not_a_page_global(self):
+        src = _source(MINTER)
+        self.assertNotIn("page.evaluate", src,
+                         "the minter reads a page global again: a human solve banked the ticket and the mint still timed out reading it")
+        self.assertIn("_claim_pool_ticket", src,
+                      "the minter no longer watches the pool, so a banked ticket is not a success")
+
+    def test_the_minter_never_drags_the_slider(self):
+        src = _source(MINTER)
+        self.assertNotIn("drag_slider", src,
+                         "the scripted slider drag is back; Aliyun refuses it with F001/F015 and it can only disturb a human mid-drag")
+
+    def test_cli_client_mints_headless(self):
+        src = _source(os.path.join(ZCODE, "cli_client.py"))
+        self.assertIn('"--once", "--pool", "--headless"', src,
+                      "cli_client mints headed again: a Chrome window pops up mid-turn on the CLI route too")
+
+    def test_cli_client_probes_its_own_interpreter_first(self):
+        src = _source(os.path.join(ZCODE, "cli_client.py"))
+        self.assertIn('sys.executable, "/usr/bin/python3"', src,
+                      "the interpreter probe no longer starts with the bridge's own venv")
+
+
 if __name__ == "__main__":
     unittest.main()
 

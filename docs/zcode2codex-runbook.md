@@ -45,14 +45,18 @@
 ## captcha minter 环境
 
 - 系统无 playwright 的解释器调 minter 会静默挂起：cli_client._mint_ticket
-  现在按 /usr/bin/python3（Xcode CLT, 有 playwright）优先，ZCAP_PY 可覆盖；
-  探测列表里也放上 `sys.executable`（桥自己就在带 playwright 的 venv 里）。
+  的探测顺序是 `sys.executable`（桥自己就在带 playwright 的 venv 里）优先，
+  然后 /usr/bin/python3（Xcode CLT）、`python3`；ZCAP_PY 可覆盖。
 - **调用路径上的 mint 一律 `--headless`**：2026-10-02 修，之前每请求现场
   mint 是有头 Chrome，滑块窗直接弹到运营者脸上，40~60s 后失败再把人推去
   relay 页——验证就是这么反复跳的。无头 mint 解不了滑块，但它静默失败，
   由调用方回落成「开一次页换一张」。
 - minter 的 Chrome profile 落在 `bridges/zcode/captcha_profile`（不再 /tmp，
   重启即清）：profile 每次重置等于设备指纹永远冷，无感验证必然不过。
+- minter 改为**盯票池判断成功**：人工在页面存票即写池文件，minter 读池领取；
+  原先读 `window.__capParam` 实测不可靠（人工存票成功它仍超时），自动拖滑块
+  （`drag_slider`）从来没成功过、已删除。副作用是好事：任何浏览器在窗口期内
+  存的票都会被这次 mint 捡走。
 - mint 成功率间歇（traceless 卡 F001/F015），--serve 模式维持池子比
   每请求现场 mint 更稳；失败重试可成。
 

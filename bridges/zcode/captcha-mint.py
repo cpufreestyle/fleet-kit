@@ -109,51 +109,49 @@ def _stealth(ctx, page) -> None:
         "'en-US','en']});")
 
 
-def drag_slider(page) -> bool:
-    """无感失败时尽力拖一次滑块（真·拼图仍建议人工）。"""
-    btn = None
-    for sel in ("#aliyunCaptcha-sliding-slider", ".nc_scale .btn_slide",
-                "div[id*='slider']"):
+def _claim_pool_ticket(seen: set) -> str:
+    """Claim a pool ticket minted after this run started, or the empty string.
+    The relay page banks the ticket itself on success, and the SDK leaves
+    the opener page in a state where window.__capParam is not reliably
+    readable afterwards (measured 2026-10-02: a human solve banked the
+    ticket and the minter still timed out reading the global), so the pool
+    is the signal. Claim by delete, so two mints watching at once cannot
+    both spend one param.
+    """
+    try:
+        names = set(os.listdir(POOL))
+    except OSError:
+        return ""
+    for name in sorted(names - seen):
+        path = POOL / name
         try:
-            cand = page.query_selector(sel)
-            if cand and cand.is_visible():
-                btn = cand
-                break
-        except Exception:  # noqa: BLE001
-            continue
-    if not btn:
-        return False
-    box = btn.bounding_box()
-    if not box:
-        return False
-    x0, y0 = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
-    page.mouse.move(x0, y0)
-    page.mouse.down()
-    for i in range(1, 26):
-        page.mouse.move(x0 + i * 11, y0 + (2 if i % 3 == 0 else -2), steps=2)
-        page.wait_for_timeout(random.randint(12, 34))
-    page.mouse.up()
-    return True
+            param = path.read_text(encoding="utf-8").strip()
+            path.unlink()          # claim-by-delete, like the bridge
+        except OSError:
+            continue                # another mint claimed it first
+        if param.startswith("ey"):
+            return param
+    return ""
 
 
 def mint_once(page, timeout: float = 40.0) -> str:
-    """打开 relay 页，等无感验证出票（失败则拖一次滑块），返回 param。"""
+    """Open the relay page and wait for one ticket to land in the pool.
+
+    A human solve on that page is what produces a ticket. Every automatic
+    path is refused by Aliyun (F001/F015): the scripted slider drag was
+    removed after it never once landed, and traceless from an automation
+    browser only passes once the persistent profile has matured. Waiting
+    on the pool also means a ticket banked in any browser during the
+    window is picked up here -- including the operator's own.
+    """
     page.goto(PAGE, wait_until="domcontentloaded", timeout=45000)
-    deadline, dragged = time.time() + timeout, False
+    seen = set(os.listdir(POOL)) if POOL.is_dir() else set()
+    deadline = time.time() + timeout
     while time.time() < deadline:
         page.wait_for_timeout(500)
-        try:
-            param = page.evaluate("() => window.__capParam || null")
-        except Exception:  # noqa: BLE001
-            continue
+        param = _claim_pool_ticket(seen)
         if param:
             return param
-        if not dragged and time.time() < deadline - 12:
-            dragged = True
-            try:
-                drag_slider(page)
-            except Exception as exc:  # noqa: BLE001
-                log("slider-drag-failed:", exc)
     try:
         page.screenshot(path=FAIL_SHOT)
     except Exception:  # noqa: BLE001
