@@ -198,6 +198,16 @@ def kimi(key, base=KIMI_BASE, spend=True):
 def minimax(key, base=None, model=MINIMAX_MODEL, bases=None):
     """One one-token MiniMax chat call: proves the key, spends a sliver.
 
+    This is all MiniMax will ever answer, and that is not a limitation of
+    this tool. There is no balance route to call. Checked 2026-10-02 from
+    four directions: the open-platform hosts (api.minimaxi.com,
+    api.minimax.io) 404 on /v1/usage, /v1/usages, /v1/credits, /v1/quota
+    and /v1/account; platform.minimaxi.com is a docs site; the marketing
+    site's one live /backend route is /backend/user/biz_info while
+    /backend/user/quota is 404; and the MiniMax Agent extension's whole
+    route table is seventeen routes whose only account entry is a logout.
+    So a key answers "is this key alive" and nothing more.
+
     A 401 is the only answer that means "this key is dead", and it is also
     what the wrong region answers, so the other region is tried before that
     verdict is written down. bases pins the host list.
@@ -263,8 +273,16 @@ def main(argv=None):
             key, where = kimi_app_key()
             source = where
         if not key:
-            print("no key for %s (pass --key, set %s, or let the Kimi"
-                  " desktop app supply one)" % (name, env), file=sys.stderr)
+            print("no key for %s (pass --key or set %s)" % (name, env),
+                  file=sys.stderr)
+            if name == "minimax":
+                print("and a key would not buy a number here: MiniMax"
+                      " publishes no balance route on any host, so a"
+                      " one-token call is the only answer it ever gives",
+                      file=sys.stderr)
+            else:
+                print("the Kimi desktop app can supply one: it keeps the"
+                      " coding key in its own user data", file=sys.stderr)
             worst = worst or 3
             continue
         if source != "environment":

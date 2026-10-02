@@ -252,3 +252,16 @@ def test_trailing_slash_base_is_tolerated(monkeypatch):
     pc.main(["kimi", "--key", "x", "--base", "https://example.com/"])
     assert calls[0][0] == "https://example.com/v1/usages"
 
+def test_a_missing_minimax_key_is_told_why_a_key_would_not_help(monkeypatch, capsys):
+    """A key is not the answer here, so the tool must not imply that it is."""
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    assert pc.main(["minimax"]) == 3
+    err = capsys.readouterr().err
+    assert "no key for minimax" in err
+    assert "no balance route" in err
+
+
+def test_a_missing_kimi_key_is_told_where_one_comes_from(monkeypatch, capsys):
+    monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
+    assert pc.main(["kimi", "--no-app-key"]) == 3
+    assert "desktop app" in capsys.readouterr().err
