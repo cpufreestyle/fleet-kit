@@ -152,3 +152,16 @@ antigravity    8797  claude-opus-4-8@default   None   FAIL | 90.0s | models=12 |
 每次尝试按 thread-local deadline 的剩余时间封顶；`call_model` 用
 `try/finally` 保证 deadline 一定 disarm（漏 disarm 会悄悄拖慢之后每次连接）。
 `_send()` 同批修掉：BrokenPipeError 实际来自 `end_headers()`，不只 body 写入。
+
+## 2026-10-02 更新：VALI 账号门禁的 502 信封透传验证链接
+- 现象: 与 gemini (8794) 共用同一 Google 账号: OAuth refresh 正常, 但
+  generateContent 一律 403 VALI 「Verify your account to continue.」;
+  桥按老逻辑把异常包进 502 并截断到 300 字符, 官方
+  `validation_url` 验证链接只剩 "r...", 操作者无从下手。
+- 修复（与 gemini 同批）: `google_validation_url(body)` 解析 403 JSON 的
+  `error.details[].metadata.validation_url`; 命中即抛 `AccountVerification`
+  (UpstreamError 子类, `str()` 带完整链接), `_clip()` 见此异常不截断。
+- 同一链接两桥通用: 两桥共用同一账号, 浏览器完成验证一次, 8794 与 8797
+  一起恢复（本轮实测两桥透传的链接均可直接打开）。
+- 注意: validation_url 单次有效且每调用轮转; 重新调用拿新链, 尽快完成验证。
+- 测试: `tools/test_vali_403.py`（gemini 与 antigravity 两桥同参数化覆盖）。
