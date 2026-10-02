@@ -42,7 +42,7 @@ FleetKit installer v${KIT_VERSION}
 Usage: install.sh [options]
 
   --home DIR        install root (default: ~/FleetKit/runtime)
-  --port-base N     first bridge port; bridges use N..N+13 (default: 8787)
+  --port-base N     first bridge port; bridges use N..N+16 (default: 8787)
   --with-opencodex  register bridges with opencodex after install (default)
   --no-opencodex    skip opencodex wiring
   --with-checkin   install the daily check-in timer (09:00 CST)
@@ -142,12 +142,14 @@ BRIDGES=(
   "qwen|qwen2codex|qwen|qwen_bridge.py|11|QWEN2CODEX_KEY|--host 127.0.0.1 --port @PORT@|QWEN_CALL_TIMEOUT=300"
   "cline|cline2codex|cline|cline_bridge.py|12|CLINE2CODEX_KEY|--host 127.0.0.1 --port @PORT@|CLINE_CALL_TIMEOUT=300"
   "zcode|zcode2codex|zcode|zcode_bridge.py|13|ZCODE2CODEX_KEY|--host 127.0.0.1 --port @PORT@|ZCODE_CALL_TIMEOUT=300"
+  "kimi|kimi2codex|kimi|kimi_bridge.py|15|KIMI2CODEX_KEY|--host 127.0.0.1 --port @PORT@|KIMI_CALL_TIMEOUT=300"
+  "minimax|minimax2codex|minimax|minimax_bridge.py|16|MINIMAX2CODEX_KEY|--host 127.0.0.1 --port @PORT@|MINIMAX_CALL_TIMEOUT=300"
 )
 
 echo "FleetKit installer v${KIT_VERSION}"
 info "kit        : ${KIT_DIR}"
 info "fleet home : ${FLEET_HOME}"
-info "ports      : ${PORT_BASE} .. $((PORT_BASE + 13))"
+info "ports      : ${PORT_BASE} .. $((PORT_BASE + 16))"
 info "launch dir : ${LAUNCH_DIR}"
 info "log dir    : ${LOG_DIR}"
 if [ "$DRY_RUN" = "1" ]; then info "mode       : DRY RUN (nothing is written)"; fi
@@ -502,6 +504,8 @@ ANTIGRAVITY2CODEX_KEY="$(pick_key ANTIGRAVITY2CODEX_KEY)"
 QWEN2CODEX_KEY="$(pick_key QWEN2CODEX_KEY)"
 CLINE2CODEX_KEY="$(pick_key CLINE2CODEX_KEY)"
 ZCODE2CODEX_KEY="$(pick_key ZCODE2CODEX_KEY)"
+KIMI2CODEX_KEY="$(pick_key KIMI2CODEX_KEY)"
+MINIMAX2CODEX_KEY="$(pick_key MINIMAX2CODEX_KEY)"
 
 # Antigravity google oauth client pair is never committed to git (push protection
 # rejects it) and every install ships it in its own binary, so read it from there.
@@ -582,6 +586,8 @@ QWEN2CODEX_KEY="${QWEN2CODEX_KEY}"
 QWEN_API_KEY="${QWEN_API_KEY}"
 CLINE2CODEX_KEY="${CLINE2CODEX_KEY}"
 ZCODE2CODEX_KEY="${ZCODE2CODEX_KEY}"
+KIMI2CODEX_KEY="${KIMI2CODEX_KEY}"
+MINIMAX2CODEX_KEY="${MINIMAX2CODEX_KEY}"
 ANTIGRAVITY_OAUTH_CLIENT_ID="${ANTIGRAVITY_OAUTH_CLIENT_ID}"
 ANTIGRAVITY_OAUTH_CLIENT_SECRET="${ANTIGRAVITY_OAUTH_CLIENT_SECRET}"
 # Optional extra id:secret pairs tried after the primary (Antigravity rotates these).

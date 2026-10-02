@@ -6,7 +6,7 @@
 # and runs a one-shot smoke chat.
 #
 # Usage: finish.sh <name> [--home DIR] [--tries N] [--skip-chat] [-h|--help]
-#   names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode
+#   names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode kimi minimax
 set -euo pipefail
 
 NAME=""
@@ -50,7 +50,7 @@ done
 
 if [ -z "$NAME" ]; then
   echo "bridge name required" >&2
-  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode" >&2
+  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode kimi minimax" >&2
   exit 1
 fi
 
@@ -120,7 +120,7 @@ minimax|minimax2codex|16|minimax|MINIMAX2CODEX_KEY|MINIMAX
 CASES
 if [ -z "$found" ]; then
   echo "unknown bridge: $NAME" >&2
-  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode" >&2
+  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode kimi minimax" >&2
   exit 1
 fi
 
