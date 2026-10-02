@@ -136,19 +136,56 @@ cc-switch provider 表里没有 MiniMax。`/Applications/MiniMax Agent.app`
 （com.ai.wanjuan 0.10.4）装着但从未启动——没有 userData 目录，所以连
 「从它自己存储里读」这条路都不存在。
 
-而且两个区域都没有余额接口（无 key 探活实测）：
+而且平台本来就没有余额接口。这条结论有三个独立来源，逐条列清免得下次重查：
+
+**来源一：MiniMax 开放平台 API 主机（无 key 探活实测）**
 
     api.minimaxi.com / api.minimax.io
-      /v1/chat/completions   401 authorized_error（路由在）
+      /v1/chat/completions   401 authorized_error（路由在，验签在）
       /v1/usage /v1/usages /v1/credits /v1/quota /v1/account   全部 404
 
-控制台也一样没有：platform.minimaxi.com 上同样九个路径全返回它自己的 404 页，
-www.minimaxi.com/api/* 的 200 是 SPA 兜底页（返回 HTML，不是 JSON），不是接口。
+    platform.minimaxi.com  同样九个路径全返回它自己的 404 页
+    www.minimaxi.com/api/*  的 200 是 SPA 兜底页（返回 HTML 不是 JSON），不是接口
 
-所以 MiniMax 这一行永远只能是「key 活着吗」，问不出剩多少。给了 key 之后
-`plan_credits.py minimax` 会依次打 CN、海外两个 host 再判 401——因为
-MiniMax 的 key 按区域签发，海外 key 在 CN host 上就是 401，旧代码会直接把
-好 key 判成死 key。
+**来源二：MiniMax Agent 自己发布的 Safari 扩展（2026-10-02 逆）**
+
+`/Applications/MiniMax Agent.app/Contents/PlugIns/MiniMax Agent Extension.appex/
+Contents/Resources/popup.5eb990aa.js` 里能数出它全部的 web 路由：
+
+    /v1/api/user/login/sms/send     POST  发验证码
+    /v1/api/user/login/phone        POST  手机号登录，换 token
+    /v1/api/user/renewal            POST  续 token
+    /v1/api/user/account            DELETE 登出
+    /v1/api/user/guide_status       GET
+    /v1/api/user/toast              GET
+    /v1/api/chat/msg                POST  聊天
+    /v1/api/chat/msg_choice / msg_tts / voice_msg / retry_msg / feedback / stop_generating
+
+鉴权是请求头 `token`（存在扩展自己的存储里），外加一个 `yy` 签名头——
+MD5(unix + url + method + data + "oouiplugin")。基址只有两个：`https://hailuoai.com`
+和它的预发 `https://hailuo-pre.xaminim.com`。
+
+**整份路由表里没有任何 quota / balance / credits / usage / plan / vip 路径。**
+唯一的账号路由 `/v1/api/user/account` 从代码看是登出（`ul.delete(e)`），不是查余额。
+
+**来源三：对活主机按这份路由表逐条打**
+
+    https://hailuoai.com/v1/api/user/account  DELETE → 401（路由在，要 token）
+    https://hailuoai.com/v1/api/user/renewal  POST  → 400 {"statusInfo":{"code":2,
+        "message":"请求异常，请检查请求参数","requestID":...}}（路由在，缺参数）
+    https://hailuoai.com/v1/api/chat/msg       POST  → 401（路由在，要 token）
+    https://hailuoai.com/v1/api/user/quota     GET   → 404
+    https://hailuoai.com/v1/api/user/balance   GET   → 404
+    https://hailuoai.com/v1/api/user/credits   GET   → 404
+    hailuo-pre.xaminim.com 全部 SSL UNEXPECTED_EOF（预发不对公网开放）
+
+三条来源指向同一件事：**MiniMax 不提供任何可编程的余额接口**，网页控制台上的数字
+是登录态页面渲染的，没有对应 API。所以这一行永远只能是「key 或登录态还在吗」，
+问不出剩多少——这不是没找到，是它不存在。
+
+所以给了 key 也只能验证「key 还活着吗」。`plan_credits.py minimax` 会依次打
+CN、海外两个 host 再判 401—— MiniMax 的 key 按区域签发，海外 key 在 CN host
+上就是 401，旧代码会直接把好 key 判成死 key。
 
 #### 2026-10-01 记录（已被上一节取代）
 
