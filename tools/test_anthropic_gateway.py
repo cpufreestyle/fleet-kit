@@ -522,6 +522,77 @@ def test_each_tier_names_one_default_row(monkeypatch):
     assert winners[first["anthropic_family_tier"]] == [first["id"]]
 
 
+
+def test_a_hash_slug_is_listed_under_a_readable_name(monkeypatch):
+    """xhx reports its models under build hashes (raccoon-19b265), and a
+    picker that shows the hash is a picker nobody can choose from. The id
+    stays the routable slug, so nothing that already references it moves.
+    """
+    rows = [{"slug": "xhx/raccoon-19b265", "priority": 1,
+             "display_name": "raccoon-19b265"}]
+    routes = {"xhx/raccoon-19b265": {"provider": "xhx",
+                                       "transport": "bridge"}}
+    monkeypatch.setattr(gw, "catalog_rows", lambda: rows)
+    monkeypatch.setattr(gw, "route_for", lambda slug: routes.get(slug))
+    entry = gw.models_payload()["data"][0]
+    assert entry["id"] == "xhx/raccoon-19b265", "the routable id must not change"
+    assert entry["display_name"] == "xhx/小浣熊Work-A"
+
+
+def test_the_bridge_reported_name_beats_the_id_in_the_listing(monkeypatch):
+    """xhx reports Raccoon-Work-260817-A next to raccoon-19b265, so the
+    listing shows the name; a bridge that reports only an id still lists,
+    with the id standing in for the missing name.
+    """
+    monkeypatch.setattr(gw, "bridge_ports", lambda: {"xhx": 8793})
+    monkeypatch.setattr(gw, "service_key", lambda provider: "k")
+    monkeypatch.setattr(gw, "DIRECT_UPSTREAMS", {})
+    monkeypatch.setattr(gw, "_tcp_alive", lambda host, port, timeout=1.0: True)
+    body = json.dumps({"data": [
+        {"id": "raccoon-19b265", "name": "Raccoon-Work-260817-A"},
+        {"id": "sn-glm-5-3-flash", "name": "GLM-5-3-Flash"},
+        {"id": "sn-kimi-k3"}]}).encode()
+
+    class Resp:
+        def __init__(self, payload):
+            self.body = payload
+
+        def read(self, *args):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(gw.OPENER, "open",
+                        lambda req, timeout=None: Resp(body))
+    saved = dict(gw._BRIDGE_CATALOG)
+    gw._BRIDGE_CATALOG["stamp"] = 0.0
+    gw._BRIDGE_CATALOG["rows"] = []
+    try:
+        rows = gw.bridge_catalog_rows()
+    finally:
+        gw._BRIDGE_CATALOG.clear()
+        gw._BRIDGE_CATALOG.update(saved)
+    names = {r["slug"]: r["display_name"] for r in rows}
+    assert names["xhx/raccoon-19b265"] == "Raccoon-Work-260817-A"
+    assert names["xhx/sn-glm-5-3-flash"] == "GLM-5-3-Flash"
+    assert names["xhx/sn-kimi-k3"] == "sn-kimi-k3", "no name reported: the id stands"
+
+
+def test_every_raccoon_hash_in_the_pool_has_a_readable_name():
+    """A new upstream build hash must not reach the picker unnamed.
+
+    xhx lists whatever build the SenseTime app is on today, so the map is
+    the only thing between a fresh raccoon-<hash> and an unreadable row.
+    """
+    unnamed = [row["slug"] for row in gw.catalog_rows()
+               if (row.get("slug") or "").startswith("xhx/raccoon-")
+               and row["slug"] not in gw.DISPLAY_NAMES]
+    assert not unnamed, "unnamed raccoon build(s): %s" % unnamed
+
 def test_key_table_does_not_drift_from_the_guard(monkeypatch):
     import default_model_guard as guard
     assert gw.KEY_ENV == guard.KEY_ENV

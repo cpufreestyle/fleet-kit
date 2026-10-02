@@ -146,6 +146,16 @@ FAMILY_TIERS = ("opus", "sonnet", "haiku", "fable", "mythos")
 TIER_BRACKETS = ((0.20, "opus"), (0.40, "sonnet"), (0.60, "haiku"),
                  (0.80, "fable"), (1.01, "mythos"))
 
+# Where a bridge reports a model under a build hash -- xhx lists the Raccoon
+# build ids of the SenseTime app -- the picker needs a name an operator can
+# read at a glance. The slug stays the routable id, so every existing config,
+# alias and route keeps working: only what a picker shows changes.
+DISPLAY_NAMES = {
+    "xhx/raccoon-19b265": "xhx/小浣熊Work-A",
+    "xhx/raccoon-405a1c": "xhx/小浣熊Work-B",
+    "xhx/raccoon-8c4485": "xhx/小浣熊Work",
+}
+
 
 def family_tier(rank, total):
     """The Claude tier a row stands in for, from its rank in its provider."""
@@ -298,8 +308,12 @@ def bridge_catalog_rows():
             if not model_id:
                 continue
             slug = model_id if "/" in model_id else provider + "/" + model_id
+            # A bridge that knows a human name for a model reports it, and the
+            # picker shows that name instead of the id -- which for xhx is a
+            # build hash nobody can read (raccoon-19b265 and friends).
+            name = (item.get("name") or "").strip() if isinstance(item, dict) else ""
             rows.append({"slug": slug, "priority": pos,
-                         "display_name": model_id})
+                         "display_name": name or model_id})
     rows.sort(key=lambda r: (r.get("priority", 10 ** 6), r.get("slug") or ""))
     _BRIDGE_CATALOG["stamp"] = now
     _BRIDGE_CATALOG["rows"] = rows
@@ -797,7 +811,8 @@ def models_payload():
         entry = {
             "type": "model",
             "id": row["slug"],
-            "display_name": row.get("display_name") or row["slug"],
+            "display_name": (DISPLAY_NAMES.get(row["slug"])
+                             or row.get("display_name") or row["slug"]),
             "created_at": "2026-01-01T00:00:00Z",
             "provider": route["provider"],
             "transport": route["transport"],

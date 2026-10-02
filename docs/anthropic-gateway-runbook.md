@@ -60,6 +60,25 @@
 2. 目录里没有某一行、但模型名的 provider 前缀确实能路由且端口活着，就直接放行，
    不再 404（`no-such-model-42` 这种没有 provider 认领的仍然拒绝）。
 
+### 看得懂的名字（display_name，2026-10-02）
+
+picker 里给人看的那一列是 `display_name`，模型 id 保持路由原样不动（配置、别名、
+路由表全不受影响），改名的两层规则：
+
+1. 桥自己报了人类名字就用它的：xhx 桥从上游目录带回了 `name` 字段
+   （`Raccoon-Work-260817-A`、`GLM-5-3-Flash` 这种），网关优先展示；
+2. 上游名字本身也是构建哈希的，用网关顶部的 `DISPLAY_NAMES` 表：xhx 的三个
+   Raccoon 构建号显示成看得懂的名字——
+
+| id（路由用，不变） | display_name（picker 显示） |
+| --- | --- |
+| `xhx/raccoon-19b265` | `xhx/小浣熊Work-A` |
+| `xhx/raccoon-405a1c` | `xhx/小浣熊Work-B` |
+| `xhx/raccoon-8c4485` | `xhx/小浣熊Work` |
+
+上游哪天换新构建号，`test_every_raccoon_hash_in_the_pool_has_a_readable_name`
+会先失败，提醒往表里补一行——新哈希不会裸奔进 picker。
+
 ## Claude Code 接入：两种形态
 
 ### A. 直连（当前生效，推荐）
