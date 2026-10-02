@@ -86,7 +86,72 @@ cc-switch 里 claude 的 default provider（那份本来就是 Kimi coding key�
 
 当前实测（2026-10-01）：cc-switch 里那份 Kimi key 已失效，`GET /coding/v1/usages -> HTTP 401
 The API Key appears to be invalid or may have expired.`；MiniMax 本机没有任何凭据，行里直说
-「未配置 key」且不发起调用。拿到新 key 之后：
+「未配置 key」且不发起调用。
+
+#### 2026-10-02：Kimi Code 找到真 key，答案是「没有套餐」
+
+key 不用再找。Kimi 桌面版自己把 coding key 存在
+
+    ~/Library/Application Support/kimi-desktop/daimon-share/daimon/kimi-code-key.json
+    （结构 {"v":2,"keys":[{"userId":...,"apiKey":"sk-kimi-...","keyId":...}]}）
+
+`plan_credits.py` 现在会自己读这份文件，所以本机直接
+`python3 tools/plan_credits.py kimi` 就能出结果，不用 `export` 任何东西。
+（cc-switch claude default 那个 65 位无前缀串不是 key，实测仍 401。）
+
+实测输出（真实返回，未删减）：
+
+    kimi key from ~/Library/Application Support/kimi-desktop/daimon-share/daimon/kimi-code-key.json
+    { "platform": "kimi-code", "http": 200, "auth": "Authorization",
+      "body": {},
+      "plan": {"user_level": 10, "user_level_name": "Free",
+               "goods_version": 0, "status": "USER_STATUS_NORMAL"},
+      "subscription": "terminated",
+      "reason": { "http": 403, "body": { "error": {
+        "type": "access_terminated_error",
+        "message": "Your current subscription does not have access to Kimi
+                    Code right now. Upgrade your plan to keep coding with
+                    Kimi Code: https://www.kimi.com/code/#pricing" } } } }
+
+the key works but this plan is not active -- ...
+renew the plan, then this reports real windows again
+
+结论：这个 Kimi 账号**当前没有生效的 Kimi Code 套餐**（Free 档、goods_version 0），
+所以 `/coding/v1/usages` 返回 `{}`——不是接口不对，是没套餐可报。计费页在
+https://www.kimi.com/code/#pricing 。
+
+顺带定死的两件事：
+
+- `/coding/v1/usages` 是对的路由（它的兄弟 `/coding/v1/usage` 返回 404
+  `resource_not_found_error`），Bearer 和 `x-api-key` 两种头都收。
+- 「key 有效但套餐停了」是 403 `access_terminated_error`，和「key 死了」的
+  401 是两件事。旧代码把 403 一律说成 dead key，会把一个好 key 说成死的；
+  现在这种情况单独走退出码 4，并把平台给的续费地址原样打出来。
+
+#### MiniMax：仍然没有凭据，而且本来也没有余额接口
+
+本机翻遍了也没有 MiniMax key：keychain 无条目、所有 `.env`（fleet.env、
+.openclaw/.env、.omniroute/.env 等 13 份）无 MINIMAX 相关、shell history 无、
+cc-switch provider 表里没有 MiniMax。`/Applications/MiniMax Agent.app`
+（com.ai.wanjuan 0.10.4）装着但从未启动——没有 userData 目录，所以连
+「从它自己存储里读」这条路都不存在。
+
+而且两个区域都没有余额接口（无 key 探活实测）：
+
+    api.minimaxi.com / api.minimax.io
+      /v1/chat/completions   401 authorized_error（路由在）
+      /v1/usage /v1/usages /v1/credits /v1/quota /v1/account   全部 404
+
+所以 MiniMax 这一行永远只能是「key 活着吗」，问不出剩多少。给了 key 之后
+`plan_credits.py minimax` 会依次打 CN、海外两个 host 再判 401——因为
+MiniMax 的 key 按区域签发，海外 key 在 CN host 上就是 401，旧代码会直接把
+好 key 判成死 key。
+
+#### 2026-10-01 记录（已被上一节取代）
+
+以下为 10-01 的原始记录，保留作对照：
+
+    拿到新 key 之后：
 
     export KIMI_CODING_API_KEY=<key>
     export MINIMAX_API_KEY=<key>        # 海外平台：plan_credits.py minimax --base https://api.minimax.io
