@@ -85,29 +85,29 @@ Windows 上桥不归 launchd 管，`install.sh` 不会自动拉起它们。桥�
 `install-task` 先试 `schtasks`；非管理员失败时回落到当前用户的「启动」目录快捷方式，
 所以未提权也能做到开机自启。
 
-上面的命令默认用 **PowerShell 7**（`pwsh`）；机器上没有 PS7 时自动回落到
-Windows PowerShell 5.1，命令本身不用改。
+上面的命令默认只用 **PowerShell 7**（`pwsh`）；机器上没有 pwsh 时会直接报错
+（不回落到 5.1），pwsh 不在 PATH 里时可用 `FLEET_POWERSHELL` 指定完整路径。
 
 ## 默认模型与自动回退
 
 舰队上游十几个，任何一个当天挂掉（登录过期、额度、VPN、上游故障）都会让选中它的
-每一轮失败。`tools/default_model_guard.py` 把 `stepfun/step-5-preview` 作为锚点：
+每一轮失败。`tools/default_model_guard.py` 负责守住默认模型：拿 `config.toml`
+里活配置的 `model` 键，去这条模型**自己的路由**上打一次真实聊天，已死且当前默认
+不是港湾（`stepfun/step-5-preview`）就把 `model` 改钉回港湾；港湾自己也死了就只
+报告、不改写。`opencodex/setup-providers.sh` 每次 pin 完默认模型后自动跑一遍，
+常态下无需手动执行。锚点由 `fleet.env` 的 `FLEET_DEFAULT_MODEL` 指定，机制细节见
+下文「默认模型出问题，跳回 step-5-preview」。
 
-- `~/.codex/config.toml` 的 `model` 始终钉在锚点上（新会话从这里开始）；
-- 若钉住的模型**不是**锚点，就用一次最小请求（16 token）探它，失败即改写回锚点；
-- 钉住的就是锚点时不发任何请求，常态零开销。
+Windows 上可用 `tools/default-model-guard.ps1` 手动检查或装成登录自启守护
+（守护是脚本自身的循环，间隔由 `-Interval` 控制，默认 120 秒）：
 
-锚点由 `runtime/fleet.env` 的 `FLEET_DEFAULT_MODEL` 指定（默认 `stepfun/step-5-preview`），
-`opencodex/setup-providers.sh` 每次 sync 后也会按它重新 pin。
-
-    python3 "<R>/tools/default_model_guard.py" --once              # 单次检查
-    python3 "<R>/tools/default_model_guard.py" --daemon --interval 120
-    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" install   # 登录自启守护
-    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" status
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" run      # 单次检查
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" status   # 概览 + dry-run
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" install  # 登录自启守护
     pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" remove
 
-日志：`<R>/logs/default-model-guard.log`。守护只改 `config.toml` 的 `model` 键，
-已经在跑的会话不受影响（Codex 读它是在启动时）。
+守护只改 `config.toml` 的 `model` 键，已经在跑的会话不受影响（Codex 读它是在
+启动时）。
 
 ## 两座 WorkBuddy 桥
 

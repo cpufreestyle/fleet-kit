@@ -34,6 +34,7 @@ function Resolve-FleetHome {
 $fleetHome = Resolve-FleetHome -Value $FleetHome
 $script = Join-Path $fleetHome 'tools\default_model_guard.py'
 if (-not (Test-Path $script)) { throw "missing $script" }
+$envFile = Join-Path $fleetHome 'fleet.env'
 
 $python = Join-Path $fleetHome '.venv\Scripts\python.exe'
 if (-not (Test-Path $python)) { $python = (Get-Command python -ErrorAction Stop).Source }
@@ -52,20 +53,25 @@ function Get-AnchorModel {
 }
 
 switch ($Action) {
+    # The guard script is single-shot: it probes the pinned model's own route
+    # and jumps back to the harbor when dead, then exits. There is no --once
+    # or --daemon flag; the loop below is the daemon.
     'run' {
-        & $python $script --once
+        & $python $script --env-file $envFile
         exit $LASTEXITCODE
     }
     'run-loop' {
-        & $python $script --daemon --interval $Interval
-        exit $LASTEXITCODE
+        while ($true) {
+            & $python $script --env-file $envFile
+            Start-Sleep -Seconds $Interval
+        }
     }
     'install' {
         if (-not (Test-Path $startup)) { New-Item -ItemType Directory -Path $startup -Force | Out-Null }
         $ws = New-Object -ComObject WScript.Shell
         $sc = $ws.CreateShortcut($link)
         $psExe = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
-        if (-not $psExe) { $psExe = 'powershell.exe' }
+        if (-not $psExe) { throw "PowerShell 7 (pwsh) not found; install it or set FLEET_POWERSHELL" }
         $sc.TargetPath = $psExe
         $sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$PSCommandPath`" -Action run-loop -Interval $Interval"
         $sc.WorkingDirectory = $fleetHome
@@ -80,7 +86,9 @@ switch ($Action) {
     'status' {
         Write-Host ("startup daemon   : " + ($(if (Test-Path $link) { 'installed' } else { 'absent' })))
         Write-Host ("anchor model     : " + (Get-AnchorModel))
-        Write-Host ("pinned in codex  : " + ((Select-String -Path (Join-Path $env:USERPROFILE '.codex\config.toml') -Pattern '^\s*model\s*=' | Select-Object -First 1).Line.Trim()))
-        & $python $script --once --dry-run
+        $pin = Select-String -Path (Join-Path $env:USERPROFILE '.codex\config.toml') -Pattern '^\s*model\s*=' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($pin) { Write-Host ("pinned in codex  : " + $pin.Line.Trim()) }
+        else { Write-Host "pinned in codex  : (no model= line found in ~/.codex/config.toml)" }
+        & $python $script --env-file $envFile --dry-run
     }
 }

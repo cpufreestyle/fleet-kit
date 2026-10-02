@@ -229,8 +229,10 @@ _fleet_user_sid() {
 
 # PowerShell backs the windows service backend: Git Bash has no setsid, so
 # long-running services are hosted by a detached hidden PowerShell supervisor.
-# PowerShell 7 (pwsh) is preferred; 5.1 stays as the fallback for hosts that do
-# not have PS7, and FLEET_POWERSHELL overrides both.
+# Only PowerShell 7 (pwsh) is supported by default -- the 5.1 fallback produced
+# supervisor scripts that behaved subtly differently -- and FLEET_POWERSHELL
+# overrides the lookup when pwsh lives outside PATH. Empty output means "no
+# usable interpreter"; callers already treat that as their degrade path.
 _fleet_win_powershell() {
   local p=""
   if [ -n "${FLEET_POWERSHELL:-}" ] && [ -x "${FLEET_POWERSHELL}" ]; then
@@ -240,20 +242,19 @@ _fleet_win_powershell() {
     p="$(command -v "$p" 2>/dev/null || true)"
     if [ -n "$p" ] && [ -x "$p" ]; then printf '%s' "$p"; return 0; fi
   done
-  local cand=""
-  if [ -n "${SYSTEMROOT:-}" ]; then
-    cand="$(cygpath -u "$SYSTEMROOT" 2>/dev/null || echo '')/System32/WindowsPowerShell/v1.0/powershell.exe"
-  fi
-  if [ -n "$cand" ] && [ -x "$cand" ]; then printf '%s' "$cand"; return 0; fi
-  command -v powershell.exe 2>/dev/null || printf ''
+  printf ''
 }
 
-# detach $2 so it outlives the shell that spawned it ($1 = powershell.exe).
+# detach $2 so it outlives the shell that spawned it ($1 = pwsh).
 # Start-Process resolves executables the way Windows does, so it needs the
-# native path form, not the /c/... form bash uses to run powershell itself.
+# native path form, not the /c/... form bash uses to run pwsh itself.
 _fleet_win_spawn() {
   local ps="$1" target="$2" pswin
-  [ -n "$ps" ] && [ -n "$target" ] || return 1
+  if [ -z "$ps" ]; then
+    echo "fleet: PowerShell 7 (pwsh) not found; install it or set FLEET_POWERSHELL" >&2
+    return 1
+  fi
+  [ -n "$target" ] || return 1
   pswin="$(_fleet_win_path "$ps")"
   "$ps" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden \
     -Command "Start-Process -FilePath '$pswin' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File','$target' -WindowStyle Hidden" \

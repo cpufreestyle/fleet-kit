@@ -41,11 +41,11 @@ def log(msg: str) -> None:
 
 
 def powershell_exe() -> list[str]:
-    """PowerShell invocation for this process: PS7 first, 5.1 as the fallback.
+    """PowerShell 7 (pwsh) invocation, FLEET_POWERSHELL overriding the lookup.
 
-    A bare "powershell" resolves to Windows PowerShell 5.1; FleetKit targets
-    PowerShell 7 (pwsh) and keeps the legacy binary only for hosts without PS7.
-    FLEET_POWERSHELL overrides both when it names an existing file.
+    FleetKit defaults to pwsh only: 5.1's different parameter handling produced
+    supervisor behaviour that diverged from the documented flow. Raises when
+    pwsh is absent so the caller's error path says what is missing.
     """
     override = os.environ.get("FLEET_POWERSHELL")
     if override and Path(override).exists():
@@ -54,7 +54,8 @@ def powershell_exe() -> list[str]:
         found = shutil.which(name)
         if found:
             return [found]
-    return ["powershell"]
+    raise RuntimeError(
+        "PowerShell 7 (pwsh) not found; install it or set FLEET_POWERSHELL")
 
 
 def load_config() -> dict:
