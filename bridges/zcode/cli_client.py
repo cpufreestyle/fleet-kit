@@ -250,12 +250,238 @@ def _tzname():
     return "Asia/Shanghai"
 
 
+def _zcode_parent_dir():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+# --------------------------------------------------------------------------
+# captcha (zcode-plan endpoint only)
+# --------------------------------------------------------------------------
+# The start-plan providers reach the upstream through
+# https://zcode.z.ai/api/v1/zcode-plan/anthropic, an openai-compatible
+# provider whose access mode is "start-plan". zcode.cjs gates that transport
+# on an Aliyun captcha ticket: without one the upstream answers
+# `3007 captcha verify failed`, and CaptchaRequestRetry.claim() re-asks for
+# runtime headers with reason "captcha-retry" so the host can attach a fresh
+# ticket. The ticket is single use, so every attempt needs a new one.
+#
+# captureModelSnapshot/refreshRuntimeHeadersBeforeAttempt hand the host
+# `accountAccess` (e.g. {"accountType":"zai","mode":"start-plan"}) and
+# `reason` ("model-request"|"captcha-retry"), so a ticket is only attached
+# for the providers that actually demand one.
+
+CAPTCHA_POOL_DIR = os.environ.get(
+    "ZCODE_CAPTCHA_POOL", os.path.join(_zcode_parent_dir(), "captcha_pool"))
+CAPTCHA_FILE = os.environ.get(
+    "ZCODE_CAPTCHA_FILE", os.path.join(_zcode_parent_dir(), "captcha.txt"))
+CAPTCHA_MAX_AGE = float(os.environ.get("ZCODE_CAPTCHA_MAX_AGE") or "900")
+# Aliyun accepts a ticket only within a short window; minute-old ones come
+# back as 3007, so this is the gate that decides whether to spend one.
+CAPTCHA_MAX_FRESH = float(os.environ.get("ZCODE_CAPTCHA_MAX_FRESH") or "600")
+CAPTCHA_MINTER = os.environ.get(
+    "ZCODE_CAPTCHA_MINTER", os.path.join(_zcode_parent_dir(), "captcha-mint.py"))
+CAPTCHA_MINT_TIMEOUT = float(os.environ.get("ZCODE_MINT_TIMEOUT") or "75")
+CAPTCHA_RELAY = os.environ.get("ZCODE_CAPTCHA_RELAY", "http://127.0.0.1:8910/")
+CAPTCHA_REGION = os.environ.get("ZCODE_CAPTCHA_REGION", "cn")
+# captcha-mint.py needs playwright; the runtime venv does not ship it, so the
+# interpreter that has it (Xcode CLT python3 on this host) is chosen here.
+# ZCAP_PY overrides for other machines (win/linux without CLT).
+CAPTCHA_MINT_PY = os.environ.get("ZCAP_PY", "").strip()
+
+
+def _pool_tickets(max_age=None):
+    """Pool tickets under max_age, newest first, as (path, epoch)."""
+    if max_age is None:
+        max_age = CAPTCHA_MAX_AGE
+    import glob
+    import time as _time
+    out = []
+    for path in glob.glob(os.path.join(CAPTCHA_POOL_DIR, "*.txt")):
+        head = os.path.basename(path).split("-")[0]
+        try:
+            epoch = float(head)
+        except ValueError:
+            continue
+        if _time.time() - epoch <= max_age:
+            out.append((path, epoch))
+    return sorted(out, key=lambda t: t[1], reverse=True)
+
+
+def _legacy_ticket():
+    """The param a human minted on the relay page (captcha.txt)."""
+    try:
+        with open(CAPTCHA_FILE, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    return line
+    except OSError:
+        pass
+    return ""
+
+
+def read_captcha():
+    """Peek the newest ticket: pool first, legacy captcha.txt last."""
+    tickets = _pool_tickets()
+    if tickets:
+        try:
+            with open(tickets[0][0], encoding="utf-8") as fh:
+                return fh.read().strip()
+        except OSError:
+            pass
+    return _legacy_ticket()
+
+
+def captcha_age_seconds():
+    import time as _time
+    tickets = _pool_tickets()
+    if tickets:
+        return _time.time() - tickets[0][1]
+    try:
+        with open(CAPTCHA_FILE, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        stamp = next((ln.lstrip("# ").strip() for ln in lines
+                      if ln.startswith("#")), "")
+        if not stamp:
+            return 1e9
+        stamp = stamp.split(" (")[0].strip()
+        return _time.time() - _time.mktime(_time.strptime(
+            stamp, "%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        return 1e9
+
+
+def _mint_ticket():
+    """Ask captcha-mint.py for one ticket (blocking, seconds)."""
+    if not os.path.exists(CAPTCHA_MINTER):
+        return ""
+    import subprocess
+    # Prefer a live pool server (no blocking, no playwright here); fall
+    # back to --once with an interpreter that has playwright installed.
+    py = CAPTCHA_MINT_PY
+    if not py:
+        # sys.executable first: the bridge already runs in the venv that
+        # has playwright, so the probe cannot land on a random system one.
+        for cand in (sys.executable, "/usr/bin/python3", "python3"):
+            try:
+                import subprocess as _sp
+                chk = _sp.run([cand, "-c", "import playwright"],
+                              capture_output=True, timeout=20)
+                if chk.returncode == 0:
+                    py = cand
+                    break
+            except Exception:
+                continue
+    if not py:
+        _trace("no interpreter with playwright found; set ZCAP_PY")
+        return ""
+    try:
+        import sys as _sys
+        # --headless: a headed mint opens a real Chrome window in the middle
+        # of a turn, which is the verification jumping at the operator
+        # that the pool and the relay page exist to avoid. Headless it may
+        # still fail, but it fails invisibly -- and with the minter watching
+        # the pool, a ticket the operator banks meanwhile is picked up here.
+        proc = subprocess.run(
+            [py, CAPTCHA_MINTER, "--once", "--pool", "--headless"],
+            capture_output=True, text=True, timeout=CAPTCHA_MINT_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001 - a mint must never kill a turn
+        _trace("captcha mint failed: %r" % (exc,))
+        return ""
+    out = (proc.stdout or "").strip().splitlines()
+    param = out[-1].strip() if out else ""
+    if proc.returncode != 0 or not param.startswith("ey"):
+        _trace("captcha mint rc=%s err=%s"
+               % (proc.returncode, (proc.stderr or "")[-200:]))
+        return ""
+    return param
+
+
+def take_captcha():
+    """Consume one ticket: explicit env, pool, legacy file, then mint."""
+    forced = (os.environ.get("ZCODE_CAPTCHA") or "").strip()
+    if forced:
+        return forced
+    for path, _epoch in _pool_tickets():
+        try:
+            with open(path, encoding="utf-8") as fh:
+                param = fh.read().strip()
+            os.unlink(path)          # claim-by-delete: no double spending
+        except OSError:
+            continue
+        if param:
+            return param
+    legacy = _legacy_ticket()
+    if legacy:
+        try:
+            with open(CAPTCHA_FILE, "w", encoding="utf-8") as fh:
+                fh.write("# %s (consumed by cli_client)\n"
+                         % _time_stamp())
+        except OSError:
+            pass
+        return legacy
+    return _mint_ticket()
+
+
+def _time_stamp():
+    import time as _time
+    return _time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def spend_ticket(max_fresh=None):
+    """(param, reason): consume one ticket still worth spending.
+
+    A ticket is single use, so this always hands back a fresh one: the pool is
+    claim-by-delete (unlink as it is read) and the legacy file is marked
+    consumed. When nothing usable is cached, captcha-mint.py is asked inline.
+    """
+    if max_fresh is None:
+        max_fresh = CAPTCHA_MAX_FRESH
+    override = (os.environ.get("ZCODE_CAPTCHA") or "").strip()
+    if override:
+        return override, ""
+    age = captcha_age_seconds()
+    if age > max_fresh:
+        _trace("captcha ticket is %.0fs old (limit %.0fs); minting"
+               % (age, max_fresh))
+        param = _mint_ticket()
+        if param:
+            return param, ""
+        return "", ("captcha ticket is %.0fs old (limit %.0fs) and the mint "
+                    "failed; open %s" % (age, max_fresh, CAPTCHA_RELAY))
+    param = take_captcha()
+    if param:
+        return param, ""
+    param = _mint_ticket()
+    if param:
+        return param, ""
+    return "", ("no captcha ticket and the mint failed; open %s" % CAPTCHA_RELAY)
+
+
+# Backwards-compatible alias: the pool is claim-by-delete, so "reading" a
+# ticket already consumes it. keep working for callers that only report.
+usable_ticket = spend_ticket
+
+
+def needs_captcha(params=None):
+    """True when the provider about to be called is a zcode-plan one."""
+    params = params or {}
+    access = params.get("accountAccess") or {}
+    if isinstance(access, dict) and access.get("mode"):
+        return access.get("mode") == "start-plan"
+    selection = params.get("modelSelection") or {}
+    pid = (selection.get("providerId") or params.get("providerId") or "")
+    return pid.endswith("start-plan")
+
+
 def provider_runtime_headers(params=None):
     """Body for interaction/requestProviderRuntimeHeaders.
 
-    Tries apiKey first (the AI-SDK Anthropic provider turns it into
-    "x-api-key"); the same token is also sent as an Authorization bearer
-    header so either upstream shape can pick it up.
+    apiKey becomes the AI-SDK Anthropic provider's apiKey ("x-api-key") and
+    dRs() adds "Authorization: Bearer <apiKey>" on top of requestAuth.headers
+    (unless headers already carry one), so sending the token once covers both
+    upstream auth shapes. The zcode-plan providers additionally need an
+    Aliyun captcha header, so a fresh ticket is attached for them.
     """
     token = zcode_api_key()
     headers = runtime_headers()
@@ -268,10 +494,18 @@ def provider_runtime_headers(params=None):
         return {"headersApplied": False,
                 "errorMessage": "no zcode credential available (zcodejwttoken "
                                 "missing); run: node zcode.cjs login --no-browser"}
-    auth = {"apiKey": token,
-            "headers": dict(headers, authorization="Bearer " + token)}
+    headers = dict(headers, authorization="Bearer " + token)
+    if needs_captcha(params):
+        captcha, why = spend_ticket()
+        if captcha:
+            headers["x-aliyun-captcha-verify-param"] = captcha
+            headers["x-aliyun-captcha-verify-region"] = CAPTCHA_REGION
+            _trace("attached captcha ticket (len=%d) reason=%s"
+                   % (len(captcha), params.get("reason")))
+        else:
+            _trace("no captcha ticket: %s" % (why,))
+    auth = {"apiKey": token, "headers": headers}
     return {"headersApplied": True, "requestAuth": auth}
-
 
 
 RUNTIME_PREFS = {

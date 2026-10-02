@@ -218,13 +218,20 @@ refresh_reach() {
 if [ "$needs_sort" = "1" ] && [ "$rc" = "0" ]; then
     refresh_reach
     if [ -x "$PYTHON" ] && [ -f "$REACH" ]; then
+        # --drop-unreachable is what removes rows for providers that have no
+        # bridge at all (catalog_filter.py only judges providers with a bridge),
+        # so a dead key like tokendance cannot keep 60 picker rows alive. The
+        # sorter drops the flag itself when the snapshot is older than
+        # REACH_MAX_AGE, so a stale probe can reorder rows but never delete.
         if "$PYTHON" "$KIT/tools/catalog_sort.py" --reach "$REACH" \
-               --strict-coverage >/dev/null 2>&1; then
+               --strict-coverage --drop-unreachable \
+               --max-reach-age "$REACH_MAX_AGE" >/dev/null 2>&1; then
             echo "fleet-sort: reachable-first order re-applied" >&2
             # sort writes only the catalog, so refresh the cache first
             run_real sync-cache >/dev/null 2>&1 || true
             "$PYTHON" "$KIT/tools/catalog_sort.py" --reach "$REACH" \
-               --strict-coverage >/dev/null 2>&1 \
+               --strict-coverage --drop-unreachable \
+               --max-reach-age "$REACH_MAX_AGE" >/dev/null 2>&1 \
                 || echo "fleet-sort: re-sort after cache failed" >&2
         else
             echo "fleet-sort: re-sort FAILED, order may be stale" >&2

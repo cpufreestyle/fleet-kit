@@ -23,18 +23,24 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Optional
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
+# the usage ledger ships beside this bridge
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import httpx
-import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+import _common
+import usage_ledger
 
 BRIDGE_VERSION = "0.1.0"
 
@@ -57,25 +63,15 @@ def auth_file() -> Path:
     return Path(root) / "auth.json"
 
 
-app = FastAPI(title="xhx2codex", version=BRIDGE_VERSION)
-_http: Optional[httpx.AsyncClient] = None
+client = _common.make_client_getter(**_common.client_kwargs(
+    CALL_TIMEOUT, headers={"User-Agent": f"xhx2codex/{BRIDGE_VERSION}"}))
+
+app = _common.make_app("xhx2codex", BRIDGE_VERSION)
 _lock = asyncio.Lock()
 _cache: dict = {"models": {}, "ts": 0.0}   # model_id -> {name, context_window, max_tokens, ...}
 
 
-def client() -> httpx.AsyncClient:
-    global _http
-    if _http is None or _http.is_closed:
-        _http = httpx.AsyncClient(timeout=httpx.Timeout(CALL_TIMEOUT, connect=15),
-                                  headers={"User-Agent": f"xhx2codex/{BRIDGE_VERSION}"})
-    return _http
-
-
-def check_bridge_auth(request: Request) -> None:
-    if not BRIDGE_KEY:
-        return
-    if (request.headers.get("authorization") or "") != f"Bearer {BRIDGE_KEY}":
-        raise HTTPException(status_code=401, detail="invalid bridge key")
+check_bridge_auth = _common.make_auth_checker(BRIDGE_KEY)
 
 
 # ---------------- 登录态（~/.box-agent/config/auth.json，与桌面端共享） ----------------
@@ -181,11 +177,8 @@ async def get_catalog(force: bool = False) -> dict:
         return _cache["models"]
 
 
-def remap_model(model: Optional[str]) -> Optional[str]:
-    # 循环剥离：兼容 ocx 发现的双前缀 slug（如 xhx/xhx-sn-glm-5-3-flash）
-    while model and model.startswith(CATALOG_PREFIX):
-        model = model[len(CATALOG_PREFIX):]
-    return model
+# 循环剥离：兼容 ocx 发现的双前缀 slug（如 xhx/xhx-sn-glm-5-3-flash）
+remap_model = _common.make_prefix_stripper(CATALOG_PREFIX)
 
 
 # ---------------- 路由 ----------------
@@ -247,31 +240,71 @@ async def chat_completions(request: Request):
                             status_code=r.status_code)
 
     if stream:
-        return StreamingResponse(_pump(r), media_type="text/event-stream")
+        return StreamingResponse(_metered(r, model), media_type="text/event-stream")
 
     await r.aread()
     body = r.content
     await r.aclose()
+    usage = None
+    try:
+        usage = (json.loads(body) or {}).get("usage")
+    except ValueError:
+        pass
+    usage_ledger.record(model, usage, stream=False)
     return Response(content=body, media_type="application/json")
 
 
-async def _pump(resp: httpx.Response):
+async def _metered(resp, model):
+    """Relay the SSE body, then count the call.
+
+    llm/v2 bills nothing, so the local ledger is the only usage record this
+    fleet has -- see bridges/xhx/usage_ledger.py. A stream only carries
+    usage when the client asked for it (stream_options.include_usage), so
+    a call without it still counts, with zero tokens.
+    """
+    started = time.time()
+    seen = ""
+    usage = None
     try:
-        async for chunk in resp.aiter_bytes():
+        async for chunk in _pump(resp):
+            if usage is None and chunk:
+                seen += chunk.decode("utf-8", "ignore")
+                usage = _usage_from_sse(seen)
+                if len(seen) > 65536:
+                    seen = seen[-8192:]
             yield chunk
     finally:
-        await resp.aclose()
+        usage_ledger.record(model, usage, stream=True,
+                            seconds=time.time() - started)
+
+
+def _usage_from_sse(buffer):
+    """The usage object of the last complete SSE event that carries one."""
+    found = None
+    for event in buffer.split("\n\n"):
+        for line in event.split("\n"):
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if not payload or payload == "[DONE]":
+                continue
+            try:
+                data = json.loads(payload)
+            except ValueError:
+                continue
+            if isinstance(data, dict) and isinstance(data.get("usage"), dict):
+                found = data["usage"]
+    return found
+
+
+_pump = _common.sse_pump
 
 
 def main():
-    global BRIDGE_KEY
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8793)
-    args = ap.parse_args()
-    print(f"[xhx2codex] v{BRIDGE_VERSION} on http://{args.host}:{args.port} "
-          f"api={API_BASE} key={'set' if BRIDGE_KEY else 'OPEN'}", flush=True)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=True)
+    _common.serve(
+        app, 8793,
+        f"[xhx2codex] v{BRIDGE_VERSION} on http://%s:%s "
+        f"api={API_BASE} key={'set' if BRIDGE_KEY else 'OPEN'}")
 
 
 if __name__ == "__main__":

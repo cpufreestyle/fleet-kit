@@ -242,4 +242,13 @@ provider 变成 "no models available"。与 gemini / catpaw / antigravity 一致
 - hub daemon 由 Cline App 拉起；**App 没开过时桥不可用**（`/health` 的 `hub_ready` 会变 false）。
 - `~/.cline/data/locks/hub/production.json` 每次 hub 重启都会变（新 authToken），
   桥是每次请求现读，所以无需额外处理。
+- **别让 macOS 系统代理插手 loopback**（2026-09-29 实测踩坑）：discovery 给的是
+  `ws://127.0.0.1:25463/hub`，而 `scutil --proxy` 的 ExceptionsList 有 `localhost` 和
+  RFC1918，**偏偏没有 `127.0.0.1`**；`websockets` 判 bypass 时问的是 `host:port`，
+  所以这条 loopback WebSocket 被拉去走系统代理（MacPacket :1082）。代理一抽，CONNECT
+  回垃圾，`InvalidProxyMessage` 在 0.01 秒内抛出 → 桥回 502 →
+  `verify_real_calls.py` 判 UPSTREAM_DOWN，14 个能用的模型被一个死跳板整体埋掉。
+  桥的 `hub_proxy()` 现在对 loopback 强制直连（远程 hub 仍照旧走系统代理）。
+  判断有没有中招：`python3 -c 'import urllib.request as u;print(u.proxy_bypass("127.0.0.1"))'`
+  打印 False。
 - 会话会在 `~/.cline/data/sessions/` 落盘，长期跑会攒垃圾，可定期清理。

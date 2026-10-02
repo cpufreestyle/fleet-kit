@@ -56,11 +56,31 @@ if ! command -v ocx >/dev/null 2>&1; then
   exit 1
 fi
 
+# Mask every --api-key argument. A dry run echoes its plan, and that plan once
+# carried the fleet's real keys into terminal scrollback and screenshots; the
+# plan does not need the secret to prove what it would run.
+mask_args() {
+  local out="" arg skip=0
+  for arg in "$@"; do
+    if [ "$skip" = "1" ]; then
+      out="$out ***"
+      skip=0
+    else
+      case "$arg" in
+        --api-key) out="$out $arg"; skip=1 ;;
+        --api-key=*) out="$out --api-key=***" ;;
+        *) out="$out $arg" ;;
+      esac
+    fi
+  done
+  printf '%s' "${out# }"
+}
+
 run() {
   if [ "$DRY_RUN" = "1" ]; then
-    echo "  [dry-run] $*"
+    echo "  [dry-run] $(mask_args "$@")"
   else
-    "$@" || echo "  [warn] command failed: $*" >&2
+    "$@" || echo "  [warn] command failed: $(mask_args "$@")" >&2
   fi
 }
 
@@ -79,10 +99,30 @@ PROVIDERS=(
   "qwen|11|QWEN2CODEX_KEY"
   "cline|12|CLINE2CODEX_KEY"
   "zcode|13|ZCODE2CODEX_KEY"
+  "kimi|15|KIMI2CODEX_KEY"
+  "minimax|16|MINIMAX2CODEX_KEY"
 )
 
 echo "opencodex provider setup (port base ${PORT_BASE})"
 run ocx service
+# The launchd service above starts the proxy at boot, but `codex` can still be
+# launched before that job has run; `ocx status` then answers "Restart safety:
+# AT RISK after restart (custom local gateway lifecycle is not managed by
+# opencodex)" together with "Codex autostart shim is not installed". The shim
+# makes the codex binary ensure the proxy itself on launch and closes that gap;
+# it is reversible with `ocx codex-shim uninstall`.
+# The shim wraps the first `codex` on PATH. Desktop Codex puts its own bundled
+# binary on that PATH (.../ChatGPT.app/Contents/Resources/codex); wrapping that
+# would rename a file inside a running app bundle, so refuse and say why. The
+# launchd service above still autostarts the proxy in that case.
+codex_on_path="$(command -v codex || true)"
+case "$codex_on_path" in
+  *".app/Contents/Resources/"*)
+    echo "  (skipping codex-shim: first codex on PATH is ${codex_on_path},"
+    echo "   inside an app bundle; 'ocx service' still autostarts the proxy)"
+    ;;
+  *) run ocx codex-shim install ;;
+esac
 
 # Read one KEY out of any installed service definition, on any platform.
 # macOS keeps launchd plists, Windows/Linux keep the generated wrapper; both are
@@ -152,6 +192,8 @@ run ocx sync
 # A local proxy tool can resolve api.stepfun.com to a fake-ip non-global address,
 # so registration needs --allow-private-network or the destination policy blocks
 # model discovery.
+STEPFUN_REGISTERED=0
+
 if [ -n "${STEPFUN_PLAN_API_KEY:-}" ]; then
   run ocx provider add stepfun --adapter openai-chat --base-url https://api.stepfun.com/step_plan/v1 --api-key "${STEPFUN_PLAN_API_KEY}" --allow-private-network --force
   # A freshly added provider only enters the routing table after a restart;
@@ -172,6 +214,7 @@ if [ -n "${STEPFUN_PLAN_API_KEY:-}" ]; then
   for m in step-5-preview step-3.7-flash step-3.5-flash-2603 step-3.5-flash step-router-v1; do
     run ocx models enable "stepfun/${m}"
   done
+  STEPFUN_REGISTERED=1
 else
   echo "  (STEPFUN_PLAN_API_KEY not set; skipping stepfun plan api)"
 fi
@@ -192,8 +235,17 @@ fi
 # CC Switch owns that file and `ocx provider add --force` rewrites it, so re-pin the
 # default after the last sync. fleet.env can override with FLEET_DEFAULT_MODEL.
 CODEX_TOML="${HOME}/.codex/config.toml"
-DEFAULT_MODEL="${FLEET_DEFAULT_MODEL:-stepfun/step-5-preview}"
-if [ -f "$CODEX_TOML" ]; then
+DEFAULT_MODEL="${FLEET_DEFAULT_MODEL:-}"
+if [ -z "$DEFAULT_MODEL" ] && [ "$STEPFUN_REGISTERED" != "1" ]; then
+  # Neither an operator override nor a registered stepfun provider. The fallback
+  # below names a provider this same script just skipped, and pinning it would
+  # leave Codex opening on a provider that is not registered.
+  echo "  [warn] no FLEET_DEFAULT_MODEL and stepfun was not registered" >&2
+  echo "         (STEPFUN_PLAN_API_KEY unset); leaving the existing default alone" >&2
+elif [ -z "$DEFAULT_MODEL" ]; then
+  DEFAULT_MODEL="stepfun/step-5-preview"
+fi
+if [ -n "$DEFAULT_MODEL" ] && [ -f "$CODEX_TOML" ]; then
   if [ "$DRY_RUN" = "1" ]; then
     echo "  [dry-run] pin ${DEFAULT_MODEL} as the default model in ${CODEX_TOML}"
   else
@@ -220,8 +272,56 @@ with open(path, "w", encoding="utf-8") as fh:
 print("  pinned default model: %s" % model)
 PIN
   fi
-else
+elif [ ! -f "$CODEX_TOML" ]; then
   echo "  [warn] ${CODEX_TOML} not found; default model not pinned" >&2
+fi
+
+# The pinned default must still answer a real request. This fleet once
+# re-pinned trae/trae-step-5-preview on every setup after that route died
+# (401 -> 502): the gating above refuses an unregistered provider, but no
+# one checked the pinned route's health. The guard probes the live default
+# on its own route and jumps it back to the stepfun harbor when dead.
+GUARD="${KIT}/tools/default_model_guard.py"
+if [ -f "$GUARD" ]; then
+  if [ "$DRY_RUN" = "1" ]; then
+    run python3 "$GUARD" --dry-run --env-file "$ENVFILE"
+  else
+    run python3 "$GUARD" --env-file "$ENVFILE" \
+      || echo "  [warn] default-model guard reported a problem" >&2
+  fi
+else
+  echo "  [warn] $GUARD missing; the default model is not health-guarded" >&2
+fi
+
+
+# StepFun's Plan API answers a request with 70 images and refuses the 71st with
+# 400 images_too_many, and Codex re-sends its whole history every turn, so a
+# session that pastes screenshots eventually crosses that ceiling no matter what
+# the operator does (tools/image_cap.py holds the measurement). The image-cap
+# shim de-duplicates and caps photos on 15722.
+#
+# It goes *after* CC Switch, never instead of it, and this script deliberately
+# does not run tools/pin_shim_base_url.py any more. Measured 2026-10-01: Codex
+# sends `Authorization: Bearer PROXY_MANAGED` (see experimental_bearer_token in
+# config.toml) and only CC Switch holds the real StepFun key, so a provider whose
+# base_url points straight at the shim forwards that placeholder verbatim and
+# every turn answers 401 "Incorrect API key provided" -- the pin turned the shim
+# into a hop that broke authentication. Pointing Codex at CC Switch and letting
+# CC Switch's routing table forward to the shim keeps both halves working:
+# 15721 with the placeholder token answers 200 and the shim's own request counter
+# goes up, so the cap is still applied. tools/pin_cc_switch_endpoint.py holds that
+# re-point, and the shim service re-runs it on a timer (IMAGE_CAP_CC_PIN_INTERVAL)
+# because CC Switch resets the row whenever the operator switches providers.
+SHIM_SH="$KIT/tools/stepfun_image_shim.sh"
+if [ -n "${FLEET_HOME:-}" ] && [ -f "${FLEET_HOME}/tools/stepfun_image_shim.sh" ]; then
+  # prefer the deployed copy: its launchd job then runs the same file a
+  # re-install refreshes, not this git checkout
+  SHIM_SH="${FLEET_HOME}/tools/stepfun_image_shim.sh"
+fi
+if [ "$DRY_RUN" = "1" ]; then
+  echo "  [dry-run] bash ${SHIM_SH} install-timer"
+else
+  bash "$SHIM_SH" install-timer || echo "  [warn] stepfun image-cap shim install failed" >&2
 fi
 
 run ocx service restart

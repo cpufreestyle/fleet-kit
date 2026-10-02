@@ -44,7 +44,7 @@ FLEET_SERVICE_DIR="${FLEET_SERVICE_DIR:-${LAUNCH_DIR}}"
 LABEL_PREFIX="${LABEL_PREFIX:-com.local}"
 export FLEET_SERVICE_DIR
 
-SUFFIXES="workbuddy2codex workbuddy2codex-gpt qoder2codex codely2codex trae2codex lingxi2codex xhx2codex gemini2codex catpaw2codex antigravity2codex qwen2codex cline2codex zcode2codex fleet-checkin fleet-ui ocx-catalog-guard fleet-probe"
+SUFFIXES="workbuddy2codex workbuddy2codex-gpt qoder2codex codely2codex trae2codex lingxi2codex xhx2codex gemini2codex catpaw2codex antigravity2codex qwen2codex cline2codex zcode2codex stepfun-image-cap stepfun-image-cap-watchdog fleet-checkin fleet-ui ocx-catalog-guard fleet-probe"
 
 for suffix in $SUFFIXES; do
   label="${LABEL_PREFIX}.${suffix}"

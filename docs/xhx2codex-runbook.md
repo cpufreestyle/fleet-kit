@@ -63,3 +63,68 @@ codex exec -c model_provider=xhx -m "xhx/xhx-sn-glm-5-3-flash" "..."   # 官方 
 ## 未动/警告
 - 商汤小浣熊桌面 app 当前在后台运行（保持 token 自动同步；若桥偶发 401 可重开 app）
 - workbuddy（8787/8788）、qoder（8789）、codely（8790）、trae（8791）、lingxi（8792）桥保持运行
+
+## 计费真相（2026-09-29 实测）：这条链路不扣积分
+
+**结论**：`llm/v2/chat/completions` 返回真实 `usage`，但**不清算积分**。
+
+实测（都打真实上游，不是罐头回）：
+
+| 测试 | 模型（计费倍率） | tokens | 积分变化 |
+|---|---|---|---|
+| 直连上游 | raccoon-19b265（×1） | 117 | Δ 0 |
+| 直连上游 | raccoon-405a1c（×1） | 520 | Δ 0 |
+| 经桥调用 | raccoon-405a1c（×1） | 528 | Δ 0（3 分钟、5.5 分钟后复查仍是 9283/976/8307） |
+| 连打 3 次 | raccoon-405a1c（×1） | ~520×3 | Δ 0，5.5 分钟后仍 0 |
+
+`GET /api/web/points/v1/balance` 的五个字段（`available_points / daily_points /
+monthly_points / reward_points / topup_points`）一个都没动。
+
+**为什么**：`model_catalog` 带每模型计费信息，平台是有计费体系的：
+
+| 模型 | billing_multiplier | 有效倍率 | 状态 |
+|---|---|---|---|
+| raccoon-8c4485 / 19b265 / 405a1c | 1 | 1 | normal（全价） |
+| sn-sensenova-6-8-flash / -lite | 0.5 | **0** | limited_free，限免至 10/31 |
+| sn-glm-5-3-flash | 0.2 | 0.1 | discount，限时折扣 9/30 止 |
+| sn-glm-5-3 | 0.75 | 0.75 | normal |
+| sn-deepseek-v4-1-flash | 0.25 | 0.25 | normal |
+| sn-kimi-k3 | 1 | 1 | normal |
+
+但桥打的是 `/api/web/llm/v2/chat/completions`，官方桌面端聊天走的是**另一套 API 面**
+（`/api/web/office/v3/sessions` → `.../external/messages`，端点从
+`/Applications/商汤小浣熊.app/Contents/Resources/app.asar` 扒到），积分在 office/v3 那条链路上结。
+`~/.box-agent/config/auth.json` 本身就是桌面端 agent runtime 的登录态，所以这不是伪造支付状态，
+只是不在计量面上——上游任何时候可以改。
+
+**余额自己在掉**：实测约 0.5 分/分钟（≈700 分/天），来源是桌面端自身消耗（它启动时领每日积分）。
+每日发放约 1000 分，`checkin.py` 的 `xhx` 任务负责补签。
+
+## 本地用量账本（积分不动，账要清）
+
+桥每次调用往 `<FLEET_HOME>/xhx-usage.jsonl` 追加一行（`XHX_USAGE_FILE` 可覆盖）：
+
+```json
+{"ts":"2026-09-29T21:00:00","model":"raccoon-405a1c","stream":false,"secs":8.0,
+ "prompt_tokens":20,"completion_tokens":500,"total_tokens":520,"reasoning_tokens":0}
+```
+
+- 流式调用只有在客户端带 `stream_options.include_usage` 时上游才回 usage；没回也计数，token 记 0
+- 文件超过 2MB 自动裁到 newest-fit（`usage_ledger.MAX_BYTES` / `KEEP_LINES`），写失败不影响桥
+- 状态面板「小浣熊用量」一栏按模型汇总今日次数/token，`status_ui.py --once` 可直接看 JSON
+- 计数包含**所有**经过桥的调用：fleet_probe / verify_real_calls 的探测调用也算，所以数字比纯 Codex 用量略高
+- 想让 Codex 用量真的走积分，得把桥改造成 office/v3 会话流程；目前刻意没做（见下）
+
+## 渠道校验失败要能被发现
+
+上游拒绝可以**用 HTTP 200 装着错误文本**回来（workbuddy 的 `11128 unapproved channel`
+就是这样，读起来像一句回答）。`tools/upstream_errors.py` 收了这类签名，
+`fleet_probe.py`（可达性 → 选择器排序）和 `verify_real_calls.py`（REAL 判定 → catalog_filter
+能否隐藏该 provider）都先过它：
+
+- 探测侧：命中的调用判不可达，理由是 `upstream refused: <marker>`
+- 核验侧：verdict 记 `CHANNEL_BLOCKED`（状态面板红色），不会被算成"弱模型"的 UNCLEAR
+
+新增签名往 `MARKERS` 里加，并补 `tools/test_upstream_errors.py` 的用例。
+
+- 流式 500 / 渠道校验（11128）死循环 / Trae 登录态找不到：见 [2026-09-29-stream-500-and-channel-retry.md](./2026-09-29-stream-500-and-channel-retry.md)

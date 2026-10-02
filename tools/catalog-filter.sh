@@ -31,14 +31,22 @@
 set -euo pipefail
 
 INTERVAL=300
+MAX_VERIFY_AGE="${FLEET_MAX_VERIFY_AGE:-86400}"
 CODEX_HOME_DIR="${CODEX_HOME:-${HOME}/.codex}"
 STATUS_URL="${FLEET_STATUS_URL:-http://127.0.0.1:8796/api/status}"
 KEEP_PROVIDERS=""
 HIDE_NATIVE=0
-HIDE_ENABLED=0
 REPORT_ONLY=0
 PROXY_BASE="${FLEET_PROXY_BASE:-http://127.0.0.1:10100}"
 LOG_FILE="${CATALOG_FILTER_LOG:-${HOME}/Library/Logs/catalog-filter.log}"
+# Defined before anything sources platform.sh: platform.sh lives beside this
+# script, and `set -u` turns a use-before-definition into an immediate exit.
+# Resolve without dirname for the same reason as ocx-catalog-guard.sh: a
+# Task Scheduler action inherits a PATH with no Git for Windows coreutils.
+case "$0" in
+  */*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
+  *) SCRIPT_DIR="$(pwd)" ;;
+esac
 # Platform abstraction: launchd / Task Scheduler / Linux supervisor.
 if [ -f "${SCRIPT_DIR}/platform.sh" ]; then
   # shellcheck source=platform.sh
@@ -54,7 +62,6 @@ LABEL_PREFIX="${FLEET_LABEL_PREFIX:-com.local}"
 DRY_RUN=0
 ACTION=run
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FILTER="${CATALOG_FILTER_PY:-${SCRIPT_DIR}/catalog_filter.py}"
 
 usage() {
@@ -71,6 +78,9 @@ Options:
   --status-url URL    fleet status panel
   --keep P[,P...]     providers to keep even when unavailable
   --interval SEC      timer interval in seconds (default 300)
+  --max-verify-age SEC
+                      refuse to drop bridge rows on a verdict snapshot older
+                      than this (default 86400 = 24h)
   --log FILE          log file
   --dry-run           report only
   --proxy-base URL    local proxy base used for the native-pool probe
@@ -92,11 +102,23 @@ import json, sys
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
+    # A report that is not JSON means the filter itself broke, and an empty
+    # summary line would log that as a quiet success.
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as fh:
+        first = fh.readline().strip()
+    print("unreadable-report: %s" % (first[:120] or "(no output)"))
     sys.exit(0)
-print("removed=%s after=%s unavailable=%s restored=%s" % (
+line = "removed=%s after=%s unavailable=%s restored=%s" % (
     d.get("removed"), d.get("models_after"),
     ",".join(d.get("unavailable") or []) or "-",
-    ",".join(d.get("restored") or []) or "-"))
+    ",".join(d.get("restored") or []) or "-")
+# A run can succeed and still not have done the main job: junk rows removed
+# while a stale or unreachable verdict kept the bridge rows. Saying why in the
+# same one-line log entry is the difference between "ok" and "ok, but".
+why = d.get("error") or d.get("status_error")
+if why:
+    line += " error=%s" % str(why)[:160]
+print(line)
 PY
 }
 
@@ -109,22 +131,25 @@ cmd_run() {
 
   local report
   report="$(mktemp "${TMPDIR:-/tmp}/catalog-filter.XXXXXX")"
-  local args=(--codex-home "$CODEX_HOME_DIR" --status-url "$STATUS_URL")
+  local args=(--codex-home "$CODEX_HOME_DIR" --status-url "$STATUS_URL"
+              --max-verify-age "$MAX_VERIFY_AGE")
   [ -n "$KEEP_PROVIDERS" ] && args+=(--keep "$KEEP_PROVIDERS")
   [ "$DRY_RUN" = "1" ] && args+=(--dry-run)
   [ "$REPORT_ONLY" = "1" ] && args+=(--report-only)
   [ "$HIDE_NATIVE" = "1" ] && args+=(--hide-native-when-pool-down --proxy-base "$PROXY_BASE")
 
+  # Capture the real exit status: `if ! cmd; then rc=$?; fi` would read the
+  # status of the negated test, which is 0 on every failure, so a refused
+  # write used to be logged as "ok".
   local rc=0
-  if ! python3 "$FILTER" "${args[@]}" >"$report" 2>&1; then
-    rc=$?
-  fi
+  python3 "$FILTER" "${args[@]}" >"$report" 2>&1 || rc=$?
   if [ "$rc" = "0" ]; then
     log "ok: $(summarise "$report")"
   else
-    # rc 3 is the panel being down, rc 4 is nothing verified REAL: both mean the
-    # filter could not tell what is broken, so it wrote nothing. Not an alarm.
-    if [ "$rc" = "3" ] || [ "$rc" = "4" ]; then
+    # rc 3 is the panel being down, rc 4 is nothing verified REAL, rc 6 is a
+    # verdict snapshot too old to act on: all three mean the filter could not
+    # tell what is broken, so it wrote nothing. Not an alarm.
+    if [ "$rc" = "3" ] || [ "$rc" = "4" ] || [ "$rc" = "6" ]; then
       log "skip (rc=$rc): $(head -n 1 "$report")"
     else
       log "FAILED (rc=$rc): $(tail -n 2 "$report" | tr '\n' ' ')"
@@ -133,6 +158,8 @@ cmd_run() {
   if [ "$DRY_RUN" = "1" ]; then
     cat "$report"
   fi
+  # One temp file per 300s tick otherwise lands in $TMPDIR forever.
+  rm -f "$report"
   return 0
 }
 
@@ -231,12 +258,13 @@ while [ "$#" -gt 0 ]; do
     --keep=*) KEEP_PROVIDERS="${1#*=}" ;;
     --interval) shift; INTERVAL="${1:?--interval needs a value}" ;;
     --interval=*) INTERVAL="${1#*=}" ;;
+    --max-verify-age) shift; MAX_VERIFY_AGE="${1:?--max-verify-age needs a value}" ;;
+    --max-verify-age=*) MAX_VERIFY_AGE="${1#*=}" ;;
     --log) shift; LOG_FILE="${1:?--log needs a value}" ;;
     --log=*) LOG_FILE="${1#*=}" ;;
     --dry-run) DRY_RUN=1 ;;
     --report-only) REPORT_ONLY=1; DRY_RUN=1 ;;
     --hide-native-when-pool-down) HIDE_NATIVE=1 ;;
-    --report-only) REPORT_ONLY=1 ;;
     --proxy-base) shift; PROXY_BASE="${1:?--proxy-base needs a value}" ;;
     --proxy-base=*) PROXY_BASE="${1#*=}" ;;
     -h|--help) usage; exit 0 ;;

@@ -9,14 +9,25 @@
 真实调用基线（2026-09-26）：`tools/verify_real_calls.py` 用随机运算题核验，5/10 桥真实推理
 （workbuddy、workbuddy-gpt、qoder、trae、xhx），其余 5 桥为登录门禁/会话失效/上游关停/需 VPN/Google 网络阻断，见「真实调用检测」。
 
+## 镜像同步
+
+GitHub 是本仓库的主 remote（origin）。当国际出口阻断、GitHub 不可达时，同一个
+仓库同步推送到 Gitee 私有镜像，凭证已存在本机 ~/.git-credentials：
+
+    git push gitee main      # 推到 Gitee 镜像 cpufreestyle/fleet-kit
+    git push origin main     # 网络恢复后补推 GitHub
+
+两个 remote 内容一致；git remote -v 里的 gitee 即镜像。2026-10-01 首次同步，
+当时 main 领先 origin 5 个提交，全部历史已落在镜像上。
+
 ## 架构
 
     Codex ──▶ opencodex 代理 (127.0.0.1:10100)
                  │  [model_providers.*] allow-private-network
                  ▼
-           11 座本地桥 (127.0.0.1:8787 .. 8798)
+           15 座本地桥 (127.0.0.1:8787 .. 8803)
                  ▼
-           WorkBuddy 国内版 / 海外版 / Qoder / 团结AI / Trae / 灵犀 / 小浣熊 / Gemini / CatPaw / TokenDance
+           WorkBuddy 国内版 / 海外版 / Qoder / 团结AI / Trae / 灵犀 / 小浣熊 / Gemini / CatPaw / TokenDance / Cline / ZCode / Kimi Code / MiniMax
 
 | 桥 (name)        | 默认端口 | 上游服务            | 探针模型                  |
 |------------------|---------|---------------------|---------------------------|
@@ -31,12 +42,16 @@
 | catpaw           | 8795    | CatPawAI (美团)     | glm-5.2 等                |
 | antigravity      | 8797    | Google Antigravity  | claude-opus-4-8 / gemini-3.1-pro-preview 等 |
 | qwen             | 8798    | 阿里 Qwen Cloud     | qwen3.8-flash / qwen3.8-max 等          |
+| cline            | 8799    | Cline 免费池        | deepseek-v4.1-flash 等    |
+| zcode            | 8800    | ZCode / 阿里云      | GLM-5.3 / GLM-5.3-Flash   |
+| kimi             | 8802    | Kimi Code (Moonshot)| kimi-for-coding / k3      |
+| minimax          | 8803    | MiniMax             | MiniMax-M3 / M2.7 等      |
 
 Codex 里模型以 `桥名/模型` 出现，例如 `workbuddy/hy4-preview`。
 
 ## 项目命名与目录
 
-项目名 **FleetKit**（十一桥反代理舰队）。git 源码与运行目录分离：
+项目名 **FleetKit**（十五桥反代理舰队）。git 源码与运行目录分离：
 
     <项目目录>/kit/       git 仓库（本文档所在）：改代码、git pull 都在这里
     <项目目录>/runtime/   运行根（FLEET_HOME）：13 座桥、fleet.env、logs、checkin
@@ -102,6 +117,14 @@ FleetKit 里有两座 WorkBuddy 桥，分别打国内版和海外版，端口固
 |------|------|------|------|----------|
 | `workbuddy` | 8787 | 国内版 `copilot.tencent.com` | `runtime/bridges/workbuddy-cn/` | 文件账号池 `runtime/bridges/workbuddy-cn/auths/` |
 | `workbuddy-gpt` | 8788 | 海外版 `www.workbuddy.ai` | `runtime/bridges/workbuddy-gpt/` | 桌面端 `~/.workbuddy-ai/local_storage`；池 `runtime/bridges/workbuddy-gpt/auths/` |
+
+两座桥的代码几乎完全相同，共享实现放在 `bridges/workbuddy/`（`core.py` 承载 99% 逻辑，
+外加 `netpin.py` DNS 固定和 6 个账号/签到/脱敏模块）。`workbuddy-cn/converter.py` 与
+`workbuddy-gpt/converter.py` 只是几十行入口，靠 `WORKBUDDY_PROVIDER=cn|gpt` 选一套
+provider 表（上游地址、模型名、是否 DNS 固定、uvicorn 参数等），`WORKBUDDY_BRIDGE_DIR`
+让各自的 `auths/`、`bridge-settings.json`、`assets/` 仍落在自己的桥目录里。改 WorkBuddy
+逻辑只改 `bridges/workbuddy/core.py`，两座桥同步生效；`install.sh` 会把
+`workbuddy-cn` / `workbuddy-gpt` 里遗留的共享模块副本清掉（`prune_shared_workbuddy`）。
 
 两座桥共用同一个本地 key `CODEBUDDY2OPENAI_KEY`（值在 `runtime/fleet.env`）。Codex 侧模型名带桥名前缀：
 `workbuddy/<model>` 与 `workbuddy-gpt/<model>`（例如 `workbuddy/hy4-preview`、`workbuddy-gpt/hy4-preview`）。
@@ -189,9 +212,11 @@ FleetKit 设计为可整体搬走：`kit/`（源码）与 `runtime/`（运行根
                [--no-start] [--skip-deps] [--dry-run]
                [--with-checkin] [--with-ui] [--no-ocx-guard] [-h]
 
-- `--home DIR`：安装根目录，默认 "<PRJ>/runtime"
+- `--home DIR`：安装根目录，默认 `~/FleetKit/runtime`。本仓库是 `kit/` 与
+  `runtime/` 同级布局，所以示例命令一律显式写 `--home "<PRJ>/runtime"`；
+  不传的话 dry-run 也会照着 `~/FleetKit` 报计划
 - `--port-base N`：起始端口，13 座桥依次占用 N .. N+13（offset 9 留空），默认 8787
-- `--with-checkin`：装每日 09:00 CST 签到 timer（当前只有 xhx 任务）
+- `--with-checkin`：装每日 09:00 CST 签到 timer（xhx  SenseTime 积分 + workbuddy 桥存活确认）
 - `--with-ui`：装本地状态面板 launchd 常驻服务，端口 N+9（默认 8796）
 - `--no-ocx-guard`：关掉反代理模型 catalog 看门狗（默认随 opencodex 一起装）
 - `--no-opencodex`：跳过 ocx provider 注册（之后可手动跑 bash "<PRJ>/runtime/opencodex/setup-providers.sh）"
@@ -228,7 +253,7 @@ env 覆盖 launchd 目录/标签前缀/日志目录，即可与现有舰队并�
 |------|------|
 | `--home DIR` | 安装根目录，默认 "<PRJ>/runtime" |
 | `--port-base N` | 起始端口，默认 8787 |
-| `--with-checkin` | 装每日 09:00 CST 签到 timer |
+| `--with-checkin` | 装每日 09:00 CST 签到 timer（xhx + workbuddy 两项任务）|
 | `--with-ui` | 装本地状态面板 launchd 常驻服务（端口 N+9） |
 | `--no-ocx-guard` | 跳过反代理模型 catalog 看门狗 timer（默认随 opencodex 装） |
 | `--no-opencodex` | 跳过 ocx provider 注册 |
@@ -297,22 +322,51 @@ fleet.env 缺失时自动降级（桥显示 401、配置字段标 MISSING）而�
 白名单，路径穿越会被挡掉。写操作只有 `/api/action/checkin` 与 `/api/action/restart/<name>`，
 桥名不在白名单里直接返回 unknown bridge。
 
-## 免费模型标注（官网信息 + 时段）
+## 模型标注：免费状态 + 是否走客户端积分
 
-`free-windows.json` 按各服务官网/官方定价页逐条标注每个模型的免费状态与时段
-（2026-09-26 抓取）；`tools/free_models.py` 把它与 ocx live、Codex catalog 合并输出。
-改标注只改 JSON，不用动代码。
+`free-windows.json` 按各服务官网/官方定价页逐条标注每个模型的**免费状态与时段**，
+以及**这次调用走不走客户端积分**（2026-09-29 补第二维）；`tools/free_models.py` 把它与
+ocx live、Codex catalog 合并输出。改标注只改 JSON，不用动代码。
 
-    python3 tools/free_models.py                 # 全量标注表（188 个模型）
-    python3 tools/free_models.py --free-only     # 只看免费类
+「走客户端积分」的口径（`legend.credits`）：
+
+| credits | 含义 | 会不会把账号额度用光 |
+|----------|------|----------------------|
+| `client` | 消耗被反代理客户端账号内的点数/tokens/次数 | **会**，可扣完 |
+| `limit` | 官方不计点，只占账号免费限额（限速/限次） | 不会，只会被限流 |
+| `own` | 独立 API Key 余额 / 官方按量付费 / 原生订阅 | 不会，与反代理账号无关 |
+| `unknown` | 官网未公示或当前不可达 | 无法核实 |
+
+    python3 tools/free_models.py                          # 全量标注表（两维徽标 + 时段）
+    python3 tools/free_models.py --credits client         # 只看会扣客户端积分的
+    python3 tools/free_models.py --credits own            # 只看独立 Key / 原生订阅
+    python3 tools/free_models.py --free-only              # 只看免费类
     python3 tools/free_models.py --provider qoder
-    python3 tools/free_models.py --missing       # 选择器缺口报告
-    python3 tools/free_models.py --json          # 机器可读（状态面板同源）
-    python3 tools/free_models.py --check-sources # 官网来源可达性
+    python3 tools/free_models.py --missing                # 选择器缺口报告
+    python3 tools/free_models.py --json                   # 机器可读（状态面板同源）
+    python3 tools/free_models.py --check-sources          # 官网来源可达性
 
-状态面板（8796）新增「免费模型标注」区块：徽标 + 时段 + 是否在选择器，与 CLI 同源；
-并提供「隐藏不可用」开关——对应桥探测即停（probe.ok=false）或核验 verdict≠REAL 的
-provider 默认隐藏，并在 meta 行标注「已隐藏 N 个不可用模型 provider(verdict)...」，可取消恢复。
+状态面板（8796）的「模型标注」区块：免费徽标 + **客户端积分徽标** + 时段 + 是否在选择器，
+与 CLI 同源；积分单元格 hover 显示该行积分口径来源（如「codely 月度免费点数优先扣」）。
+两个开关：「隐藏不可用」（探测即停或 verdict≠REAL 的 provider）、
+「只看走客户端积分」（只列 `client` 行，方便排查额度耗尽）。
+
+### 哪些走客户端积分（2026-09-29 按官网/桥代码核实）
+
+| 走客户端积分（`client`） | 积分形态 |
+|--------------------------|----------|
+| workbuddy / workbuddy-gpt | 每模型 credits 倍率（`auto` 为动态倍率），仪表盘可见余额与折扣倍率 |
+| codely（团结AI） | 月度免费点数 + 充值点数，扣减时优先扣免费点数 |
+| lingxi（灵犀） | 「灵力」额度，7 天滚动 + 5 小时 + 30 天窗口 |
+| xhx（商汤小浣熊） | 每日登录积分（available / daily / reward points） |
+| zcode | Start Plan 3,000,000 tokens/天 + Weekend Build 300,000,000 tokens 一次性 |
+
+| 不走客户端积分 | 原因 |
+|----------------|------|
+| trae / qoder / cline（free 家族）/ gemini / antigravity | `limit`：官方不计点，只限速限次（Trae 免费档「限量使用」、Gemini 60 次/分 1000 次/天、Cline free 档 input/output 计费 0） |
+| tokendance / stepfun | `own`：独立 API Key 按量计费余额，与反代理客户端账号无关 |
+| openai（gpt-* 原生） | `own`：ChatGPT 原生订阅，按设计不进反代理 catalog |
+| catpaw | `unknown`：需美团公司 VPN，当前不可达，无法核实 |
 
 ### 官网标注结果（2026-09-26 抓取）
 
@@ -376,6 +430,31 @@ docs/stepfun2codex-runbook.md。
 `ocx provider add --force` 都会重写 config.toml，不 pin 默认模型会被打回。
 改默认：`fleet.env` 里设 `FLEET_DEFAULT_MODEL=<slug>`，或直接手改 config.toml。
 
+### 默认模型出问题，跳回 step-5-preview
+
+默认模型 = `stepfun/step-5-preview`（下称港湾），其他模型出问题时按两层跳回：
+
+1. **pin 时守卫**（`tools/default_model_guard.py`）：每次 `setup-providers.sh`
+    pin 完默认模型后跑一遍，也可以手动
+    `python3 tools/default_model_guard.py`（`--dry-run` 只看不改，
+    `--json` 出机器可读结论）。它拿活配置里的 `model` 键，去**这条模型自己的
+   路由**上打一次真实聊天（nonce `E2E_OK`，与 `fleet_probe.py` 同一约定）：
+   stepfun 系走 image-cap shim 15722，其余走各自的桥端口。探到已死且当前默认
+   不是港湾，就把 `model` 改钉回港湾并打印证据；港湾自己也死了就只报告、不改
+   写——没有地方可跳。`fleet.env` 里的 `FLEET_DEFAULT_MODEL` 指着一条死路线
+   时同样会告警：下次 setup 会把它 pin 上去。
+2. **运行时 failover**（CC Switch 自己的 `auto_failover_enabled`）：会话中临时
+   切到别的 provider 后它挂了，CC Switch 按熔断判据把请求转给 failover 队列里
+   的 provider。港湾（StepFun）必须在 codex 的 failover 队列里，否则第 2 层为空转。
+   守卫每次运行只读检查这两项（`proxy_config.auto_failover_enabled=1`、
+   StepFun `in_failover_queue=1`，库在 `~/.cc-switch/cc-switch.db`），漂移时
+   打印修复 SQL 并以退出码 1 报警；它**不写** CC Switch 的库——那是个 App 正开
+   着的 55MB 数据库，改了不重启不生效，重启是人的决定。
+
+为什么探路由而不是探 15721 网关：CC Switch 会把外来模型改写成当前 provider 的
+模型再转出网关，一条死掉的默认从网关侧看永远是 200 step-5-preview——trae 路线
+挂了那一周就是这么被漏掉的。
+
 ### 为什么有的模型不在选择器
 
 - **tokendance**：95 个 live 模型已全部进入 catalog（`setup-providers.sh` 里原先的
@@ -410,8 +489,9 @@ docs/stepfun2codex-runbook.md。
   架构预览」对应 HF `Qwen/Qwen3.8-Flash-Next`（架构名 Qwen4ExpForConditionalGeneration，
   gated: false 开放权重；NVFP4 版约 124GB，无 DGX Spark 跑不动），**生产可用版是托管
   `qwen3.8-flash`**（同为 Qwen4 架构、1M 上下文[输入 991K / 输出 131K]、OpenAI+Anthropic
-  双协议、官网明示支持 Codex）。无 key 时桥返回静态兜底目录（qwen3.8-flash /
-  qwen3.8-max）；到 qwencloud.com 注册拿 key 写入 `fleet.env` 的 `QWEN2CODEX_KEY` 后
+  双协议、官网明示支持 Codex）。无上游 key 时桥返回静态兜底目录（qwen3.8-flash /
+  qwen3.8-max）且 chat 报 503 `qwen_key_missing`；到 qwencloud.com 注册拿 key 写入
+  `fleet.env` 的 **`QWEN_API_KEY`**（不是本地桥 key `QWEN2CODEX_KEY`，两者别混用）后
   `bash bridges/finish.sh qwen` 透传上游全量目录。细节见 docs/qwen2codex-runbook.md。
 - **qoder**（2026-09-26 修复）：桥（8789）一直有 15 个模型，但从未注册进 ocx
   （live = 0）。已执行 `ocx provider add qoder --adapter openai-chat --base-url
@@ -472,7 +552,9 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 - 无斜杠前缀的「原生模型」没有桥可判定，默认保留；只有 --hide-native-when-pool-down 显式探测确认账号池不可用时才隐藏（见下）。
 - 垃圾行清理先于桥判定执行（只看 slug），面板挂了也照删；`--no-hide-junk` 关闭。
 - 权威源是 `http://127.0.0.1:8796/api/status` 的 `verify.real`（不是 `bridges[].probe.ok`）。
-- 写前做 byte 级 round-trip 校验，不符即拒绝落库（exit 5）；面板不可达（3）或 real 为空（4）一概不删，防止误清空。
+- 判据快照超过 24h（`--max-verify-age`）不删行，只清垃圾行（exit 6）：`verify_real_calls.py` 是按需跑的，快照隔天很正常，凭旧判据删行会把已恢复的桥一直藏掉。同理，面板不可达（3）或 real 为空（4）也一概不删。
+- 写前做 byte 级 round-trip 校验：先探明文件正在用的序列化布局（缩进 / 行尾换行 / `ensure_ascii`），按同一布局回写；认不出的布局才拒绝落库（exit 5），并说明原因。2026-09-29 修：此前只认 `indent=2`+行尾换行，而在写的布局是 `indent=1` 无换行，于是每次写入都被拒且一声不响，包装脚本又把失败记成 `ok:`——一个从没真正过滤过的过滤器健康地跑了好几天。
+- 所有本地 HTTP 调用（面板、原生池探测）都绕过系统代理：`urllib` 默认会走 macOS 系统代理，判据就成了代理的而不是桥的，代理一挂整棵过滤器跟着挂。
 - REAL 但 catalog 缺失的桥会 `ocx sync` 补回（带 1h cooldown，避免和 guard 打架）。
 - `--keep P[,P]` 临时保留某 provider；`--only P[,P]` 只处理指定 provider。
 
@@ -480,11 +562,11 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 
 ### 原生模型（无前缀行）与账号池
 
-选择器里没有 `vendor/` 前缀的行（gpt-5.5 / gpt-5.6-* / gpt-6-* / step-3.7-flash）不是反代理模型，而是走 ocx 内置 openai provider 的 Codex 账号池模型（`codexAccountMode: pool`）。它们没有桥，所以 `verify.real` 永远覆盖不到，`catalog_filter` 默认也不动它们。
+选择器里没有 `vendor/` 前缀的行（gpt-5.5 / gpt-5.6-* / gpt-6-* / step-3.7-flash）不是反代理模型，而是走本地账号池/网关的模型（配置里写 ocx 内置 openai provider `codexAccountMode: pool`；当前 `~/.codex/config.toml` 的 `model_provider=custom` 指向 CC Switch 网关 `http://127.0.0.1:15721`，由它路由）。它们没有桥，所以 `verify.real` 永远覆盖不到，`catalog_filter` 默认也不动它们。
 
 账号池空了（未登录 ChatGPT、或 `~/.codex/auth.json` 里的 key 失效）时，这些行是选择器里最坏的一种失败：**看得见、选得动，一提交就 401**。`OpenAI account pool has no usable account credential` 就是这么来的。
 
-`--hide-native-when-pool-down` 用一次最小请求（`gpt-5.5` + 16 token）探测 `http://127.0.0.1:10100/v1/responses`：只有明确读到「池无可用凭据」的 401 才判定不可用；其余任何结果（成功、其它 4xx/5xx、代理不可达）都按「可用」处理，探测失败不会误清空选择器。探测为不可用时隐藏这些行，池恢复后下个周期自动加回。
+`--hide-native-when-pool-down` 用一次最小请求探测 `config.toml` 里 `model_provider` 指向的网关（未设 `FLEET_PROXY_BASE` 时；默认 ocx `http://127.0.0.1:10100`）。请求体必须是 `input` 列表 + `stream:true`，否则网关在到达账号池之前就回 400（`Input must be a list` / `Stream must be set to true`），这个探测要看的 401 永远等不到；模型名按 catalog 里的原生行依次试，网关不认的名字（404）说明不了账号池的事，换下一个。只有明确读到「池无可用凭据」的 401 才判定不可用；其余任何结果（成功、其它 4xx/5xx、网关不可达）都按「可用」处理，探测失败不会误清空选择器。探测为不可用时隐藏这些行，池恢复后下个周期自动加回。
 
     bash "<PRJ>/runtime/tools/catalog-filter.sh" run --hide-native-when-pool-down --dry-run
 
@@ -495,7 +577,7 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
     ocx account list openai   # 看账号池里到底还有没有账号
 
 
-与 `ocx-catalog-guard` 互补：guard 在桥模型数 < 60 时 `ocx sync` 加回，filter 再剔除非 REAL。当前 REAL 桥：workbuddy、workbuddy-gpt、qoder、codely、trae、lingxi、xhx；连同 tokendance/stepfun 与原生行，清理后选择器 149 行，远高于 guard 阈值，两者不互踩。
+与 `ocx-catalog-guard` 互补：guard 在桥模型数 < 60 时 `ocx sync` 加回，filter 再剔除非 REAL。两者会互踩——filter 藏掉的行正好让 guard 计数掉到阈值以下，于是 `ocx sync` 把坏行全部加回来，下个周期再被藏掉，300s 一轮永远对打。所以 filter 每轮把「比舰队自报少多少斜杠行」写进 `~/.codex/.catalog-filter-hidden.json`（按 bridge 自己的模型数与 catalog 存活行数相减，不猜 slug），guard 读它：缺口能被 filter 解释就不补，`66 + 62 hidden = 128; not healing`；只有在岗桥的行也丢了（真被 CC Switch 冲掉）才 `ocx sync`。当前 REAL 桥：workbuddy、qoder、codely、trae、lingxi、xhx；连同 tokendance/stepfun 与原生行，清理后选择器 74 行（斜杠 66 + 原生 8），仍高于 guard 阈值但只剩 6 行余量，这道解释逻辑就是那时的安全带。
 
 改完磁盘 catalog 后**需重启 Codex/ChatGPT** 才会刷新选择器。
 
@@ -514,6 +596,8 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 | catpaw | CatPawAI 桌面 App 登录 | ~/Library/Application Support/CatPawAI/User/globalStorage/state.vscdb | 需美团内网/VPN（见已知问题） |
 | antigravity | Antigravity 桌面 App 登录（或 gemini login） | ~/.gemini/jetski-standalone-oauth-token | 与 gemini 共用 token；需能连 cloudcode-pa.googleapis.com |
 | qwen | qwencloud.com 控制台创建 API key，写入 `fleet.env` 的 `QWEN2CODEX_KEY` | `fleet.env`（无本地登录态） | 上游 maas.qwencloudapi.com；key 丢失可在控制台重建 |
+
+（gemini 支持多账号池：`GEMINI_AUTH_DIR` + `POST /__gemini/accounts/*`，用法见 docs/gemini2codex-runbook.md「多账号池」一节。）
 
 每个服务登录后运行对应的 bridges/finish.sh <name>：重启桥 → 等待 /v1/models →
 列出模型 → 注入 Codex 模型目录 → ocx sync → 冒烟聊天一次。
@@ -571,7 +655,7 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 - tools/status_ui.py [--port N] [--no-browser] [--once]：面板实现（stdlib 单文件；/api/status、/api/logs/<name>、/api/action/*（含 verify-real-calls））
 - tools/ocx-catalog-guard.sh run|install-timer|uninstall-timer|status：反代理模型 catalog 看门狗（默认 300s）
 - tools/catalog-filter.sh run|install-timer|uninstall-timer|status：按 verify.real 隐藏不可用桥模型＋按 slug 清理噪声行（默认 300s，与 ocx-catalog-guard 互补）
-- tools/free_models.py [--free-only] [--provider P] [--missing] [--json] [--check-sources]：免费模型标注（数据在仓库根 free-windows.json，状态面板同源）
+- tools/free_models.py [--free-only] [--credits client|limit|own|unknown] [--provider P] [--missing] [--json] [--check-sources]：模型标注：免费状态 + 是否走客户端积分（数据在仓库根 free-windows.json，状态面板同源）
 - tools/short_aliases.py [--dry-run]：选择器短名（ocx 别名，路由不受影响）
 - tools/checkin.py [--run-now|--status|--daemon]：签到实现（幂等，CST 记「今日」）
 - opencodex/setup-providers.sh：重新注册 11 桥
@@ -593,6 +677,11 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
    individuals/AI Pro/Ultra 档（含 Gemini CLI 登录），该档本就是个人账号免费档
    （60 次/分、1000 次/天，AI Pro 只抬限额不单独计费）。需迁移 Antigravity 或改
    AI Studio key；详见 docs/free-models-runbook.md「Gemini 档位定性」。
+   上游不可达时 chat 在 `GEMINI_CHAT_BUDGET`（默认 60s）内回 502，不再挂 6 分钟，
+   客户端断开也不再伪装成 BRIDGE_DOWN。2026-09-29 修的是两层：预算要贯穿
+   token 刷新／`loadCodeAssist`，并且要在 `socket.create_connection` 层按剩余时间
+   给**每个解析地址**封顶——`cloudcode-pa.googleapis.com` 解析出 16 个地址
+   （前 8 个 IPv6，本机 VPN 全部黑洞），不封的话一次调用就能吃满 16 份 timeout。
 4. catpaw：需要美团内网/VPN，否则 catpaw.sankuai.com 不可达（Tunnel 503）。
    连上 VPN 后执行：launchctl kickstart -k gui/$(id -u)/com.local.catpaw2codex
 5. **antigravity**（第十桥）：代码/凭据/catalog/ocx 注册全部就绪，12 个模型已进
@@ -602,16 +691,22 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
    换能放行 Google 全域的节点后
    `launchctl kickstart -k gui/$(id -u)/com.local.antigravity2codex` 再
    `python3 tools/verify_real_calls.py --only antigravity`。细节见
-   docs/antigravity2codex-runbook.md。
+   docs/antigravity2codex-runbook.md。上游挂起时 chat 在
+   `ANTIGRAVITY_CHAT_BUDGET`（默认 60s）内收口，不会再拖到几分钟；连接层同样按
+   剩余时间给每个解析地址封顶（16 个地址的域名不封就是 16 份 timeout）。
 6. trae：桥 8791 上游曾挂（先 401 鉴权失效，后 502「param invalid」），已不是
   默认路线。经 CC Switch 对外表现为
   `503 所有供应商已熔断，无可用渠道`——看到这个报错先确认默认模型是不是又
  指回了死掉的桥；现默认为 stepfun 官方直连，实测 200。
-7. **qwen**（第十一桥）：代码/catalog/ocx 注册全部就绪，8798 桥在跑；无 key 时
-   `/v1/models` 只有静态兜底两个模型（qwen3.8-flash / qwen3.8-max），
-   `verify_real_calls.py` 判非 REAL，catalog_filter 随之隐藏——属设计行为，不会污染
-   选择器。到 qwencloud.com 注册并创建 API key 写入 `runtime/fleet.env` 的
-  `QWEN2CODEX_KEY`，然后 `bash bridges/finish.sh qwen` 即透传上游全量目录。
+7. **qwen**（第十一桥）：代码/catalog/ocx 注册全部就绪，8798 桥在跑。两个 key 别混：
+   `QWEN2CODEX_KEY` 是**本地**桥 key（任意字符串），上游 Qwen Cloud key 要写
+   `QWEN_API_KEY`——写错的话桥把本地 key 当上游 key 发出去，chat 全 401。
+   （2026-09-29 起上游 401/403 时 `/v1/models` 直接回 401 +
+   `upstream_auth_error`，不再返回假的静态目录；网络错误/5xx 仍给
+   `qwen3.8-flash` / `qwen3.8-max` 兜底目录。）
+   到 qwencloud.com 注册拿 key 写入 `runtime/fleet.env` 的 `QWEN_API_KEY`，
+   再 `bash bridges/finish.sh qwen` 即透传上游全量目录。细节见
+   docs/qwen2codex-runbook.md。
 8. ~~cline（未接入）~~ **已接入（第十二桥，2026-09-26 21:20）**：`api.cline.bot`
    没有可用的 OpenAI 兼容推理端点（全局 auth 中间件把非白名单路径一律挡成 401），
    但本机 hub daemon 可以直连：`ws://127.0.0.1:25463/hub`，凭据在
@@ -653,9 +748,11 @@ Plan API 后不受影响。
         requirements.txt      Python 依赖
         README.md             本文
         bridges/              13 座桥源码 + finish.sh（含 cline/ 第十二桥、zcode/ 第十三桥）
+                              _common.py 是 8 座 FastAPI 桥共享的外壳（鉴权/SSE/uvicorn 入口）
+                              workbuddy/ 是两座 WorkBuddy 桥共享的实现（cn/gpt 只留入口）
         opencodex/            setup-providers.sh（ocx provider 注册）
-        free-windows.json     免费模型标注数据（官网信息 + 时段，改这里不改代码）
-        tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / verify_real_calls.py / fleet_split.py / free_models.py / short_aliases.py / catalog_filter.py / catalog-filter.sh
+        free-windows.json     模型标注数据（免费状态 + 时段 + 是否走客户端积分，改这里不改代码）
+        tools/                status.sh / status_ui.sh / status_ui.py / ocx-catalog-guard.sh / checkin.sh / checkin.py / fleet_chat_test.py / verify_real_calls.py / fleet_split.py / free_models.py / short_aliases.py / catalog_filter.py / catalog-filter.sh（test_*.py 由 CI 跑 pytest）
         docs/                 各桥 runbook + stepfun/tokundance 官方 API runbook + 全量实测报告
       runtime/                运行根（install.sh --home 的默认值）
         fleet.env             桥 API key + FLEET_HOME/PORT_BASE（600，不入库）
@@ -677,6 +774,57 @@ bash "<PRJ>/runtime/opencodex/setup-providers.sh" 即追加 tokendance provider
 `/step_plan/v1`），不是本地桥。`fleet.env` 里设 `STEPFUN_PLAN_API_KEY=<key>`，
 重跑 setup-providers.sh 即注册/更新 provider；没有 key 时该步骤自动跳过。
 详见 docs/stepfun2codex-runbook.md。
+
+### StepFun 图片上限：image-cap shim
+
+StepFun 的 Plan API 在 CC Switch 这一跳有 70 图上限（第 71 张回 400
+`images_too_many`；`disable_response_storage = true` 让 Codex 每轮重发整段会话，
+长会话必然撞上）。`tools/stepfun_image_shim.py` 架在 CC Switch（15721）**下面**的
+透传层，监听 15722，转发前去重 + 截断到 32 张（`tools/image_cap.py` 是测量）。
+链路：Codex → 15721(CC Switch) → 15722(shim) → `https://api.stepfun.com/step_plan/v1`，
+shim 的上游是真正的上游而不是 CC Switch，两边绕不成环。
+
+```bash
+bash tools/stepfun_image_shim.sh status           # 看 URL / pid / 健康
+bash tools/stepfun_image_shim.sh install-timer   # launchd 常驻
+bash tools/stepfun_image_shim.sh uninstall-timer
+python3 tools/pin_cc_switch_endpoint.py --dry-run --all-stepfun   # 预览会重指哪些行
+```
+
+`install.sh` 和 `opencodex/setup-providers.sh` 已自动接线（含 `--dry-run` 守卫）。
+真正有效的杠杆是 CC Switch 自己的路由表：`tools/pin_cc_switch_endpoint.py` 改写
+`~/.cc-switch/cc-switch.db` 里指向 StepFun 的 codex 行的转发目标。默认是 **sweep 模式**，
+按转发目标判而不是按 provider 名判 —— 本机 `nv spark` 这个 codex provider 也转发到
+StepFun，在 CC Switch UI 里选中它就直接绕过 shim，71 图照样 400（`--all-stepfun` 是同一个
+开关，`IMAGE_CAP_CC_PIN_ALL=0` 收窄回只动命名那一行）。`tools/pin_shim_base_url.py`
+（钉 `~/.codex/config.toml`）实测赢不了，降级为默认关闭的兜底。
+**改完数据库不用重启 CC Switch.app**（10-01 实测推翻旧结论：进程自 09-29 未重启，
+71 图请求仍被 shim 截断并返回 200，详见 runbook）。
+实测：100 图经 launchd 全链路，`stepfun/step-5-preview` 上游只收 32，
+`workbuddy/hy4-preview` 原样透传 100。详见 docs/stepfun2codex-runbook.md。
+
+**并发闸门（10-01）**：间歇 `503 所有供应商已熔断` 的根因不在图片截断而在并发——
+StepFun Plan 单账号并发上限 10，突发把第 11 个请求打成 429，CC Switch 计 4 次
+失败即打开 codex 熔断（`circuit_failure_threshold=4`），之后所有请求 503，与是否
+超并发无关。shim 内的计数闸门把同时上游请求压到 8，遇 429 退避重试 3 次，排队
+最长 75s（压在 CC Switch 90s 首字节超时以下，超时本地回 429 不挂死）：
+`IMAGE_CAP_MAX_INFLIGHT=8`、`IMAGE_CAP_QUEUE_TIMEOUT=75`、
+`IMAGE_CAP_429_RETRIES=3`。观测看 `curl -s http://127.0.0.1:15722/__image_cap/health`
+的 `concurrency` 块和 `stats.retried_429`。**kit 改完必须同步 runtime 副本再
+`launchctl kickstart -k gui/501/com.local.stepfun-image-cap`**——launchd 跑的是
+runtime 那份，health 里没有 `concurrency` 块就说明闸门没上线。详见
+docs/stepfun2codex-runbook.md。
+
+**卡死自愈（10-02）**：shim 偶发「进程活着、launchd `state = running`、事件循环
+不应答」——请求全挂死但进程不退出，`KeepAlive` 只 relaunch 退出的进程，看不见这种
+故障。现在两层看门狗：进程内 daemon 线程用裸 socket（不经过被监视的那个循环）探
+`/__image_cap/health`，连续 `IMAGE_CAP_WATCHDOG_STRIKES`（默认 2）次失败就
+`os.execv` 原地自重启，pid 不变；外部 launchd timer 每 30s 探活一次，连续失败后
+`kickstart -k` 强杀重启——整进程 wedge 和端口被第二实例占用这两种内部线程看不见
+的，只有它救得回。探活慢才指控（curl 超时 8s + 连续 2 次），strike 超 600s 作废，
+探活一成功立刻清零，所以慢请求不会被误杀。`install-timer` 同时装 service 和
+timer；`status` 报 watchdog 安装态和当前 strikes，health 的 `watchdog` 块看
+`restarts` 涨没涨。详见 docs/stepfun2codex-runbook.md。
 
 ## 卸载
 

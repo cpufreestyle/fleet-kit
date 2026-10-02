@@ -14,13 +14,22 @@ Endpoints (reversed from WorkBuddy's app.asar):
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 
-BACKEND = "https://copilot.tencent.com"
+# The default is the CN backend, where the activity was reversed. Both
+# bridges share this module (bridges/workbuddy-gpt/converter.py only sets
+# WORKBUDDY_PROVIDER and reuses core.py), so the caller passes the backend
+# its own provider table uses -- measured 2026-10-01: the overseas bridge
+# pool holds a www.workbuddy.ai account and the CN endpoint answered it
+# with 401 Authorization Required, so "no credits today" was really "asked
+# the wrong backend".
+DEFAULT_BACKEND = "https://copilot.tencent.com"
+BACKEND = DEFAULT_BACKEND
 USER_AGENT = "workbuddy2codex"
 CHECKIN_STATUS_URL = f"{BACKEND}/v2/billing/meter/checkin-activity-status"
 CHECKIN_CLAIM_URL = f"{BACKEND}/v2/billing/meter/daily-checkin"
@@ -46,9 +55,15 @@ class CheckinResult:
 class WorkBuddyCheckinService:
     """Per-account Buddy 加油站 status + claim, backed by the credential pool."""
 
-    def __init__(self, pool: Any, *, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, pool: Any, *, transport: httpx.AsyncBaseTransport | None = None,
+                 backend: str | None = None):
         self.pool = pool
         self.transport = transport
+        base = (backend or os.environ.get("WORKBUDDY_CHECKIN_BACKEND")
+                or DEFAULT_BACKEND).rstrip("/")
+        self.backend = base
+        self.status_url = f"{base}/v2/billing/meter/checkin-activity-status"
+        self.claim_url = f"{base}/v2/billing/meter/daily-checkin"
 
     def _client(self) -> httpx.AsyncClient:
         kwargs: dict[str, Any] = {"timeout": 20, "follow_redirects": True}
@@ -60,7 +75,7 @@ class WorkBuddyCheckinService:
         manager = await asyncio.to_thread(self.pool.manager_for, ref)
         headers = await asyncio.to_thread(manager.get_headers)
         async with self._client() as client:
-            response = await client.post(CHECKIN_STATUS_URL, json={}, headers=headers)
+            response = await client.post(self.status_url, json={}, headers=headers)
             response.raise_for_status()
             payload = response.json()
         if payload.get("code") != 0 or not isinstance(payload.get("data"), dict):
@@ -87,7 +102,11 @@ class WorkBuddyCheckinService:
                     "claimed": False,
                     "credit": 0,
                     "streak_days": 0,
-                    "message": "状态读取失败",
+                    # The real reason reaches the operator instead of a
+                    # shrug: measured 2026-10-01, the overseas bridge pool
+                    # holds a workbuddy.ai account against the CN backend,
+                    # and the only way to see that is the upstream msg.
+                    "message": "状态读取失败：" + str(result)[:160],
                 })
                 continue
             per_account.append(result)
@@ -173,7 +192,7 @@ class WorkBuddyCheckinService:
                 manager = await asyncio.to_thread(self.pool.manager_for, ref)
                 headers = await asyncio.to_thread(manager.get_headers)
                 async with self._client() as client:
-                    response = await client.post(CHECKIN_CLAIM_URL, json={}, headers=headers)
+                    response = await client.post(self.claim_url, json={}, headers=headers)
                     response.raise_for_status()
                     payload = response.json()
                 if payload.get("code") != 0 or not isinstance(payload.get("data"), dict):
@@ -212,7 +231,7 @@ class WorkBuddyCheckinService:
             manager = await asyncio.to_thread(self.pool.manager_for, ref)
             headers = await asyncio.to_thread(manager.get_headers)
             async with self._client() as client:
-                response = await client.post(CHECKIN_CLAIM_URL, json={}, headers=headers)
+                response = await client.post(self.claim_url, json={}, headers=headers)
                 response.raise_for_status()
                 payload = response.json()
             if payload.get("code") != 0 or not isinstance(payload.get("data"), dict):

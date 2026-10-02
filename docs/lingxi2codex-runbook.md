@@ -28,6 +28,10 @@ Codex 官方 CLI/桌面 → ocx(:10100) → lingxi2codex 桥(:8792) → https://
 
 ## 订阅实测可用模型（登录后 /models 返回）
 - `deepseek-flash`（默认快模型）、`glm-5.3-flash`、`gpt-image-2.5-sunburst`（生图，未入 Codex 目录）
+- 文档里的"官方默认" `deepseek-v4-flash` / `deepseek-v4-pro` 在当前账号套餐**之外**：
+  2026-09-29 实测 403 `model not allowed on your current plan`。它们是桥的 `FALLBACK_MODELS`
+  （上游 /models 拉不到时的兜底），所以兜底期间下发的两个 id 也打不通，运维时以
+  `deepseek-flash` / `glm-5.3-flash` 为准。
 - 注意：模型是**推理模型**，max_output_tokens 太小（48）会全耗在 reasoning、正文为空；
   Codex 侧用 1024 正常返回。
 
@@ -38,6 +42,17 @@ Codex 官方 CLI/桌面 → ocx(:10100) → lingxi2codex 桥(:8792) → https://
    桥 `remap_model` 已改循环剥前缀，两种 slug 形态都能路由。
 3. 官方 CLI 对 cc-switch 目录 schema 要求严，inject 后需 `ocx sync` 归一化。
 4. 登录 LaunchAgent（一次性）已完成登录，plist 可删：`launchctl bootout gui/$(id -u)/com.local.lingxi2codex-login`。
+5. **403 不等于登录过期**。2026-09-29 实测：声明模型 `deepseek-v4-flash` 打过去 0.09s 返回
+   `403 {"error":"model not allowed on your current plan: deepseek-v4-flash"}`——这是**模型级套餐限制**，
+   账号会话是好的（`/health` 的 `session_alive=true`，`deepseek-flash` 200 0.97s 运算题答对）。
+   核验工具 `verify_real_calls.py` 原来把 401/403 合并成同一个 AUTH_EXPIRED 并立即返回，
+   于是整个桥被误判、模型行被目录过滤掉。现已拆出 `PLAN_BLOCKED`（403 且 body 带 plan/quota/
+   permission 措辞）并继续试下一个候选模型；见到 `PLAN_BLOCKED` 就换
+   `lingxi/deepseek-flash` 或 `lingxi/glm-5.3-flash`，不必重新登录。
+6. `gpt-image-2.5-sunburst` 是生图模型，`/chat/completions` 必然 502（`invalid upstream url`）。
+   上游 `/models` 不带能力字段，所以桥侧按命名关键词过滤
+   （`_common.drop_image_models`），不再当对话模型下发；若整个列表都命中关键词则原样返回
+   ——宁可留一个坏行，也不隐藏整张表。
 
 ## 运维命令
 ```bash
@@ -46,3 +61,5 @@ curl -s http://127.0.0.1:8792/health                             # 健康检查
 ~/lingxi2codex/login_helper.py                         # 重新登录（浏览器）
 codex exec -c model_provider=lingxi -m "lingxi/lingxi-deepseek-flash" "..."   # 官方 CLI
 ```
+
+- 流式 500 / 渠道校验（11128）死循环 / Trae 登录态找不到：见 [2026-09-29-stream-500-and-channel-retry.md](./2026-09-29-stream-500-and-channel-retry.md)

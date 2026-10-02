@@ -34,16 +34,22 @@ Options:
   --keep P[,P...]    providers to keep even when unavailable
   --only P[,P...]    only consider these providers for removal
   --no-backup        skip the timestamped backup
+  --keep-backups N   keep only the newest N .bak-* files (default 5, -1 keeps all)
   --no-restore       do not run ocx sync to bring back a verified-REAL provider
   --no-hide-junk     keep non-chat junk rows (TTS/OCR/embedding/video/web tools)
   --timeout SEC      status panel and subprocess timeout (default 20)
+  --max-verify-age SEC
+                      refuse to drop bridge rows on a verdict snapshot older
+                      than this (default 24h); junk rows are always shed
   --dry-run          report only, change nothing
   --report-only      same as --dry-run, kept for the shell wrapper
 
 Exit codes: 0 ok (or nothing to do), 2 bad usage, 3 status panel unreachable,
-4 nothing verified as REAL (refuses to filter everything), 5 catalog problem.
+4 nothing verified as REAL (refuses to filter everything),
+5 catalog problem, 6 verdict snapshot too old to act on.
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -53,9 +59,25 @@ import tempfile
 import time
 import urllib.request
 
+# Everything this tool talks to is on loopback: the status panel, the bridge
+# gateways, the native-row probe. urllib would otherwise follow the system
+# proxy, which reroutes those requests through it and answers with its own
+# verdicts -- a 503 of the proxy's read as a bridge failure, and a proxy that
+# is down takes the whole filter with it. verify_real_calls.py and
+# fleet_probe.py already build a proxy-free opener for the same reason.
+NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 BACKUP_TEMPLATE = ".bak-%Y%m%d-%H%M%S"
 STATE_FILE = ".catalog-filter-restore-state.json"
 STATE_COOLDOWN = 3600
+KEEP_BACKUPS = 5
+# An old verdict is not allowed to delete rows, for the same reason
+# catalog_sort.py refuses to let a stale reach snapshot drop them: bridges
+# recover (a renewed token, a VPN back up, an upstream 503 clearing), and the
+# prover only runs on demand, so the snapshot in the panel is routinely a day
+# or two old. Verified bridges are 13, and the verdict list is 7 -- hiding the
+# other six off a 3 day old verdict hides working models.
+MAX_VERIFY_AGE = 86400
 
 # Rows that are never a usable chat model when picked in Codex. The substrings are
 # only ones unique to the junk class, so real rows survive: "seedream" hides image
@@ -123,7 +145,7 @@ def load_catalog(path):
 
 
 def fetch_status(url, timeout):
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
+    with NO_PROXY.open(url, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8", "ignore"))
 
 
@@ -148,47 +170,97 @@ def provider_of(model):
     return slug.split("/", 1)[0]
 
 
-def probe_native_pool(proxy_base, timeout):
-    """True when the local proxy's native (account-pool) provider can still serve.
+NATIVE_PROBE_MODELS = ("gpt-5.5", "step-3.7-flash", "gpt-5.6-luna")
 
-    The native rows in the Codex picker have no slash prefix, so no bridge verdict
-    covers them. When the account pool behind them is empty they all fail with
-    "OpenAI account pool has no usable account credential" at request time, which is
-    the worst failure mode for a picker: the option looks available and only breaks
-    after the user commits to it.
 
-    Returns (ok, detail). Never raises; an unknown pool is reported as usable so a
-    probe failure cannot silently empty the picker.
+def codex_provider_base(codex_home):
+    """base_url of the provider Codex actually calls, without a trailing /v1.
+
+    The native picker rows are sent to the model_provider named in config.toml,
+    which on this install is the CC Switch gateway rather than the opencodex
+    proxy, so probing the ocx port says nothing about whether a native row
+    works. Returns None when the config does not name a usable provider.
+    """
+    try:
+        with open(os.path.join(codex_home, "config.toml"),
+                  encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    provider = re.search(r'^\s*model_provider\s*=\s*"([^"]+)"', text, re.M)
+    if not provider:
+        return None
+    block = re.search(r'^\s*\[model_providers\.%s\]\s*$'
+                      % re.escape(provider.group(1)), text, re.M)
+    if not block:
+        return None
+    tail = text[block.end():]
+    following = re.search(r"^\s*\[", tail, re.M)
+    section = tail[:following.start()] if following else tail
+    url = re.search(r'^\s*base_url\s*=\s*"([^"]+)"', section, re.M)
+    if not url:
+        return None
+    base = url.group(1).rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return base or None
+
+
+def probe_native_pool(proxy_base, timeout, models=None):
+    """True when the gateway serving the native rows can still serve them.
+
+    The native rows in the Codex picker have no slash prefix, so no bridge
+    verdict covers them. When the account pool behind them is empty they all
+    fail with "OpenAI account pool has no usable account credential" at request
+    time, which is the worst failure mode for a picker: the option looks
+    available and only breaks after the user commits to it.
+
+    Returns (ok, detail). Never raises; an unknown pool is reported as usable so
+    a probe failure cannot silently empty the picker.
+
+    The request has to be one the gateway accepts before it ever reaches the
+    account pool: a list input and stream=true, or the gateway answers 400
+    "Input must be a list" / "Stream must be set to true" and the 401 this probe
+    exists to see is never emitted. A model name the gateway does not know (404)
+    says nothing about the pool, so the candidates are tried in turn.
     """
     base = (proxy_base or "").rstrip("/")
     if not base:
         return True, "no proxy base configured"
-    body = json.dumps({
-        "model": "gpt-5.5",
-        "input": "ping",
-        "max_output_tokens": 16,
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        base + "/v1/responses", data=body, method="POST",
-        headers={"Content-Type": "application/json",
-                 "Authorization": "Bearer sk-local"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return (200 <= response.status < 300), "HTTP %s" % response.status
-    except urllib.error.HTTPError as exc:
+    candidates = [m for m in (models or ()) if m] or list(NATIVE_PROBE_MODELS)
+    last = ""
+    for model in candidates:
+        body = json.dumps({
+            "model": model,
+            "input": [{"role": "user",
+                       "content": [{"type": "input_text", "text": "ping"}]}],
+            "max_output_tokens": 16,
+            "stream": True,
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            base + "/v1/responses", data=body, method="POST",
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer sk-local"},
+        )
         try:
-            payload = exc.read().decode("utf-8", "replace")[:200]
-        except Exception:
-            payload = ""
-        text = (payload or "").lower()
-        if exc.code == 401 and "no usable account credential" in text:
-            return False, "account pool has no usable credential (HTTP 401)"
-        # Any other status is a probe we cannot read as "pool down"; stay permissive.
-        return True, "HTTP %s %s" % (exc.code, payload[:120])
-    except Exception as exc:
-        # Unreachable proxy means the whole fleet is down anyway; do not act on it.
-        return True, "%s: %s" % (type(exc).__name__, exc)
+            with NO_PROXY.open(request, timeout=timeout) as response:
+                return True, "HTTP %s via %s" % (response.status, model)
+        except urllib.error.HTTPError as exc:
+            try:
+                payload = exc.read().decode("utf-8", "replace")[:200]
+            except Exception:
+                payload = ""
+            text = (payload or "").lower()
+            if exc.code == 401 and "no usable account credential" in text:
+                return (False, "account pool has no usable credential "
+                               "(HTTP 401 via %s)" % model)
+            # Any other status is a probe we cannot read as "pool down"; stay
+            # permissive and let the next candidate speak for the pool.
+            last = "HTTP %s via %s: %s" % (exc.code, model, payload[:100])
+        except Exception as exc:
+            # Unreachable proxy means the whole fleet is down anyway.
+            return True, "%s: %s" % (type(exc).__name__, exc)
+    return True, last or "no candidate model accepted"
 
 
 def drop_junk(models):
@@ -214,6 +286,101 @@ def drop_junk(models):
     return keepers, dropped
 
 
+def verify_age_seconds(verify):
+    """Age of the verdict snapshot in seconds, or None when undatable.
+
+    Unlike catalog_sort.snapshot_age_seconds, a naive timestamp is read as
+    local time: the snapshot comes from the status panel, whose now_str()
+    writes naive local time, while the reach snapshot catalog_sort consumes
+    carries its own offset.
+    """
+    stamp = verify.get("generated_at")
+    if not stamp:
+        return None
+    try:
+        when = datetime.datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.datetime.now().astimezone().tzinfo)
+    return max(0.0, (datetime.datetime.now(when.tzinfo) - when).total_seconds())
+
+
+HIDDEN_STATE_FILE = ".catalog-filter-hidden.json"
+
+
+def hidden_count_path(catalog):
+    return os.path.join(os.path.dirname(os.path.abspath(catalog)),
+                        HIDDEN_STATE_FILE)
+
+
+def record_hidden_count(catalog, keepers, status, real):
+    """Write down how many slash rows the catalog is short of the fleet.
+
+    ocx-catalog-guard heals a catalog that fell below MIN_MODELS bridge rows,
+    which is right when the catalog was stripped (CC Switch regenerating it)
+    and wrong when this filter hid those rows for bridges verified not REAL:
+    the guard would re-add every broken row and the two 300s timers would undo
+    each other for as long as the bridges stay down. It needs the shortfall
+    this filter explains, so it is computed here, where the panel answer is
+    already in hand.
+
+    Counts, not slugs: a bridge advertises "gpt-6-astra" while the catalog
+    stores "workbuddy-gpt/gpt-6-astra", and cline advertises
+    "cline-free/..." against a "cline/cline-free/..." row, so predicting a
+    slug means re-implementing every bridge's aliasing. Comparing a bridge's
+    own model count with the rows that survived for it needs none of that.
+
+    A shortfall only counts while the working bridges still hold their rows.
+    A catalog that lost those too was stripped, and healing that is the
+    guard's whole job, so it is reported as no shortfall at all.
+    """
+    rows = {}
+    for model in keepers:
+        if not isinstance(model, dict):
+            continue
+        slug = model.get("slug") or model.get("id") or model.get("model") or ""
+        if "/" in slug:
+            provider = slug.split("/", 1)[0]
+            rows[provider] = rows.get(provider, 0) + 1
+    real_rows = sum(rows.get(name, 0) for name in (real or ()))
+    hidden = 0
+    if real_rows:
+        for bridge in status.get("bridges") or []:
+            if not isinstance(bridge, dict):
+                continue
+            name = bridge.get("name")
+            advertised = (bridge.get("probe") or {}).get("count")
+            if not name or not isinstance(advertised, int):
+                continue
+            hidden += max(0, advertised - rows.get(name, 0))
+    payload = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+               "slash_rows_hidden": hidden,
+               "slash_rows_in_catalog": sum(rows.values()),
+               "real_slash_rows": real_rows}
+    path = hidden_count_path(catalog)
+    try:
+        handle, tmp = tempfile.mkstemp(prefix=".catalog-filter-hidden-",
+                                       dir=os.path.dirname(path))
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError as exc:
+        print("catalog-filter: cannot record hidden rows (%s)" % exc,
+              file=sys.stderr)
+    return hidden
+
+
+def read_hidden_count(catalog):
+    """Slash rows the filter reported missing, 0 when that is unknown."""
+    try:
+        with open(hidden_count_path(catalog), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return int(data.get("slash_rows_hidden") or 0)
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
 def state_path(codex_home):
     return os.path.join(codex_home, STATE_FILE)
 
@@ -236,23 +403,105 @@ def write_state(codex_home, state):
     os.replace(tmp, state_path(codex_home))
 
 
-def write_catalog(path, data, keepers, summary, no_backup):
+def prune_backups(path, keep):
+    """Keep the newest `keep` .bak-* files beside the catalog.
+
+    The 5 minute timer rewrites the catalog all day and every write leaves a
+    timestamped backup, so without a bound they pile up forever. `keep < 0`
+    keeps everything.
+    """
+    if keep < 0:
+        return []
+    directory = os.path.dirname(path) or "."
+    base = os.path.basename(path) + ".bak-"
+    found = []
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    for name in names:
+        if name.startswith(base):
+            full = os.path.join(directory, name)
+            try:
+                found.append((os.path.getmtime(full), full))
+            except OSError:
+                continue
+    found.sort(reverse=True)
+    removed = []
+    for _mtime, full in found[keep:]:
+        try:
+            os.unlink(full)
+            removed.append(full)
+        except OSError:
+            continue
+    return removed
+
+
+# Every writer in this chain serialises the catalog its own way: catalog_sort.py
+# writes json.dump(..., ensure_ascii=False, indent=1) with no trailing newline,
+# ocx writes its own layout, and hand edits add whatever the editor preferred. So
+# the round-trip proof probes the layouts that are actually in circulation instead
+# of assuming one of them. Probing is what keeps the guard meaningful: the file is
+# still refused unless some json.dumps call reproduces it byte for byte.
+LAYOUT_INDENTS = (1, 2, 3, 4, 6, 8, "\t", None)
+
+
+def detect_layout(text, data):
+    """(dump kwargs, trailing bytes) that rebuild `text` from `data`, or None.
+
+    Trailing bytes are kept apart because the catalog in the wild ends with no
+    newline at all, and appending one would still parse fine but would show up
+    as a diff on every read.
+    """
+    tail = ""
+    body = text
+    if body.endswith("\r\n"):
+        tail, body = "\r\n", body[:-2]
+    elif body.endswith("\n"):
+        tail, body = "\n", body[:-1]
+    for ensure_ascii in (False, True):
+        for indent in LAYOUT_INDENTS:
+            try:
+                proof = json.dumps(data, ensure_ascii=ensure_ascii, indent=indent)
+            except (TypeError, ValueError):
+                continue
+            if proof == body:
+                return {"ensure_ascii": ensure_ascii, "indent": indent}, tail
+    return None
+
+
+def write_catalog(path, data, keepers, summary, no_backup,
+                  keep_backups=KEEP_BACKUPS):
     """Back up, atomically replace the catalog with keepers, then verify.
 
     Re-serialising must round-trip byte for byte, or the write would reformat a file
     that both Codex and CC Switch read. Returns True on success; on any failure sets
-    summary["error"] and returns False without leaving a partial file.
+    summary["error"], says why on stderr, and returns False without leaving a partial
+    file.
     """
     with open(path, encoding="utf-8") as fh:
         original = fh.read()
     try:
-        proof = json.dumps(load_catalog(path), indent=2, ensure_ascii=False) + "\n"
+        fresh = load_catalog(path)
     except Exception as exc:
         summary["error"] = "cannot prove round-trip (%s)" % exc
+        print("catalog-filter: %s" % summary["error"], file=sys.stderr)
         return False
-    if proof != original:
-        summary["error"] = "round-trip mismatch, refusing to rewrite %s" % path
+    if fresh != data:
+        summary["error"] = "catalog changed on disk since it was read"
+        print("catalog-filter: %s; not writing %s" % (summary["error"], path),
+              file=sys.stderr)
         return False
+    layout = detect_layout(original, fresh)
+    if layout is None:
+        summary["error"] = ("unrecognised catalog layout, refusing to rewrite %s"
+                            % path)
+        print("catalog-filter: refusing to rewrite %s -- no json.dumps layout "
+              "(indent / trailing newline / ensure_ascii) reproduces the file "
+              "byte for byte, so a rewrite would reformat a file both Codex and "
+              "CC Switch read" % path, file=sys.stderr)
+        return False
+    dump_kwargs, tail = layout
 
     if not no_backup:
         backup = path + time.strftime(BACKUP_TEMPLATE)
@@ -263,7 +512,7 @@ def write_catalog(path, data, keepers, summary, no_backup):
         summary["backup"] = backup
 
     data["models"] = keepers
-    payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    payload = json.dumps(data, **dump_kwargs) + tail
     directory = os.path.dirname(path) or "."
     handle, tmp = tempfile.mkstemp(prefix=".catalog-filter-", dir=directory)
     try:
@@ -290,6 +539,9 @@ def write_catalog(path, data, keepers, summary, no_backup):
         summary["error"] = "write left the wrong model count"
         return False
     summary["verified_after_write"] = True
+    pruned = prune_backups(path, keep_backups)
+    if pruned:
+        summary["backups_pruned"] = [os.path.basename(p) for p in pruned]
     return True
 
 
@@ -306,9 +558,16 @@ def main(argv=None):
     parser.add_argument("--keep", default="")
     parser.add_argument("--only", default="")
     parser.add_argument("--no-backup", action="store_true")
+    parser.add_argument("--keep-backups", type=int, default=int(
+        os.environ.get("FLEET_KEEP_BACKUPS", KEEP_BACKUPS)),
+        help="keep only the newest N catalog .bak-* files (-1 keeps all)")
     parser.add_argument("--no-restore", action="store_true")
     parser.add_argument("--restore-cooldown", type=int, default=STATE_COOLDOWN)
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument("--max-verify-age", type=float, default=float(
+        os.environ.get("FLEET_MAX_VERIFY_AGE", MAX_VERIFY_AGE)),
+        help="refuse to drop bridge rows on a verdict snapshot older than "
+             "this many seconds (-1 trusts any age)")
     parser.add_argument("--no-hide-junk", action="store_true",
                         help="keep non-chat junk rows (TTS/OCR/embedding/video/web tools)")
     parser.add_argument("--hide-native-when-pool-down", action="store_true",
@@ -317,7 +576,9 @@ def main(argv=None):
                              "credential")
     parser.add_argument("--proxy-base", default=os.environ.get(
         "FLEET_PROXY_BASE", "http://127.0.0.1:10100"),
-        help="local proxy base used for the native-pool probe")
+        help="base used for the native-pool probe; unset means the "
+             "model_provider base_url from config.toml, falling back to this "
+             "default")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--report-only", action="store_true",
                         help="report what would be dropped, change nothing")
@@ -367,15 +628,29 @@ def main(argv=None):
                                            for k, v in sorted(junk_dropped.items())}
     summary["junk_removed_slugs"] = junk_dropped
 
+    # Filled in once the panel answer is in hand; finish() reports the
+    # shortfall the guard needs from it, and only then.
+    panel = None
+
     def finish(keepers, code):
         """Report counts, write unless a dry run, and return the run code."""
         summary["models_after"] = len(keepers)
         summary["removed"] = original_count - len(keepers)
         if args.dry_run:
             summary["dry_run"] = True
-        elif len(keepers) != original_count:
-            if not write_catalog(path, data, keepers, summary, args.no_backup):
-                return 5
+        else:
+            if len(keepers) != original_count:
+                if not write_catalog(path, data, keepers, summary,
+                                     args.no_backup, args.keep_backups):
+                    print(json.dumps(summary, indent=2, ensure_ascii=False))
+                    return 5
+            # Every run, not only the runs that remove something: a catalog
+            # that is already filtered is exactly the state the guard timer
+            # needs explained, and the count is re-derived from the panel each
+            # time so nothing has to be seeded or reconciled by hand.
+            if panel is not None:
+                summary["slash_rows_hidden"] = record_hidden_count(
+                    path, keepers, panel["status"], panel["real"])
         print(json.dumps(summary, indent=2, ensure_ascii=False))
         return code
 
@@ -392,6 +667,7 @@ def main(argv=None):
                if isinstance(b, dict) and b.get("name")}
     verify = status.get("verify") or {}
     real = {r for r in (verify.get("real") or []) if isinstance(r, str)}
+    panel = {"status": status, "real": real}
     summary["verified_at"] = verify.get("generated_at")
     summary["bridges"] = sorted(bridges)
     summary["real"] = sorted(real)
@@ -400,6 +676,21 @@ def main(argv=None):
         # Same as above: keep the junk cleanup, but do not touch bridge rows.
         summary["error"] = "no bridge verified REAL; refusing to filter bridges"
         return finish(models, 0 if summary["junk_removed"] else 4)
+
+    # A verdict is only evidence about the moment it was taken. Refuse to
+    # delete rows off an old one before any side effect, including the
+    # restore sync below.
+    age = verify_age_seconds(verify)
+    summary["verify_age_seconds"] = None if age is None else round(age, 1)
+    stale = age is None or (args.max_verify_age >= 0
+                            and age > args.max_verify_age)
+    if stale:
+        summary["error"] = ("verify snapshot is %s (max %ss), too old to "
+                            "filter bridges"
+                            % ("undated" if age is None else "%.0fs old" % age,
+                               args.max_verify_age))
+        summary["bridge_filter"] = "skipped (stale verdict)"
+        return finish(models, 0 if summary["junk_removed"] else 6)
 
     present = {p for p in (provider_of(m) for m in models) if p}
     # A REAL provider with no rows left is how a recovered bridge stays invisible.
@@ -453,8 +744,18 @@ def main(argv=None):
 
     native_down = False
     if args.hide_native_when_pool_down:
-        pool_ok, detail = probe_native_pool(args.proxy_base, args.timeout)
+        # Probe the gateway Codex actually calls for unprefixed rows -- the
+        # provider config.toml names -- not whichever proxy port is the default.
+        proxy_base = args.proxy_base
+        if "FLEET_PROXY_BASE" not in os.environ:
+            configured = codex_provider_base(args.codex_home)
+            if configured:
+                proxy_base = configured
+        candidates = [m.get("slug") or m.get("id") or m.get("model") or ""
+                      for m in models if provider_of(m) is None]
+        pool_ok, detail = probe_native_pool(proxy_base, args.timeout, candidates)
         native_down = not pool_ok
+        summary["proxy_base"] = proxy_base
         summary["native_pool"] = detail
         summary["native_pool_down"] = native_down
 

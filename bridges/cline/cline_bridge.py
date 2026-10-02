@@ -25,19 +25,47 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 import time
+import urllib.parse
 import uuid
 from pathlib import Path
 
 import uvicorn
 import websockets
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+
+# bridges/ 自己也带公共模块（_common），和 workbuddy 插自己目录同一个套路。
+_BRIDGES_DIR = Path(__file__).resolve().parent.parent
+if str(_BRIDGES_DIR) not in sys.path:
+    sys.path.insert(0, str(_BRIDGES_DIR))
+import _common
 
 BRIDGE_VERSION = "0.1.0"
 
 HUB_DISCOVERY = Path.home() / ".cline" / "data" / "locks" / "hub" / "production.json"
 HUB_AUTH_PREFIX = "cline-hub-auth."
+
+
+def hub_proxy(url):
+    """websockets `proxy=` value for a hub URL: None = never proxy, True = system.
+
+    macOS publishes its HTTP proxy (MacPacket on :1082) through System Settings,
+    not env vars, so every Python process -- launchd bridge included -- inherits
+    it. scutil --proxy exempts localhost and the RFC1918 ranges but NOT
+    127.0.0.1, and websockets asks proxy_bypass("host:port"), so a loopback
+    WebSocket gets tunnelled through MacPacket. Measured 2026-09-29: when that
+    proxy hiccups it answers CONNECT with garbage, websockets raises
+    InvalidProxyMessage in 0.01s, the bridge answers 502 and the verifier
+    reads UPSTREAM_DOWN -- condemning 14 working models over one dead hop.
+    A hub is a local discovery file, so loopback must always be direct; a
+    non-loopback hub keeps honouring the system proxy as before.
+    """
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if host == "localhost" or host.startswith("127.") or host in ("::1", "[::1]"):
+        return None
+    return True
 
 # 上游免费模型：
 # - cline-free/* 与 z-ai/glm-5.3-flash、poolside/laguna-s-2.1:free：装机即验证（PONG）
@@ -82,7 +110,41 @@ def hub_ready() -> bool:
     return bool(d.get("url")) and bool(d.get("authToken"))
 
 
-app = FastAPI(title="cline2codex")
+_CLINE_APP = "/Applications/Cline.app"
+_LAST_LAUNCH_ATTEMPT = 0.0
+
+
+def ensure_hub(attempts: int = 12, delay: float = 2.0) -> bool:
+    """Make sure the Cline hub daemon is up before a request is served.
+
+    Codex surfaces a 503 the moment the discovery file is missing, because the
+    hub daemon only exists while Cline.app runs. Launching it here turns a hard
+    error into a self-healing wait, which matters for a long-running bridge that
+    outlives the app being closed. Rate limited so a burst of requests cannot
+    spawn a process per call."""
+    global _LAST_LAUNCH_ATTEMPT
+    import os
+    import subprocess
+    import time
+
+    for i in range(attempts):
+        if hub_ready():
+            return True
+        if i == 0 and not os.path.isdir(_CLINE_APP):
+            return False
+        if i == 0 and time.monotonic() - _LAST_LAUNCH_ATTEMPT > 30:
+            _LAST_LAUNCH_ATTEMPT = time.monotonic()
+            try:
+                subprocess.Popen(["open", "-a", "Cline"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                log("hub not ready; launched Cline.app")
+            except Exception as exc:
+                log("Cline launch failed:", exc)
+        time.sleep(delay)
+    return hub_ready()
+
+
+app = _common.make_app("cline2codex")
 
 
 def check_auth(request: Request) -> None:
@@ -112,6 +174,7 @@ class HubClient:
             origin="http://127.0.0.1",
             open_timeout=10,
             max_size=64 * 1024 * 1024,
+            proxy=hub_proxy(self.url),
         )
         await self.register()
         return self
@@ -208,17 +271,23 @@ async def health():
 @app.get("/v1/models")
 async def list_models(request: Request):
     check_auth(request)
-    detail = ""
-    if not hub_ready():
-        detail = "hub daemon not running; start Cline once (open -a Cline)"
     # Bare upstream ids, no prefix: a prefixed id gets double-namespaced by ocx.
+    if not hub_ready():
+        # Advertising rows while the hub is down offers models that cannot
+        # answer a single prompt, so the picker keeps a dead provider. Report
+        # the same 503 the chat route uses; discovery then hides the bridge.
+        # The error envelope carries no "data" row, so a caller that greps for
+        # model ids (tools/status.sh) counts 0 rather than a phantom 14.
+        return JSONResponse(
+            {"error": {"message": "Cline hub daemon unreachable; run: open -a Cline",
+                       "type": "hub_unavailable"}},
+            status_code=503)
     return JSONResponse({
         "object": "list",
         "data": [
             {"id": m, "object": "model", "created": 0, "owned_by": "cline"}
             for m in FREE_MODELS
         ],
-        **({"detail": detail} if detail else {}),
     })
 
 
@@ -262,6 +331,9 @@ async def chat_completions(request: Request):
         return JSONResponse({"error": {"message": "no prompt"}}, status_code=400)
 
     hub = read_hub()
+    if not hub.get("url"):
+        if ensure_hub():
+            hub = read_hub()
     if not hub.get("url"):
         return JSONResponse(
             {"error": {"message": "Cline hub daemon unreachable; run: open -a Cline",

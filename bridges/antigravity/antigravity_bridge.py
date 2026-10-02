@@ -3,9 +3,11 @@
 # Upstream: cloudcode-pa.googleapis.com v1internal (Antigravity OAuth client, auto-refresh)
 # Catalog extracted from /Applications/Antigravity.app/Contents/Resources/bin/language_server
 # Token: ~/.gemini/jetski-standalone-oauth-token (shared with gemini2codex)
-import json, os, sys, time, uuid
+import json, os, socket, sys, threading, time, uuid
 import urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
+import _basehttp
 
 PORT = int(os.environ.get('ANTIGRAVITY2CODEX_PORT', '8797'))
 HOST = os.environ.get('ANTIGRAVITY2CODEX_HOST', '127.0.0.1')
@@ -71,6 +73,124 @@ ST = {'at': None, 'exp': 0.0, 'project': None, 'tier': None, 'client_ok': None,
 class UpstreamError(Exception):
     pass
 
+
+def google_validation_url(body):
+    """The verification link inside a Google 403, when the gate asks for one.
+
+    Measured 2026-10-02: cloudcode-pa answers the VALI gate with 403 plus
+    ErrorInfo{reason: VALI, metadata.validation_url}. That link is the whole
+    fix -- the login itself is fine and only the account has to pass a browser
+    check -- and it sits deep in a JSON body the 502 envelope clips to 300
+    chars, so a truncated body reads as a bare "verify your account" dead end.
+    """
+    try:
+        j = json.loads(body)
+    except Exception:
+        return None
+    try:
+        for d in j["error"]["details"]:
+            u = (d.get("metadata") or {}).get("validation_url")
+            if u:
+                return u
+    except Exception:
+        pass
+    return None
+
+
+class AccountVerification(UpstreamError):
+    """Google wants the account verified in a browser before more calls.
+
+    Raised instead of a raw UpstreamError so the link survives the 300-char
+    clip in do_POST: a truncated accounts.google.com/signin/continue/... URL
+    is worthless to the operator reading the 502.
+    """
+
+    def __init__(self, url):
+        super().__init__("HTTP 403 VALIDATION_REQUIRED; account verification "
+                         "required, open: " + url)
+        self.validation_url = url
+
+
+def _clip(exc):
+    """Message for the 502 envelope -- long enough to keep a verify link."""
+    if getattr(exc, "validation_url", None):
+        return str(exc)
+    return str(exc)[:300]
+
+# 单次 chat 的总时限。call_model 会依次试 model_variants × IDE_TYPES，每次都带
+# timeout=180，加上 get_access() 里的多客户端 refresh，最坏能挂好几分钟；客户端
+# 远早于此就断开，只剩 BrokenPipeError，健康检查于是误判 BRIDGE_DOWN。
+CHAT_BUDGET = float(os.environ.get('ANTIGRAVITY_CHAT_BUDGET') or '60')
+BRIDGE_KEY = os.environ.get('ANTIGRAVITY2CODEX_KEY') or ''
+# 同上：预算烧完后的最低时限，只为避免把 0/负数当 timeout 交给上游。
+FALLBACK_FLOOR = float(os.environ.get('ANTIGRAVITY_FALLBACK_FLOOR') or '1.0')
+
+# Same rule as the gemini bridge: urlopen() gives every address getaddrinfo()
+# returns the full timeout (cloudcode-pa.googleapis.com resolves to 16), so a
+# blackholed address family turns one 180s timeout into 16 of them. Cap each
+# connect attempt at the time left on this request's deadline. Thread-local so
+# concurrent requests under ThreadingHTTPServer stay independent.
+_tls = threading.local()
+_real_create_connection = socket.create_connection
+
+
+def _arm_deadline(when):
+    _tls.deadline = when
+
+
+def _disarm_deadline():
+    _tls.deadline = None
+
+
+def _budgeted_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                                source_address=None, **kwargs):
+    """socket.create_connection that charges every address to the deadline.
+
+    The stdlib hands each address getaddrinfo() returns the same timeout, so
+    one blocked urlopen() costs N x timeout -- and cloudcode-pa.googleapis.com
+    resolves to 16 of them (8 IPv6 first). Measured 2026-09-29 behind this VPN:
+    a 20s timeout cost 40s on oauth2.googleapis.com's two addresses, which is
+    how a 60s CHAT_BUDGET still produced a 90s request. Walk the addresses here
+    and cap each attempt at the time that is actually left, so the total -- not
+    just the first connect -- stays inside the budget.
+    """
+    deadline = getattr(_tls, 'deadline', None)
+    if deadline is None:
+        return _real_create_connection(address, timeout, source_address, **kwargs)
+    host, port = address[:2]
+    try:
+        infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    except OSError:
+        infos = []
+    requested = None if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
+    last = None
+    for af, socktype, proto, _canon, sa in infos:
+        left = deadline - time.time()
+        if left <= 0:
+            last = OSError('request budget exhausted')
+            break
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            sock.settimeout(left if requested is None else min(requested, left))
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sa)
+            return sock
+        except OSError as exc:
+            if sock is not None:
+                sock.close()
+            last = exc
+    if last is not None:
+        raise last
+    # getaddrinfo itself failed; resolution surfaces immediately, so let the
+    # stdlib raise the familiar error.
+    return _real_create_connection(address, timeout, source_address, **kwargs)
+
+
+socket.create_connection = _budgeted_create_connection
+
+
 def http_json(url, payload, headers=None, method='POST', timeout=90):
     hdrs = {'User-Agent': UA, 'Content-Type': 'application/json;charset=UTF-8', 'Accept-Encoding': 'identity'}
     if headers:
@@ -83,8 +203,11 @@ def http_json(url, payload, headers=None, method='POST', timeout=90):
         r = urllib.request.urlopen(req, timeout=timeout)
         return r.read(), dict(r.headers)
     except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', 'ignore')[:400]
-        raise UpstreamError('HTTP %s %s: %s' % (e.code, url, body))
+        raw = e.read().decode('utf-8', 'ignore')
+        vurl = google_validation_url(raw)
+        if vurl:
+            raise AccountVerification(vurl)
+        raise UpstreamError('HTTP %s %s: %s' % (e.code, url, raw[:400]))
     except Exception as e:
         raise UpstreamError('%s: %s' % (type(e).__name__, str(e)[:200]))
 
@@ -152,14 +275,17 @@ def get_access():
 def meta_for(ide=None):
     return {'ideType': ide or ST['ide'], 'pluginType': 'GEMINI', 'platform': 'PLATFORM_UNSPECIFIED'}
 
-def load_code_assist():
-    if ST['project'] is not None:
+def load_code_assist(ide=None):
+    # loadCodeAssist is the only endpoint that accepts a metadata field;
+    # the chat body must never carry one. Pass ide to re-resolve under
+    # that identity (the IDE fallback chain uses it).
+    if ide is None and ST['project'] is not None:
         return
     at = get_access()
     last = None
-    for ide in IDE_TYPES:
+    for candidate in ([ide] if ide else IDE_TYPES):
         try:
-            raw, _ = http_json(BASE + 'loadCodeAssist', {'metadata': meta_for(ide)},
+            raw, _ = http_json(BASE + 'loadCodeAssist', {'metadata': meta_for(candidate)},
                                headers={'Authorization': 'Bearer ' + at}, timeout=30)
             j = json.loads(raw)
         except UpstreamError as e:
@@ -168,7 +294,7 @@ def load_code_assist():
         ST['project'] = j.get('cloudaicompanionProject') or ''
         tier = j.get('currentTier') or {}
         ST['tier'] = tier.get('id') if isinstance(tier, dict) else None
-        ST['ide'] = ide
+        ST['ide'] = candidate
         return
     raise UpstreamError('loadCodeAssist failed: ' + str(last))
 
@@ -226,12 +352,16 @@ def looks_like_model_error(err):
 
 def call_upstream(model, msgs, stream, timeout=180, ide=None):
     at = get_access()
-    load_code_assist()
+    load_code_assist(ide)
     contents, sysinst = to_contents(msgs)
     inner = {'contents': contents, 'generationConfig': {'temperature': 0.7}}
     if sysinst:
         inner['systemInstruction'] = sysinst
-    body = {'model': model, 'request': inner, 'metadata': meta_for(ide)}
+    # v1internal:generateContent has no metadata field: Google answers 400
+    # INVALID_ARGUMENT (Unknown name metadata) before it even looks at the
+    # model, so every chat request used to be rejected outright. The IDE
+    # identity is applied on loadCodeAssist instead.
+    body = {'model': model, 'request': inner}
     if ST['project']:
         body['project'] = ST['project']
     if stream:
@@ -245,24 +375,49 @@ def call_upstream(model, msgs, stream, timeout=180, ide=None):
         raise UpstreamError('codeassist error: ' + json.dumps(j['error'])[:300])
     return text_from_codeassist(j)
 
-def call_model(model, msgs, stream, timeout=180):
-    # 1) model-id alias fallback (@default form vs bare id)
+def call_model(model, msgs, stream, budget=None):
+    """Try each variant, but never longer than one overall budget.
+
+    Every attempt used to carry timeout=180, so a blocked upstream turned into
+    a multi-minute hang whose only visible trace was a BrokenPipeError when the
+    client gave up. The deadline bounds the whole fallback chain instead.
+    """
+    budget = CHAT_BUDGET if budget is None else budget
+    deadline = time.time() + budget
+    _arm_deadline(deadline)
+
+    def left():
+        return max(FALLBACK_FLOOR, deadline - time.time())
+
+    def spent():
+        return time.time() >= deadline
+
+    try:
+        return _walk_variants(model, msgs, stream, left, spent)
+    finally:
+        _disarm_deadline()
+
+
+def _walk_variants(model, msgs, stream, left, spent):
     first = None
+    # 1) model-id alias fallback (@default form vs bare id)
     for variant in model_variants(model):
         try:
-            out = call_upstream(variant, msgs, stream, timeout)
+            out = call_upstream(variant, msgs, stream, left())
             ST['last_model'] = variant
             ST['last_ok'] = True
             return out
         except UpstreamError as e:
             if first is None:
                 first = e
-            if not looks_like_model_error(e):
+            if not looks_like_model_error(e) or spent():
                 break
     # 2) ide metadata fallback (ANTIGRAVITY -> GEMINI_CLI)
     for ide in IDE_TYPES[1:]:
+        if spent():
+            break
         try:
-            out = call_upstream(model, msgs, stream, timeout, ide=ide)
+            out = call_upstream(model, msgs, stream, left(), ide=ide)
             ST['last_model'] = model
             ST['last_ok'] = True
             return out
@@ -287,17 +442,44 @@ class H(BaseHTTPRequestHandler):
 
     def _send(self, code, obj, hdrs=None):
         b = obj.encode() if isinstance(obj, str) else obj
-        self.send_response(code)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(b)))
-        if hdrs:
-            for k, v in hdrs.items():
-                self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(b)
+        try:
+            self.send_response(code)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(b)))
+            if hdrs:
+                for k, v in hdrs.items():
+                    self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(b)
+        except (BrokenPipeError, ConnectionResetError):
+            # The caller already timed out and hung up; a traceback here only
+            # buries the real upstream error in the log. end_headers() writes
+            # the header block through wfile too, so it belongs inside this
+            # guard -- that is where the BrokenPipeError actually surfaced.
+            pass
+
+    def _check_key(self):
+        """Same contract as _common.check_bridge_auth.
+
+        An unset key leaves the bridge open (it only listens on 127.0.0.1);
+        a set key requires the exact Authorization header. install.sh mints
+        one per bridge, so the fleet tooling already sends it.
+        """
+        if not BRIDGE_KEY:
+            return True
+        return (self.headers.get('Authorization') or '') == (
+            'Bearer ' + BRIDGE_KEY)
+
+    def _deny(self):
+        self._send(401, json.dumps({'error': {
+            'message': 'invalid bridge key',
+            'type': 'auth_error'}}))
 
     def do_GET(self):
         if self.path.startswith('/v1/models'):
+            if not self._check_key():
+                self._deny()
+                return
             now = int(time.time())
             data = {'object': 'list', 'data': [{'id': m, 'object': 'model', 'created': now, 'owned_by': 'antigravity'} for m in MODELS]}
             self._send(200, json.dumps(data))
@@ -312,6 +494,9 @@ class H(BaseHTTPRequestHandler):
             self._send(404, json.dumps({'error': 'not found'}))
 
     def do_POST(self):
+        if not self._check_key():
+            self._deny()
+            return
         if not self.path.startswith('/v1/chat/completions'):
             self._send(404, json.dumps({'error': 'not found'}))
             return
@@ -325,7 +510,7 @@ class H(BaseHTTPRequestHandler):
         try:
             text = call_model(model, msgs, stream)
         except Exception as e:
-            self._send(502, json.dumps({'error': {'message': str(e)[:300], 'type': 'upstream_error'}}))
+            self._send(502, json.dumps({'error': {'message': _clip(e), 'type': 'upstream_error'}}))
             return
         if not text:
             text = '[EMPTY-UPSTREAM]'
@@ -347,6 +532,8 @@ class H(BaseHTTPRequestHandler):
                     'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': text}, 'finish_reason': 'stop'}],
                     'usage': {'prompt_tokens': len(prompt_from_messages(msgs)) // 4, 'completion_tokens': len(text) // 4, 'total_tokens': (len(text) + len(prompt_from_messages(msgs))) // 4}}
             self._send(200, json.dumps(resp))
+
+H = _basehttp.install_basehttp_guard(H)
 
 if __name__ == '__main__':
     srv = ThreadingHTTPServer((HOST, PORT), H)

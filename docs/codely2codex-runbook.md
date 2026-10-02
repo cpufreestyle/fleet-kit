@@ -62,9 +62,44 @@ CODELY2CODEX_KEY=$KEY <venv>/python ~/codely2codex/inject_catalog.py
 - WorkBuddy 桥（8787 CN + 8788 GPT）与 qoder 桥（8789）保持运行，未受影响
 - cc-switch 原生 custom 路由与 15721 代理按现状运行
 
+## 2026-09-29：虚拟密钥被吊销，桥不再假装健康
+
+现象：`/v1/models` 恒定 200 + 5 行模型，`/health` 显示 `has_cli_api_key: true`，
+看起来一切正常；但 `codely/core` 一调用就 401。
+
+取证：`~/.codely-cli/oauth_creds.json` 里的 `cli_api_key`（`sk-aUUiejG…`）已被
+网关吊销——直连 `GET /v1/models` 返回
+`401 Authentication Error, Invalid proxy server token passed … Unable to find
+token in cache or LiteLLM_VerificationTokenTable`。
+而用同一个 access_token 重新请求 `/api/api-token/cli-api-key`，网关会**发一把
+不同的有效 key**，直连即 200。`rpm`/`tpm` 都是 0，账号侧像是重新开过组/订阅。
+
+根因（两处）：
+1. `fetch_cli_api_key()` 只要缓存值有 `sk-` 前缀就永久复用，不校验是否还有效。
+2. 两条路由的 401 恢复都拿不回新 key——
+   - `/v1/models` 根本没有 401 重试，撞 401 就直接吐 5 行 fallback 静态目录
+     （fallback 恰好也是 5 行，所以 `models=5` 骗过了健康检查）；
+   - chat 路径**先**调 `refresh_access_token()`，而官方 CLI 从不写
+     `refresh_token`（薄封装和桥的凭据里都没有这一项），它抛的 401 又被
+     `except HTTPException: pass` 吞掉，于是重试发出的是**同一把死 key**。
+
+修复：新增 `remint_gateway_key()`——网关 401 走的是「重发虚拟密钥」，只有
+`/api/api-token/cli-api-key` 自己也 401 时才去刷新 access_token。`/v1/models`
+补上 401 重试，chat 的恢复改为先重发、且不再吞异常。新 key 会落盘，下次启动
+无需再恢复。
+
+回归测试：`tools/test_codely_recovery.py`（缓存死 key → 两条路由都应自愈）。
+线上实测：带着死 key 重启桥，`/v1/models` 一次请求内返回真网关目录、无
+`X-Codely-Models-Fallback` 头，`codely/codely-core` chat 200 并回 `pong`。
+
+注意：模型名只接受 5 个 alias（`codely-{core,flash,air,basic,vl}`），原始模型名
+会被网关以 400 `team_model_access_denied` 拒掉，这是团队密钥策略，不是 bug。
+
 ## 2026-09-26 01:00 更新：门禁文案 402→400，models 直连真实 200
 - 上游网关 codely-litellm.tuanjie.cn /v1/chat/completions 对全部 8 个模型一律 400「欢迎使用Codely, 访问 https://codely.tuanjie.cn/」（此前是 402 budget_exceeded，门禁文案已变）。
 - /v1/models 直连真实 200（8 模型，key 有效）——models 通不代表 chat 通。
 - 账号 web API 正常：/api/teams → <你的团队> has_key:true；/api/user/usage/summary → 剩余 <你的点数>。
 - 官方 CLI（@unity-china/codely-cli bundle/gemini.js）走同网关同签名（BASE key 406f00f7…）同样被挡 → 与桥无关，纯账号 onboarding 门禁。
 - 修复路径：用户登录 codely.tuanjie.cn 网页端完成首次激活。
+
+- 流式 500 / 渠道校验（11128）死循环 / Trae 登录态找不到：见 [2026-09-29-stream-500-and-channel-retry.md](./2026-09-29-stream-500-and-channel-retry.md)

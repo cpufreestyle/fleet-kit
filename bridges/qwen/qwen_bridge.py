@@ -19,22 +19,27 @@
 
 from __future__ import annotations
 
-import argparse
-import asyncio
-import json
 import os
-from typing import Optional
+import sys
 
-import httpx
-import uvicorn
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
+
+from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse
+
+import _common
 
 BRIDGE_VERSION = "1.0.0"
 
 UPSTREAM_BASE = (os.environ.get("QWEN_UPSTREAM") or "https://maas.qwencloudapi.com/compatible-mode/v1").rstrip("/")
 BRIDGE_KEY = os.environ.get("QWEN2CODEX_KEY") or ""
-API_KEY = os.environ.get("QWEN_API_KEY") or BRIDGE_KEY
+# Never fall back to BRIDGE_KEY here. Measured 2026-09-29: fleet.env carries
+# QWEN2CODEX_KEY but no QWEN_API_KEY, so the bridge shipped its own local key
+# to maas.qwencloudapi.com on every request. That leaks a local secret to a
+# third party, /health answered has_api_key=true, and upstream answered 401 --
+# an operator reading the health row then hunts an expired session that does
+# not exist. An unset key must stay visibly unset.
+API_KEY = os.environ.get("QWEN_API_KEY", "")
 UPSTREAM_PROXY = (os.environ.get("QWEN_UPSTREAM_PROXY") or "").strip()
 DEFAULT_TIMEOUT = float(os.environ.get("QWEN_CALL_TIMEOUT") or "300")
 CATALOG_PREFIX = "qwen/"
@@ -49,43 +54,17 @@ _JUNK_SUBSTR = (
     "ocr", "moderation", "flux", "wan", "whisper", "speech", "music",
 )
 
-app = FastAPI(title="qwen2codex", version=BRIDGE_VERSION)
+app = _common.make_app("qwen2codex", BRIDGE_VERSION)
 
-_http: Optional[httpx.AsyncClient] = None
+# 本地桥访问控制：key 与上游 Qwen Cloud API key 同一 env（QWEN2CODEX_KEY）。
+check_bridge_auth = _common.make_auth_checker(BRIDGE_KEY)
 
+client = _common.make_client_getter(
+    **_common.client_kwargs(DEFAULT_TIMEOUT, proxy=UPSTREAM_PROXY))
 
-def _client_kwargs() -> dict:
-    kw = dict(timeout=httpx.Timeout(DEFAULT_TIMEOUT, connect=15))
-    if UPSTREAM_PROXY:
-        kw["proxy"] = UPSTREAM_PROXY
-    return kw
-
-
-def client() -> httpx.AsyncClient:
-    global _http
-    if _http is None or _http.is_closed:
-        _http = httpx.AsyncClient(**_client_kwargs())
-    return _http
-
-
-def check_bridge_auth(request: Request) -> None:
-    """本地桥访问控制：key 与上游 Qwen Cloud API key 同一 env（QWEN2CODEX_KEY）。"""
-    if not BRIDGE_KEY:
-        return
-    auth = request.headers.get("authorization") or ""
-    if auth != f"Bearer {BRIDGE_KEY}":
-        raise HTTPException(status_code=401, detail="invalid bridge key")
-
-
-def remap_model(model: Optional[str]) -> Optional[str]:
-    """把 Codex 侧带 qwen/ 前缀的模型名还原成上游原生模型名。"""
-    if not model:
-        return model
-    if model.startswith(CATALOG_PREFIX):
-        return model[len(CATALOG_PREFIX):]
-    if model.startswith("qwen-qwen"):
-        return model[len("qwen-"):]
-    return model
+# 把 Codex 侧带 qwen/ 前缀的模型名还原成上游原生模型名。
+remap_model = _common.make_model_remapper(
+    CATALOG_PREFIX, double_prefix="qwen-qwen", double_strip="qwen-")
 
 
 def is_chat_model(mid: str) -> bool:
@@ -127,9 +106,20 @@ async def list_models(request: Request):
                     ids = kept
             else:
                 detail = f"upstream {r.status_code}"
+                if r.status_code in (401, 403):
+                    # The key was refused. Advertising rows here means every
+                    # chat call 401s while /health and the picker stay green,
+                    # so report the failure instead of the static catalog.
+                    # The names in FALLBACK_MODELS are real, which is why a
+                    # network/5xx failure below still serves them.
+                    return JSONResponse(
+                        {"error": {"message": f"qwen upstream refused the API key (HTTP {r.status_code}); "
+                                              f"set QWEN_API_KEY to a real Qwen Cloud key",
+                                   "type": "upstream_auth_error"}},
+                        status_code=401)
         except Exception as e:
             detail = f"{type(e).__name__}: {e}"
-    # 无 key / 上游失败：静态兜底目录（带 qwen/ 前缀，slug 与 catalog 注入一致）
+    # 无 key / 上游不可达：静态兜底目录（带 qwen/ 前缀，slug 与 catalog 注入一致）
     data = {
         "object": "list",
         "data": [
@@ -152,50 +142,34 @@ async def chat_completions(request: Request):
     body["model"] = remap_model(body.get("model"))
     stream = bool(body.get("stream"))
 
+    if not API_KEY:
+        # No key means every upstream call is a guaranteed 401; fail locally
+        # with the fix instead of paying for the round trip.
+        return _common.upstream_error_response(
+            503, "", "qwen", "qwen_key_missing",
+            message="qwen bridge has no QWEN_API_KEY; set a real Qwen Cloud key "
+                    "in fleet.env and re-run bash bridges/finish.sh qwen")
+
     url = f"{UPSTREAM_BASE}/chat/completions"
     try:
         req = client().build_request("POST", url, json=body, headers=upstream_headers())
         resp = await client().send(req, stream=True)
     except Exception as e:
-        return Response(
-            content=json.dumps({"error": {"message": f"qwen upstream unreachable: {type(e).__name__}: {e}",
-                                          "type": "qwen_upstream_error"}}),
-            media_type="application/json", status_code=502,
-        )
+        return _common.upstream_error_response(
+            502, "", "qwen", "qwen_upstream_error",
+            message=f"qwen upstream unreachable: {type(e).__name__}: {e}")
 
-    if resp.status_code != 200:
-        err = (await resp.aread()).decode("utf-8", "replace")[:500]
-        await resp.aclose()
-        return Response(content=json.dumps({"error": {"message": f"qwen upstream {resp.status_code}: {err}",
-                                                     "type": "qwen_upstream_error"}}),
-                        media_type="application/json", status_code=resp.status_code)
-
-    if stream:
-        ctype = resp.headers.get("content-type", "text/event-stream")
-        return StreamingResponse(_sse_pump(resp), media_type=ctype)
-    content = await resp.aread()
-    ctype = resp.headers.get("content-type", "application/json")
-    await resp.aclose()
-    return Response(content=content, media_type=ctype)
-
-
-async def _sse_pump(resp: httpx.Response):
-    try:
-        async for chunk in resp.aiter_raw():
-            if chunk:
-                yield chunk
-    finally:
-        await resp.aclose()
+    return await _common.stream_response(resp, stream=stream,
+                                         upstream_name="qwen",
+                                         error_type="qwen_upstream_error",
+                                         error_chars=500)
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8798)
-    args = ap.parse_args()
-    print(f"[qwen2codex] v{BRIDGE_VERSION} on http://{args.host}:{args.port}  upstream={UPSTREAM_BASE} "
-          f"proxy={UPSTREAM_PROXY or 'direct'} api_key={'set' if API_KEY else 'MISSING'}", flush=True)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=True)
+    _common.serve(
+        app, 8798,
+        f"[qwen2codex] v{BRIDGE_VERSION} on http://%s:%s  upstream={UPSTREAM_BASE} "
+        f"proxy={UPSTREAM_PROXY or 'direct'} api_key={'set' if API_KEY else 'MISSING'}")
 
 
 if __name__ == "__main__":

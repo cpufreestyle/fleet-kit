@@ -1,10 +1,88 @@
 # zcode2codex（智谱 Z.AI Coding / ZCode）反代理 runbook
 
+# 2026-09-28 CLI 路线打通记录（关键结论）
+
+## 签名矩阵（逆向自 zcode.cjs byte 3711950）
+
+    cRs({access, baseURL}):
+      start-plan / off-peak           -> 不签名（直接可调）
+      individual/team-coding-plan     -> V4 签名（X-Client-Sig/Pow/Nonce）
+      zhipu-coding-plan-api-key       -> V4 签名
+
+## 实测结论（本机, 2026-09-28 20:00-20:30）
+
+1. **CLI 路线无 3012**：同一个请求，桥直连被 ESA 边缘 3012 拦，走
+   zcode.cjs app-server 一样的 URL 直接到达应用层（3007 → 1005）。
+   指纹差异在客户端 transport，不在 URL/头。
+2. **captcha 票池有效**：CLI 请求带 x-aliyun-captcha-verify-param 后
+   3007 消失，到达配额层（1005 exceed quota limit）。
+   票据指纹绑定问题只影响「跨上下文搬票给直连 HTTP」这条路线。
+3. **当前配额状态（硬事实，非代码问题）**：
+   - start-plan: 1005 exceed quota limit（Weekend Build 免费额度耗尽）
+   - team-coding-plan: 1113 Insufficient balance（V4 签名已通过，无余额）
+   - billing/current: {"plans":[]} 证实套餐不在有效期
+4. **V4 签名协议**（team-coding-plan 用）：
+   - credential: <apiKeyId>.<secret>（credentials.json 里
+     account-provider:coding-plan:...:api-key，恰好一个点）
+   - handshake: POST /api/paas/c1f3a7e2/v2/client {apiKey, nonce, sig, ts}
+   - 业务请求头: X-Client-Ts/Version/Sig/Nonce/App-Id/Pow + X-Session-Id
+   - 握手失败 failOpen（sendUnsigned）；verify 两次被拒进 bypassSigning
+5. **错误码语义**（zcode.cjs byte 4016776）：
+   - 1005 = 配额耗尽（I4s 集合：不重试，换 provider）
+   - 1113 = 余额不足
+   - 3007 = captcha 被拒（start-plan 会自动 captcha-retry 重拿 headers）
+
+## 桥内实现（Route A / Route B）
+
+    /v1/chat/completions
+      -> Route A: cli_backend.ask() 经官方 CLI（start-plan -> team 依次试）
+      -> 配额全耗尽: 503 PLAN_EXHAUSTED（明确报套餐问题，不烧票不降级）
+      -> Route B 降级: 原有 HTTP 直连（3012 风险仍在，仅兜底）
+
+文件：kit/bridges/zcode/{cli_client,cli_backend,zcode_bridge}.py
+      （kit 与 runtime 双份，md5 必须一致）
+
+## captcha minter 环境
+
+- 系统无 playwright 的解释器调 minter 会静默挂起：cli_client._mint_ticket
+  的探测顺序是 `sys.executable`（桥自己就在带 playwright 的 venv 里）优先，
+  然后 /usr/bin/python3（Xcode CLT）、`python3`；ZCAP_PY 可覆盖。
+- **调用路径上的 mint 一律 `--headless`**：2026-10-02 修，之前每请求现场
+  mint 是有头 Chrome，滑块窗直接弹到运营者脸上，40~60s 后失败再把人推去
+  relay 页——验证就是这么反复跳的。无头 mint 解不了滑块，但它静默失败，
+  由调用方回落成「开一次页换一张」。
+- minter 的 Chrome profile 落在 `bridges/zcode/captcha_profile`（不再 /tmp，
+  重启即清）：profile 每次重置等于设备指纹永远冷，无感验证必然不过。
+- minter 改为**盯票池判断成功**：人工在页面存票即写池文件，minter 读池领取；
+  原先读 `window.__capParam` 实测不可靠（人工存票成功它仍超时），自动拖滑块
+  （`drag_slider`）从来没成功过、已删除。副作用是好事：任何浏览器在窗口期内
+  存的票都会被这次 mint 捡走。
+- mint 成功率间歇（traceless 卡 F001/F015），--serve 模式维持池子比
+  每请求现场 mint 更稳；失败重试可成。
+
 链路：Codex -> 本桥(:8800) -> https://zcode.z.ai/api/v1/zcode-plan/anthropic
       -> GLM-5.3-Flash / GLM-5.3（Start Plan 免费额度）
 
 launchd：`com.local.zcode2codex`（plist 由 install.sh 生成，offset 13）
 captcha 换取页：http://127.0.0.1:8910/ （launchd `com.local.zcode-captcha-relay`）
+
+
+## 别反复跳验证（2026-10-02 修的那一圈）
+
+症状：zcode 每次调用都跳一次验证——要么一个 Chrome 窗弹到脸上，要么被推去
+127.0.0.1:8910 拖一次滑块，刚存好的票只够一发，下一发再来一圈。
+
+根因是三个设计缺口叠出来的：
+
+1. 池子空了以后，调用路径上的 mint 是**有头** Chrome（滑块窗当场弹）；
+2. minter 的 profile 在 /tmp，重启/周期清理即重置，无感验证永远冷启失败；
+3. relay 页每次打开 2.2 秒后自动唤起验证，且把票覆写进 captcha.txt——
+   同一张 param 在池里一份、旧文件里一份，就是两次领取，第二次必 3007。
+
+现在的形状：页面手动唤起、可连续备票进池；调用只从池里静默取票；池干时
+无头 mint 静默失败一次，回落成「开一次页换一张」。备票的有效窗口按消费方
+不同：CLI 路线（cli_client）600s 新鲜度 + 900s 寿龄，桥的直连路线 75s。
+`tools/test_zcode_captcha_flow.py` 钉住这几条契约。
 
 ## 凭证
 
@@ -42,13 +120,17 @@ sceneId `11xygtvd` / region `cn` / prefix `no8xfe`。
 
 - `captchaVerifyParam` 一次性，用过即废；过期/失效时上游返回
   `{"code":3007,"msg":"captcha verify failed"}`。
-- 换取：打开 http://127.0.0.1:8910/ 完成滑块，param 自动写入
-  `runtime/bridges/zcode/captcha.txt`（桥每次调用现读现取）。
+- 换取：打开 http://127.0.0.1:8910/ 点「开始验证」完成滑块，param 写入票池
+  `runtime/bridges/zcode/captcha_pool/<epoch>-<rand>.txt`（一个文件一张票，
+  桥凭 claim-by-delete 领取）。页面不再自动唤起验证，也**不再覆写
+  captcha.txt**——同一张票放两处就是两次领取，第二次必 3007。
 - 桥在没有 param 时返回 `503` + `captcha_relay` 字段；param 失效时同样 503
   并附上游原文，方便判断是「该换了」还是「别的错」。
 
-relay 页刻意与 ZCode.app 内部 SDK 调用对齐：`mode:'popup'`、真实
-`button` 元素、先 `startTracelessVerification()` 再 8s 回退按钮点击
+relay 页与 ZCode.app 内部 SDK 调用保持同构（`mode:'popup'`、真实 `button`、
+`startTracelessVerification()`），但 2026-10-02 起**唤起是手动的**：点一下
+「开始验证」才弹滑块，存完一张按钮立即可再点，页脚显示本次已存与池内总数，
+一次备几张覆盖一段时间的调用。
 （对齐 `onn()` 的 auto 分支）。
 
 ## 上游风控（当前未解决）
@@ -214,3 +296,4 @@ xue(e){return e==="zai"||e===Ne} = shouldClearZcodeJwtOnLogout，登出即删）
   ZCODE_BUILTIN_PROVIDER_CONFIG_FILE / ZCODE_BUILTIN_PROVIDER_BUNDLED_CONFIG_FILE /
   ZCODE_PERSONAL_PROVIDER_CONFIG_FILE / ZCODE_DATA_BASE_DIR，
   否则 registry 里一个 provider 都没有。
+

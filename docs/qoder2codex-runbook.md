@@ -72,3 +72,16 @@ curl -s -X POST http://127.0.0.1:10100/v1/responses -H 'Content-Type: applicatio
 - 现象：流式 chat 正常（只等首事件），非流式 subprocess.run 等到 300s 超时。
 - 根因：qoderclicn 每次调用都加载用户 MCP 配置（~/.qoder/mcp.json、~/.qoder-cn/mcp.json），卡在 MCP issues detected 后挂起。
 - 修复：~/qoder-bridge/qoder_bridge.py base_args 增加 --strict-mcp-config（无 --mcp-config = 不加载任何 MCP server），CLI 6.7s 正常返回 JSON。备份 qoder_bridge.py.bak-20260926。launchctl kickstart -k gui/$(id -u)/com.local.qoder2codex 生效。修复后实测 chat 200 / 5.8s。
+
+## 2026-09-29 更新：`MODEL` 幽灵行根因与修复
+
+- 现象：`/v1/models` 列出一个不存在的模型 `qoder/MODEL`，选它聊天必然失败。
+- 根因：`qoderclicn --list-models` 的首行是**字面量表头** `MODEL`（大写），
+  而旧过滤器只匹配 `Available` / `Models` / `Model` 三种大小写敏感的拼写，
+  表头行于是通过 id 正则泄漏进目录。
+- 修复：`bridges/qoder/qoder_bridge.py` 的 `_is_header_line()` 按「首个
+  token 是否表头词」判定，大小写无关（表头词集合
+  `model/models/available/name/id`）。分隔符只取空白和冒号——把 `-` 也算进来的话
+  `model-router`、`id-chain` 这类合法 id 会被整行丢掉（这一条是被测试抓出来的）。
+- 实测：14 个真模型、`MODEL` 消失、`modelscope-x-01` 等前缀合法 id 不受影响。
+- 测试：`tools/test_qoder_header_filter.py`（18 个）。

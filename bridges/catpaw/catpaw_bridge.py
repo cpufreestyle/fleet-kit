@@ -2,6 +2,7 @@ import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 import _platform
+import _basehttp
 import sys
 #!/usr/bin/env python3
 # catpaw2codex v2: Meituan CatPawAI (miaoshou AI IDE) -> OpenAI-compatible bridge (port 8795)
@@ -29,6 +30,7 @@ IDEKIT_KEY = 'mt-idekit.mt-idekit-code'
 MODE = os.environ.get('CATPAW_MODE', 'completions')  # completions | agent
 MIS_ID = os.environ.get('CATPAW_MIS_ID', '13661621468')
 TENANT = os.environ.get('CATPAW_TENANT', 'catpaw')
+BRIDGE_KEY = os.environ.get('CATPAW2CODEX_KEY') or ''
 IDE_VER = '1.101.0'
 UA = 'CatPawAI/' + IDE_VER
 SSO_A = '1d47d6ff96_ssoid'
@@ -43,6 +45,60 @@ CTX.check_hostname = False
 CTX.verify_mode = ssl.CERT_NONE
 
 ST = {'at': None, 'ts': 0.0, 'mis': MIS_ID, 'models': None, 'models_ts': 0.0, 'lock': threading.Lock()}
+
+
+# /health is the endpoint every prober calls, and the probe timeout in
+# verify_real_calls.py / fleet_probe.py is 8s. Pinging the three bases one
+# after another at 5s each therefore cost up to 15s, and two of the three
+# are unreachable from this network: /health answered 200 after 10.1s while
+# the chat path was fine, so every prober timed out and the picker hid a
+# working model. Reachability is a diagnostic, so bound it by the slowest
+# single ping and cache it -- a dashboard that polls every few seconds must
+# not pay for it again.
+REACH_TIMEOUT = float(os.environ.get('CATPAW_REACH_TIMEOUT') or '3')
+REACH_TTL = float(os.environ.get('CATPAW_REACH_TTL') or '20')
+_REACH = {'at': 0.0, 'data': {}, 'lock': threading.Lock()}
+
+
+def probe_reach():
+    """Reachability of BASE, MCOPILOT and PUBLIC_BASE as host -> [status, label].
+
+    The three pings run concurrently, so the cost is the slowest single one
+    rather than their sum, and a complete result is cached for REACH_TTL
+    seconds. A partial result (a thread that outlived its join) is returned
+    but never cached, so one slow pass cannot pin a wrong verdict for the
+    whole TTL.
+    """
+    now = time.time()
+    with _REACH['lock']:
+        cached = dict(_REACH['data'])
+        fresh = now - _REACH['at'] < REACH_TTL
+    if fresh and cached:
+        return cached
+    results = []
+    guard = threading.Lock()
+
+    def one(base):
+        st, body, _ = http_req(base + '/api/ping', headers={}, method='GET',
+                               timeout=REACH_TIMEOUT)
+        label = ('auth-failed' in body and 'reachable-auth-gate') or (
+            'ok' if st == 200 else 'unreachable')
+        with guard:
+            results.append((base.split('//')[1], [st, label]))
+
+    threads = [threading.Thread(target=one, args=(b,), daemon=True)
+               for b in (BASE, MCOPILOT, PUBLIC_BASE)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(REACH_TIMEOUT + 2)
+    out = dict(results)
+    if len(out) == 3:
+        with _REACH['lock']:
+            _REACH['at'] = now
+            _REACH['data'] = out
+    return out
+
 
 def log(*a):
     sys.stderr.write('[catpaw] ' + ' '.join(str(x) for x in a) + '\n')
@@ -112,6 +168,39 @@ def refresh(base, rt):
     log('refresh', base, 'failed', st, body[:100])
     return None
 
+# The base that last answered a valid userInfo. BASE and MCOPILOT are
+# unreachable from this network and each failure costs ~2.6s waiting for the
+# proxy tunnel to give up, so walking them in the documented order made
+# get_token() cost 7.8s on a cold process -- and /health calls it on every cold
+# start. Remembering the answerer does not change the validation or the
+# fallback chain, only the order they are tried in.
+_TOKEN_BASE = {"base": ""}
+
+
+def bases_in_order():
+    """The three bases, with the one that last answered first.
+
+    Deduplicated, so a remembered base is tried once and the other two still
+    follow: the chain is unchanged, only reordered.
+    """
+    order = [_TOKEN_BASE["base"]]
+    # /health probes reachability before it asks for a token, and that
+    # verdict survives into this walk: a host that just answered /api/ping
+    # is a better first guess than the documented order, which starts with
+    # two hosts this network cannot reach at all. This only reorders --
+    # every base is still walked when the guesses fail.
+    for host, verdict in (_REACH["data"] or {}).items():
+        if verdict and verdict[0] == 200:
+            order.append("https://" + host)
+    order += [BASE, MCOPILOT, PUBLIC_BASE]
+    seen, out = set(), []
+    for b in order:
+        if b and b not in seen:
+            seen.add(b)
+            out.append(b)
+    return out
+
+
 def get_token(force=False):
     with ST['lock']:
         if ST['at'] and not force and time.time() - ST['ts'] < 1500:
@@ -125,19 +214,21 @@ def get_token(force=False):
         for at in cands:
             if not at:
                 continue
-            for base in (BASE, MCOPILOT, PUBLIC_BASE):
+            for base in bases_in_order():
                 st, body, _ = http_req(base + '/api/login/userInfo', headers=hdrs(at), timeout=12)
                 if st == 200 and 'auth failed' not in body:
                     ST['at'], ST['ts'] = at, time.time()
+                    _TOKEN_BASE['base'] = base
                     log('token ok via', base)
                     return at
                 log('userInfo', base, '->', st, body[:80])
         rt = stt.get('rt')
         if rt:
-            for base in (BASE, MCOPILOT, PUBLIC_BASE):
+            for base in bases_in_order():
                 new_at = refresh(base, rt)
                 if new_at:
                     ST['at'], ST['ts'] = new_at, time.time()
+                    _TOKEN_BASE['base'] = base
                     log('refreshed via', base)
                     return new_at
         raise RuntimeError('session invalid everywhere: connect company VPN + re-login in IDE')
@@ -183,6 +274,35 @@ def fetch_models(at):
     log('maas model-types ->', st, body[:100])
     return None
 
+# At most one background refresh in flight.
+#
+# list_models() is called on every /v1/models poll -- status_ui polls it,
+# fleet_probe runs it every few minutes, verify_real_calls on demand -- and
+# its cached path used to spawn a _bg_refresh thread per call. _bg_refresh
+# calls get_token(), which takes ST['lock'] and walks upstream hosts,
+# so a burst of polls left a pile of threads serialized on that lock and
+# /health queued behind them (measured 10.7s vs 3.7s for its own parts).
+# One at a time is enough: the refresh is idempotent and cached.
+_BG_LOCK = threading.Lock()
+_BG_RUNNING = {'on': False}
+
+
+def _spawn_bg_refresh():
+    with _BG_LOCK:
+        if _BG_RUNNING['on']:
+            return
+        _BG_RUNNING['on'] = True
+
+    def _run():
+        try:
+            _bg_refresh()
+        finally:
+            with _BG_LOCK:
+                _BG_RUNNING['on'] = False
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def list_models():
     # 面板探活用：优先返回已缓存模型（DB/内存/静态），绝不因外网慢而超时。
     # 上游同步放后台线程做，不阻塞 /v1/models 响应。
@@ -198,7 +318,7 @@ def list_models():
         except Exception:
             pass
     if cached:
-        threading.Thread(target=_bg_refresh, daemon=True).start()
+        _spawn_bg_refresh()
         return cached
     try:
         at = get_token()
@@ -334,17 +454,34 @@ class H(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def _check_key(self):
+        """Same contract as _common.check_bridge_auth.
+
+        An unset key leaves the bridge open (it only ever listens on
+        127.0.0.1); a set key requires the exact Authorization header.
+        """
+        if not BRIDGE_KEY:
+            return True
+        want = 'Bearer ' + BRIDGE_KEY
+        return (self.headers.get('Authorization') or '') == want
+
+    def _deny(self):
+        self._send(401, json.dumps({'error': {'message': 
+                                      'invalid bridge key',
+                                      'type': 'auth_error'}}))
+
     def do_GET(self):
         if self.path.startswith('/v1/models'):
+            if not self._check_key():
+                self._deny()
+                return
             names = list_models()
             now = int(time.time())
             data = {'object': 'list', 'data': [{'id': n, 'object': 'model', 'created': now, 'owned_by': 'catpaw-miaoshou'} for n in names]}
             self._send(200, json.dumps(data))
         elif self.path.startswith('/health') or self.path == '/':
-            at, err, reach = None, None, {}
-            for base in (BASE, MCOPILOT, PUBLIC_BASE):
-                st, body, _ = http_req(base + '/api/ping', headers={}, method='GET', timeout=5)
-                reach[base.split('//')[1]] = (st, ('auth-failed' in body and 'reachable-auth-gate') or ('ok' if st == 200 else 'unreachable'))
+            at, err = None, None
+            reach = probe_reach()
             try:
                 at = get_token()
             except Exception as e:
@@ -357,6 +494,9 @@ class H(BaseHTTPRequestHandler):
             self._send(404, json.dumps({'error': 'not found'}))
 
     def do_POST(self):
+        if not self._check_key():
+            self._deny()
+            return
         if not self.path.startswith('/v1/chat/completions'):
             self._send(404, json.dumps({'error': 'not found'}))
             return
@@ -385,6 +525,8 @@ class H(BaseHTTPRequestHandler):
             self._send(code, out, extra.get('Content-Type', 'application/json'))
         except Exception as e:
             self._send(500, json.dumps({'error': {'message': str(e)[:300], 'type': 'bridge_error'}}))
+
+H = _basehttp.install_basehttp_guard(H)
 
 if __name__ == '__main__':
     srv = ThreadingHTTPServer((HOST, PORT), H)

@@ -23,6 +23,16 @@ jobs:
       - name: python syntax check
         run: python3 -m compileall -q bridges tools opencodex
 
+      # The catalog tools decide which model rows get hidden, so their safety
+      # gates (stale-snapshot refusal, never dropping a bridged provider,
+      # bounding backup growth) are covered here rather than found live.
+      - name: tools unit tests
+        run: |
+          # Bridge tests import their bridges; the bridges pull in an ASGI
+          # server and the websocket client (clline_bridge, workbuddy/core).
+          python3 -m pip install --quiet pytest httpx fastapi uvicorn websockets
+          python3 -m pytest tools -q
+
       - name: secret and PII leak scan
         run: |
           hits=0
@@ -83,15 +93,68 @@ jobs:
         run: |
           # shellcheck source=tools/platform.sh
           . tools/platform.sh
-          "$(fleet_system_python)" -m http.server 18923 --bind 127.0.0.1 >/dev/null 2>&1 &
-          server=$!
-          for _ in $(seq 1 30); do
-            "$(fleet_system_python)" -c 'import socket,sys; s=socket.socket(); s.settimeout(.3); sys.exit(0 if s.connect_ex(("127.0.0.1",18923))==0 else 1)' && break
-            sleep 0.3
-          done
-          fleet_port_in_use 18923 || { echo "port probe missed a listening port"; exit 1; }
+
+          # A port nobody listens on must read as free, or a live fleet looks
+          # dead to install/deploy checks.
           fleet_port_in_use 18924 && { echo "port probe reported a free port as busy"; exit 1; }
-          kill "$server" >/dev/null 2>&1 || true
+          echo "free-port verdict ok"
+
+          # The busy verdict needs a listener the runner will keep. Starting a
+          # background http.server does not work on the GitHub macOS runner:
+          # the process stays alive, its log stays empty, and lsof reports the
+          # socket as 127.0.0.1:18923 (CLOSED) -- the runner closes the
+          # listening socket of anything a step started behind its back. So the
+          # socket is held by this step's own foreground python, which the
+          # runner's process tree is attached to, and the shell helper is asked
+          # to classify it from outside.
+          "$(fleet_system_python)" - <<'PY'
+          import os
+          import socket
+          import subprocess
+          import sys
+
+          def bash_binary():
+              # On Windows the `bash` that wins PATH lookup is wsl.exe's
+              # launcher, which cannot run a POSIX script at all; the step
+              # itself runs under Git for Windows bash, so ask for that one.
+              if sys.platform.startswith("win"):
+                  roots = [os.environ.get("ProgramFiles", r"C:\Program Files"),
+                           os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")]
+                  for root in roots:
+                      cand = os.path.join(root, "Git", "bin", "bash.exe")
+                      if os.path.exists(cand):
+                          return cand
+              return "bash"
+
+          def verdict(port):
+              # Relative source path from inside the workspace: a checkout
+              # path can hold spaces and backslashes alike.
+              script = ". ./tools/platform.sh; fleet_port_in_use {}".format(port)
+              return subprocess.call(
+                  [bash_binary(), "-c", script],
+                  cwd=os.environ.get("GITHUB_WORKSPACE", "."))
+
+          port = 18923
+          holder = socket.socket()
+          holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          holder.bind(("127.0.0.1", port))
+          holder.listen(1)
+
+          try:
+              busy = verdict(port)
+          finally:
+              holder.close()
+
+          if busy != 0:
+              print("port probe missed a listening port held by this step")
+              sys.exit(1)
+
+          if verdict(18924) == 0:
+              print("port probe reported a free port as busy")
+              sys.exit(1)
+
+          print("busy-port verdict ok")
+          PY
           echo "port probe ok"
 
       - name: python platform module agrees

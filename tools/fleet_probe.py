@@ -5,11 +5,14 @@ Writes a reachability snapshot consumed by catalog_sort.py:
 
   {"reachable": [...], "unreachable": [...],
    "measured_at": "2026-09-27T17:10:00+08:00",
+   "skipped": {"zcode": "upstream requires per-call Aliyun captcha"},
    "evidence": {"workbuddy": "glm-5.2 -> E2E_OK", ...}}
 
 A bridge counts as reachable only when a real chat call returns the expected
 nonce echo. A listening port, a /v1/models listing, or a fast canned 200 all
 count as NOT reachable, because the picker is what the user actually feels.
+skipped lists bridges the sweep does not call on purpose, so a strict sorter
+can tell them apart from a bridge a truncated run never reached.
 
 Usage:
   fleet_probe.py            write ~/.codex/fleet-reach.json
@@ -33,6 +36,7 @@ PORTS = {
     "xhx": 8793, "gemini": 8794, "catpaw": 8795,
     "antigravity": 8797, "qwen": 8798, "cline": 8799,
     "zcode": 8800,
+    "kimi": 8802, "minimax": 8803,
 }
 
 # Providers that do not own a local bridge: ocx forwards them straight to the
@@ -53,7 +57,15 @@ KEY_ENV = {
     "catpaw": "CATPAW2CODEX_KEY", "antigravity": "ANTIGRAVITY2CODEX_KEY",
     "qwen": "QWEN2CODEX_KEY", "cline": "CLINE2CODEX_KEY",
     "zcode": "ZCODE2CODEX_KEY",
+    "kimi": "KIMI2CODEX_KEY", "minimax": "MINIMAX2CODEX_KEY",
 }
+
+# One bridge needs longer than the sweep default before it can answer
+# anything at all: zcode drives the official CLI and mints an Aliyun captcha
+# first (measured at up to ~75s), so a 45s budget reads a merely slow bridge
+# as DOWN. This mirrors PROBE_CHAT_TIMEOUT_OVERRIDE in verify_real_calls.py,
+# which learned the same lesson the hard way.
+CALL_TIMEOUT_OVERRIDE = {"zcode": 200.0}
 
 NONCE = "E2E_OK"
 SKIP_RE = ("image", "tts", "embed", "ocr", "vision", "vl")
@@ -66,6 +78,67 @@ SKIP_RE = ("image", "tts", "embed", "ocr", "vision", "vl")
 NO_PROBE = {
     "zcode": "upstream requires per-call Aliyun captcha; probe is opt-in",
 }
+
+
+# A bridge the sweep refuses to call can still be green, but the only proof is
+# a deliberate `--only <name>` run that burned a captcha ticket. The routine
+# timer writes this snapshot without --merge, so without carrying that proof
+# forward a real verdict is erased within 30 minutes and the bridge's models
+# sink back out of the picker. zcode/GLM-5.3 sat at row 67 of 117 for exactly
+# this reason: proven working on 2026-09-27, un-probe-able by design, and
+# therefore demoted to "skipped" forever. A real-call verdict younger than
+# this is kept instead of thrown away.
+CARRIED_VERDICT_MAX_AGE = 24 * 3600.0
+
+
+def _parse_stamp(value):
+    """ISO-8601 string -> aware datetime, or None when unreadable."""
+    if not value:
+        return None
+    try:
+        stamp = datetime.datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+    return stamp
+
+
+def carried_verdict(name, out_path, max_age=CARRIED_VERDICT_MAX_AGE):
+    """A NO_PROBE bridge's last real-call verdict, when it is still fresh.
+
+    Returns None when there is nothing worth carrying: no earlier snapshot,
+    the bridge was not reachable, no model ever answered, or the proof has
+    aged out. An aged proof is not evidence, so it is dropped rather than
+    kept green on a guess.
+    """
+    try:
+        with open(out_path, encoding="utf-8") as fh:
+            prev = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(prev, dict):
+        return None
+    if name not in set(prev.get("reachable") or []):
+        return None
+    model = (prev.get("verified_models") or {}).get(name)
+    if not model:
+        return None
+    stamps = prev.get("verified_at") or {}
+    stamped = _parse_stamp(
+        stamps.get(name) if isinstance(stamps, dict)
+        else prev.get("measured_at"))
+    if stamped is None:
+        return None
+    age = (datetime.datetime.now(stamped.tzinfo) - stamped).total_seconds()
+    if age < 0 or age > max_age:
+        return None
+    return {
+        "model": model,
+        "evidence": (prev.get("evidence") or {}).get(name, ""),
+        "verified_at": stamped.isoformat(timespec="seconds"),
+        "age_seconds": age,
+    }
 
 # Every bridge and the ocx gateway listen on 127.0.0.1, but urllib picks up
 # the macOS system proxy, so a local call went out to the tunnel and back:
@@ -86,10 +159,18 @@ def load_env(path):
     return env
 
 
-def list_models(port, headers):
+def list_models(port, headers, timeout=8.0):
+    """Advertised model ids for a bridge.
+
+    The budget has to be the caller's: a bridge that spends 75s minting an
+    Aliyun captcha before it can answer anything (zcode) reports "list
+    failed: timed out" against a hardcoded 8s, which reads a merely slow
+    bridge as DOWN. --call-timeout must govern the listing too, or the
+    verdict is a different thing from the truth.
+    """
     url = "http://127.0.0.1:%d/v1/models" % port
     req = urllib.request.Request(url, headers=headers)
-    with OPENER.open(req, timeout=8) as resp:
+    with OPENER.open(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode())
     return [m.get("id") for m in data.get("data", []) if m.get("id")]
 
@@ -114,6 +195,11 @@ def try_call(port, headers, model, timeout=20.0, budget=60):
     # Flash greets instead) is still reachable. What must not count as a pass:
     # an empty body, a canned error surfaced as text, or a stub.
     text = content.strip()
+    # An upstream channel refusal arrives as a 200 with error text in the
+    # message body; without this check it reads as a real answer and the
+    # bridge stays "reachable" in the picker while it can never respond.
+    if is_error_body(text):
+        return False, "upstream refused: " + (matched_marker(text) or "?")
     if NONCE in text:
         return True, text[:60]
     if len(text) >= 8 and not text.lower().startswith(("error", "sorry, i can",
@@ -151,7 +237,7 @@ def probe_gateway(name, model_prefix, timeout=20.0, tries=3):
     for _list_attempt in range(3):
         try:
             with OPENER.open(urllib.request.Request(url, headers=headers),
-                                        timeout=8) as resp:
+                                        timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             break
         except Exception:
@@ -183,6 +269,9 @@ def probe_gateway(name, model_prefix, timeout=20.0, tries=3):
                     content = (d2.get("choices") or [{}])[0].get(
                         "message", {}).get("content", "")
                     text = content.strip()
+                    if is_error_body(text):
+                        return False, "%s: upstream refused (%s)" % (
+                            model, matched_marker(text)), None
                     usage = d2.get("usage") or {}
                     details = (usage.get("completion_tokens_details") or {})
                     spent = usage.get("completion_tokens") or 0
@@ -212,7 +301,7 @@ def probe_gateway(name, model_prefix, timeout=20.0, tries=3):
 def probe(name, port, key, tries=3, timeout=20.0):  # -> (ok, why, model)
     headers = {"Authorization": "Bearer " + key} if key else {}
     try:
-        models = list_models(port, headers)
+        models = list_models(port, headers, timeout=timeout)
     except Exception as exc:
         return False, "list failed: %s" % str(exc)[:60], None
     if not models:
@@ -250,6 +339,8 @@ def probe(name, port, key, tries=3, timeout=20.0):  # -> (ok, why, model)
 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from upstream_errors import is_error_body, matched_marker
 
 
 def plist_port(name):
@@ -333,11 +424,35 @@ def main():
     env = load_env(args.env)
     reachable, unreachable, evidence, ports = [], [], {}, {}
     verified_models = {}
+    skipped = {}
+    # timestamps of the proofs we inherited rather than measured this run
+    carried_at = {}
     names = [n.strip() for n in args.only.split(",") if n.strip()]
     every = sorted(set(PORTS) | set(GATEWAY))
     for name in (names or every):
         if name in NO_PROBE and not names:
+            # A bridge the sweep deliberately does not call can still be
+            # green, proven by a deliberate --only run. Demoting it to
+            # "skipped" on every sweep would re-bury its models for as long
+            # as the captcha stays solved, so a real-call proof that has not
+            # aged out is carried forward with its own timestamp instead.
+            kept = carried_verdict(name, args.out)
+            if kept:
+                reachable.append(name)
+                evidence[name] = ("%s (carried forward, not re-probed: %s)"
+                                  % (kept["evidence"], NO_PROBE[name]))
+                verified_models[name] = kept["model"]
+                carried_at[name] = kept["verified_at"]
+                print("KEPT", name, "%s, proven %s (%.1fh ago)"
+                      % (kept["evidence"], kept["verified_at"],
+                         kept["age_seconds"] / 3600.0), flush=True)
+                continue
             print("SKIP", name, NO_PROBE[name], flush=True)
+            # Record the skip in the snapshot. A bridge the sweep deliberately
+            # does not call (zcode needs a per-call captcha) is otherwise
+            # indistinguishable from a truncated run's missing bridge, and
+            # catalog_sort.py --strict-coverage refuses every sort on it.
+            skipped[name] = NO_PROBE[name]
             continue
         port = plist_port(name) or PORTS.get(name) or GATEWAY_PORT
         ports[name] = port
@@ -345,8 +460,9 @@ def main():
             ok, why, model = probe_gateway(name, name, timeout=args.call_timeout)
         else:
             key = bridge_key(name, env)
-            ok, why, model = probe(name, port, key, tries=max(1, args.tries),
-                                  timeout=args.call_timeout)
+            ok, why, model = probe(
+                name, port, key, tries=max(1, args.tries),
+                timeout=CALL_TIMEOUT_OVERRIDE.get(name, args.call_timeout))
         evidence[name] = why
         (reachable if ok else unreachable).append(name)
         verified_models[name] = model
@@ -356,6 +472,7 @@ def main():
     snap = {
         "reachable": sorted(reachable),
         "unreachable": sorted(unreachable),
+        "skipped": skipped,
         "measured_at": datetime.datetime.now(tz).isoformat(
             timespec="seconds"),
         "ports": ports,
@@ -367,6 +484,14 @@ def main():
         if model:
             verified[name] = model
     snap["verified_models"] = verified
+    # When each bridge last answered a real call. A bridge that answered this
+    # run stamps now; one we inherited keeps the stamp it was proven with, so
+    # the proof expires 24h after it was actually made rather than being
+    # silently renewed by every sweep that never called the bridge.
+    snap["verified_at"] = {
+        name: carried_at.get(name) or snap["measured_at"]
+        for name, model in verified_models.items() if model
+    }
 
     if args.stdout:
         print(json.dumps(snap, ensure_ascii=False, indent=1))
@@ -383,8 +508,22 @@ def main():
                             set(snap["reachable"]))
             bad = sorted((set(prev.get("unreachable") or []) |
                            set(snap["unreachable"])) - set(good))
+            sk = dict(prev.get("skipped") or {})
+            sk.update(snap.get("skipped") or {})
+            for name in set(good) | set(bad):
+                sk.pop(name, None)
+            # The merged snapshot keeps the bridges this run did not call,
+            # and that has to include which model last answered for each of
+            # them: a --only run would otherwise blank verified_models for
+            # every other provider and the sorter would stop floating their
+            # proven-good rows up.
+            vm = dict(prev.get("verified_models") or {})
+            vm.update(snap.get("verified_models") or {})
+            va = dict(prev.get("verified_at") or {})
+            va.update(snap.get("verified_at") or {})
             snap = dict(snap, reachable=good, unreachable=bad,
-                       evidence=ev, ports=pr)
+                       evidence=ev, ports=pr, skipped=sk,
+                       verified_models=vm, verified_at=va)
             print("merged with", args.out)
         except Exception as exc:
             print("merge skipped:", exc)

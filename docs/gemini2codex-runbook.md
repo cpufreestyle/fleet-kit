@@ -23,6 +23,9 @@ Codex -> 本地代理(可选) -> gemini2codex(:8794) -> A: cloudcode-pa.googleap
 - OAuth token: `~/.gemini/jetski-standalone-oauth-token` (含 refresh_token; access 过期自动刷新)
 - web cookie: `~/.gemini2codex/cookies.txt` (600 权限; PSID 185 / PSIDTS 110 字符)
 - 公开 client 凭据来源: `@google/gemini-cli@0.60.0` bundle (CLIENT_CANDIDATES 两组)
+- OAuth client 凭据: 经 `GEMINI_OAUTH_CLIENT_ID` / `GEMINI_OAUTH_CLIENT_SECRET` (fleet.env) 注入,
+  由 install.sh 从 Antigravity.app 提取并与 antigravity 桥共享; 桥内两组历史常量仅作最后兜底
+  (2026-10-01 实测: 旧常量已被 Google 吊销, 单独刷新返回 401 unauthorized_client)
 - Claude/Gemini 客户端资产: `/Applications/Antigravity.app`, `/Applications/Gemini.app`
 
 ## 操作
@@ -66,3 +69,145 @@ ocx sync && ocx service restart
 - 桥返回 502，上游 code assist 403 VALI「Verify your account to continue.」（账号验证门禁）。Antigravity 在运行；本机无 Firefox cookie 源，Chrome/Edge 为 v10+ABE 加密不可解。
 - 防御性修复：~/gemini2codex/gemini_bridge.py web_cookies() 读二进制 cookies.txt 时 UnicodeDecodeError → open(..., encoding='utf-8', errors='ignore')，已 kickstart 重启 com.local.gemini2codex。修复后错误信息干净（直接 403 VALI）。
 - 修复路径：用户完成 Google 账号验证，或装「Get cookies.txt LOCALLY」导出 gemini.google.com cookie 覆盖 ~/gemini2codex/cookies.txt。
+
+## 2026-09-29 更新：单次 chat 总时限（`GEMINI_CHAT_BUDGET`）
+
+- 现象：上游 Google 全阻断时，一次 chat 要挂 **6 分钟**才返回 502
+  （`call_a(180s)` 失败后再 `call_b(180s)`）。客户端 70s 就断开，
+  只剩一条 `BrokenPipeError`，体检于是把这座桥误判成 `BRIDGE_DOWN`——
+  桥没死，只是在等一个永远不回的 upstream。
+- 修复：`do_POST` 设一个总 deadline `CHAT_BUDGET`（默认 60s，
+  env `GEMINI_CHAT_BUDGET`）。A 通道拿满预算，B 通道只拿
+  `max(FALLBACK_FLOOR, 剩余)`。`FALLBACK_FLOOR`（默认 1s，
+  env `GEMINI_FALLBACK_FLOOR`）只负责别把 0/负数当 timeout 交给 urllib，
+  不会再长成一次完整超时。`_send()` 容 `BrokenPipeError` /
+  `ConnectionResetError`，客户端已断开时不再刷 traceback。
+- 最坏总时长：`预算 + FALLBACK_FLOOR + 少许调度开销`，而不是 360s。
+- 测试：`tools/test_chat_budget.py`（与 antigravity 共用）。
+
+### 2026-09-29 追查：预算为什么还是被击穿（连接层）
+
+第一版只给 `call_a` / `call_b` 传 deadline，实测 `curl` 仍然 90s 拿不到响应。
+抓到两层漏算：
+
+1. **`get_access()` / `do_refresh()` / `load_code_assist()` 各有自己的 30s 超时**，
+   完全在预算之外。于是 `call_a` 里就能烧掉 60 + 30 + 30。
+   现在 `do_refresh` / `get_access` / `load_code_assist` / `call_a` 都收
+   `deadline` 参数，每一跳都用「剩余时间」当 timeout。
+2. **真因：`urlopen()` 给 getaddrinfo 返回的每个地址都发一份完整 timeout。**
+   `cloudcode-pa.googleapis.com` 解析出 16 个地址（前 8 个是 IPv6），
+   本机 VPN 把 IPv6 黑洞掉，于是一次调用要 16 × timeout 才轮到 IPv4。
+   实测 `oauth2.googleapis.com` 两个地址：传 20s，花了 40s。
+   所以两座桥都在模块级替换了 `socket.create_connection`：
+   自己走地址列表，每次尝试按**当时的剩余时间**封顶（thread-local deadline，
+   `ThreadingHTTPServer` 每请求一线程，互不干扰）。这才是硬上限。
+   deadline 过期时直接抛 `OSError('request budget exhausted')`。
+
+另外发现 `_send()` 的 BrokenPipeError 其实来自 `end_headers()`
+（`BasicHTTPRequestHandler` 的响应头也是经 `wfile` 写出的），
+只包 `self.wfile.write(b)` 挡不住——修之前日志里刷了 60KB traceback。
+现在整段响应写出席都包在 try 里。
+
+改完实测：`curl` 60.04s 拿到 502，错误信息
+`refresh failed for all clients: URLError: <urlopen error request budget exhausted>`
+——一眼能看出是预算耗尽，而不是一条看不懂的管道错误。
+
+## 2026-10-01 更新：多账号池（`GEMINI_AUTH_DIR`）
+
+原来这座桥只有一个身份：本机 `gemini login` 登的是谁，桥就是谁。
+换账号靠手工复制 token 文件，一个账号被 Google 判 403 / refresh 失效，
+整座桥就只剩 502，而且报错里看不出是哪个凭据烧了。
+
+现在桥内建账号池（`bridges/gemini/gemini_accounts.py`），对单账号使用者零影响：
+没有导入任何账号时，池里只有一个合成的 `legacy` 账号，
+直接引用官方登录文件（`~/.gemini/jetski-standalone-oauth-token` + cookies.txt）。
+
+### 目录结构
+
+```
+$GEMINI_AUTH_DIR/            # 默认 ~/.gemini2codex/auths，权限 700
+  pool-state.json            # primary / active / 每账号 last_used、cooldown_until
+  <label>/token.json         # 官方 jetski-standalone-oauth-token 的副本（通道 A）
+  <label>/cookies.txt        # 可选，通道 B 的 web cookie 副本
+```
+
+label 就是账号身份（OAuth token 文件里没有 email/uid），`ref = sha256(label)[:16]`；
+文件权限 600 / 目录 700，写入走临时文件 + `os.replace`。
+
+### 环境变量
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `GEMINI_AUTH_DIR` | `~/.gemini2codex/auths` | 账号池目录 |
+| `GEMINI_ACCOUNT_COOLDOWN` | `120` | 一个账号失败后冷却多少秒；冷却期默认跳过，全冷却时仍然全量参与（兜底） |
+| `GEMINI2CODEX_KEY` | 空 | 本地桥 key，空则只监听 127.0.0.1 不校验 |
+
+### HTTP 接口（与 workbuddy `/ui/accounts/*` 同契约）
+
+```bash
+# 列出账号池：{"status":"ok","account_pool":{...}}
+curl -s http://127.0.0.1:8794/__gemini/accounts
+
+# 把本机当前登录的 gemini 账号快照成一个新账号（换号后一条命令）
+curl -s -X POST -H 'Content-Type: application/json' \
+     -d '{"label":"second"}' http://127.0.0.1:8794/__gemini/accounts/import-current
+
+# 指定主账号（第一个导入的自动成为 primary）
+curl -s -X POST -H 'Content-Type: application/json' \
+     -d '{"ref":"<ref>"}' http://127.0.0.1:8794/__gemini/accounts/primary
+
+# 重扫目录（手动放文件后）
+curl -s -X POST -H 'Content-Type: application/json' -d '{}' \
+     http://127.0.0.1:8794/__gemini/accounts/refresh
+
+# 删除一个导入的账号；legacy 不是目录，删它会回 400
+curl -s -X POST -H 'Content-Type: application/json' \
+     -d '{"ref":"<ref>"}' http://127.0.0.1:8794/__gemini/accounts/remove
+```
+
+4xx 统一 `{"detail": "..."}`（未知账号 404、删 legacy / 非法 label 400）。
+
+### 选择顺序与故障转移
+
+1. 排序：`primary` → `active` → 其余按 LRU（`last_used`）→ label 字典序。
+2. 每个候选依次走通道 A（Code Assist）+ 通道 B（gemini web），两路都失败才算这个账号烧了，
+   进冷却并写 `failures` / `reason`。
+3. 请求线程里账号上下文是 thread-local 的：并发请求不会互相读到对方的 access token。
+4. 502 信封保持原契约：`error.message` 是字符串，`error.channels` 恒为
+   `{code_assist, web}`；新增 `error.account` 是**第一个**烧掉的账号（即 primary）。
+
+### 测试
+
+- `tools/test_gemini_account_pool.py`：池本身（legacy 兜底、primary 排序、冷却、删 legacy 拒绝）。
+- `tools/test_gemini_bridge_failover.py`：走真实 HTTP 的桥接层——502 信封契约、
+  故障转移到第二个账号、`/__gemini/accounts*` 路由行为。
+
+实测（2026-10-01）：`pytest tools/` 全量 449 通过、4 失败，gemini 相关 63 条全绿；那 4 条失败全在 `tools/checkin.py`（签到模块，另一处正在改），与本桥无关。
+另以 `GEMINI2CODEX_PORT=18794` + tmp `GEMINI_AUTH_DIR` 起真实进程冒烟，
+`/health`、`/v1/models`、`GET/POST /__gemini/accounts*` 均正常，用完即停。
+
+## 2026-10-01 晚更新：OAuth client 吊销 + VALI 账号门禁（两层根因）
+- 现象: 502 envelope 契约正常 (channels + account), 但 code_assist 与 web 双通道同时失败。
+- 根因一（已修, 待提交）: 桥内硬编码两组 Google OAuth client 被吊销,
+  `oauth2.googleapis.com/token` 返回 401 unauthorized_client, access token 无法自动续期。
+  `_load_oauth_pairs()` 改为 env 注入 (同 antigravity 惯例, 凭据不入 git, install.sh 提取共享),
+  本机 fleet.env 与 launchd plist 已同步注入 Antigravity 提取到的可用 pair。
+- 根因二（需用户操作）: 换有效 client 刷新后, generateContent 仍 403 VALI
+  「Verify your account to continue.」; 用 antigravity 桥 (:8797, 有效 client) 打同一 Google
+  端点同样 403, 证明是账号级门禁而非桥级。web 通道 302 跳 `google_abuse=GOOGLE_ABUSE_EXEMPTION`
+  同指账号验证。修复路径: 浏览器登录该 Google 账号完成验证, 或 `POST /__gemini/accounts/import-current`
+ 往池里加第二个账号。
+
+## 2026-10-02 更新：502 信封透传 VALI 验证链接（本轮修复）
+- 现象: 上述 VALI 403 被包进 502 信封后, `error.message` 在 300 字符处被截断,
+  Google 那串 `validation_url` 只剩 "r..."——看不到链接, 只知道"要验证账号"。
+- 修复: `google_validation_url(body)` 解析官方 403 JSON 的
+  `error.details[].metadata.validation_url`; 命中即抛 `AccountVerification`
+  (UpstreamError 子类, `str()` 带完整链接), `_clip()` 见此异常不截断。
+  502 信封现在是 `HTTP 403 VALIDATION_REQUIRED; account verification required,
+  open: https://accounts.google.com/signin/continue?...`, 可直接点开。
+- 注意: validation_url 每次调用都会轮转 (单次有效), 旧链接会过期;
+  重新打一次调用即可拿到新链接, 拿到后尽快完成浏览器验证。
+- verify_real_calls 新增 VERIFY_ACCOUNT 档位 (排在 PLAN_BLOCKED 之前,
+  因为 VALI body 也含 "permission denied"), status_ui 同步排序。
+- 测试: `tools/test_vali_403.py` (含真实 403 body 经本地服务器的 `http_json` 路径)。

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # FleetKit installer
 #
-# Deploys eleven local reverse-proxy bridges as background services
+# Deploys thirteen local reverse-proxy bridges as background services
 # (macOS launchd agents, Windows Task Scheduler tasks, or a detached
 # supervisor on Linux) and optionally registers them with opencodex so
 # Codex can call them.
@@ -33,15 +33,16 @@ WITH_CHECKIN=0
 WITH_UI=0
 WITH_OCX_GUARD=1
 WITH_REACH=1
+SYNC_ONLY=0
 
 usage() {
   cat <<'USAGE'
-FleetKit installer v1.1.0
+FleetKit installer v${KIT_VERSION}
 
 Usage: install.sh [options]
 
   --home DIR        install root (default: ~/FleetKit/runtime)
-  --port-base N     first bridge port; bridges use N..N+13 (default: 8787)
+  --port-base N     first bridge port; bridges use N..N+16 (default: 8787)
   --with-opencodex  register bridges with opencodex after install (default)
   --no-opencodex    skip opencodex wiring
   --with-checkin   install the daily check-in timer (09:00 CST)
@@ -49,6 +50,9 @@ Usage: install.sh [options]
   --no-ocx-guard   skip the ocx catalog guard timer (on when opencodex is wired)
   --no-start        write files and plists but do not launch bridges
   --skip-deps       do not create the virtualenv or install Python deps
+  --sync-only       copy code from the kit into the install root and stop
+                    (no venv, no plists, no restart); the fix for a drifted
+                    runtime/, and safe to run while the fleet is live
   --dry-run         print the plan, change nothing
   -h, --help        show this help
 
@@ -84,6 +88,7 @@ while [ "$#" -gt 0 ]; do
     --no-reach) WITH_REACH=0 ;;
     --no-start) DO_START=0 ;;
     --skip-deps) SKIP_DEPS=1 ;;
+    --sync-only) SYNC_ONLY=1 ;;
     --dry-run) DRY_RUN=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 1 ;;
@@ -121,11 +126,11 @@ run() {
 
 # name | label-suffix | bridge-dir | script | port-offset | key-env | extra-args | extra-env
 BRIDGES=(
-  "workbuddy|workbuddy2codex|workbuddy-cn|converter.py|0|CODEBUDDY2OPENAI_KEY|--host 127.0.0.1 --port @PORT@|"
+  "workbuddy|workbuddy2codex|workbuddy-cn|converter.py|0|CODEBUDDY2OPENAI_KEY|--host 127.0.0.1 --port @PORT@|WORKBUDDY_PROVIDER=cn;BRIDGES_DIR=@FLEET_HOME@/bridges"
   # no --auth-dir here on purpose: extra-args is word-split, so a path with
   # a space in FLEET_HOME becomes two argv entries and the bridge dies with
   # "unrecognized arguments". WORKBUDDY_AUTH_POOL_DIR names the same folder.
-  "workbuddy-gpt|workbuddy2codex-gpt|workbuddy-gpt|converter.py|1|CODEBUDDY2OPENAI_KEY|--host 127.0.0.1 --port @PORT@|WORKBUDDY_AUTH_POOL_DIR=@FLEET_HOME@/bridges/workbuddy-gpt/auths;WORKBUDDY_LOCAL_STORAGE=@HOME@/.workbuddy-ai/local_storage"
+  "workbuddy-gpt|workbuddy2codex-gpt|workbuddy-gpt|converter.py|1|CODEBUDDY2OPENAI_KEY|--host 127.0.0.1 --port @PORT@|WORKBUDDY_AUTH_POOL_DIR=@FLEET_HOME@/bridges/workbuddy-gpt/auths;WORKBUDDY_LOCAL_STORAGE=@HOME@/.workbuddy-ai/local_storage;WORKBUDDY_PROVIDER=gpt;BRIDGES_DIR=@FLEET_HOME@/bridges"
   "qoder|qoder2codex|qoder|qoder_bridge.py|2|QODER2CODEX_KEY|--host 127.0.0.1 --port @PORT@|QODER_CALL_TIMEOUT=300"
   "codely|codely2codex|codely|codely_bridge.py|3|CODELY2CODEX_KEY|--host 127.0.0.1 --port @PORT@|CODELY_CALL_TIMEOUT=300"
   "trae|trae2codex|trae|trae_bridge.py|4|TRAE2CODEX_KEY|--host 127.0.0.1 --port @PORT@|TRAE_CALL_TIMEOUT=300"
@@ -137,12 +142,14 @@ BRIDGES=(
   "qwen|qwen2codex|qwen|qwen_bridge.py|11|QWEN2CODEX_KEY|--host 127.0.0.1 --port @PORT@|QWEN_CALL_TIMEOUT=300"
   "cline|cline2codex|cline|cline_bridge.py|12|CLINE2CODEX_KEY|--host 127.0.0.1 --port @PORT@|CLINE_CALL_TIMEOUT=300"
   "zcode|zcode2codex|zcode|zcode_bridge.py|13|ZCODE2CODEX_KEY|--host 127.0.0.1 --port @PORT@|ZCODE_CALL_TIMEOUT=300"
+  "kimi|kimi2codex|kimi|kimi_bridge.py|15|KIMI2CODEX_KEY|--host 127.0.0.1 --port @PORT@|KIMI_CALL_TIMEOUT=300"
+  "minimax|minimax2codex|minimax|minimax_bridge.py|16|MINIMAX2CODEX_KEY|--host 127.0.0.1 --port @PORT@|MINIMAX_CALL_TIMEOUT=300"
 )
 
 echo "FleetKit installer v${KIT_VERSION}"
 info "kit        : ${KIT_DIR}"
 info "fleet home : ${FLEET_HOME}"
-info "ports      : ${PORT_BASE} .. $((PORT_BASE + 13))"
+info "ports      : ${PORT_BASE} .. $((PORT_BASE + 16))"
 info "launch dir : ${LAUNCH_DIR}"
 info "log dir    : ${LOG_DIR}"
 if [ "$DRY_RUN" = "1" ]; then info "mode       : DRY RUN (nothing is written)"; fi
@@ -159,6 +166,41 @@ fi
 # Copy SRCDIR/. into DESTDIR. Destination symlinks are operator overrides
 # (e.g. runtime/bridges/workbuddy-*/assets -> the npm module): keep them,
 # because cp -R refuses to merge a real directory into a symlink.
+#
+# Only code crosses over. The install root also holds state this script must
+# never touch: bridge auth pools (bridges/*/auths), zcode captcha pools,
+# finish_setup.sh helpers written during login, *.bak-* rescue copies,
+# fleet.env, logs, real_calls.json. copy_tree never deletes, and sync_skip
+# keeps the copy one-way for those paths even if a stray copy lands in the kit.
+SYNC_CHANGED=""
+SYNC_NEW=""
+# FLEET_SYNC_PREVIEW=1 reports the drift without writing, so an operator can
+# see what a sync would move before letting it touch a live install root.
+SYNC_PREVIEW="${FLEET_SYNC_PREVIEW:-0}"
+
+sync_skip() {
+  case "$1" in
+    __pycache__|__pycache__/*|*/__pycache__|*/__pycache__/*) return 0 ;;
+    *.pyc) return 0 ;;
+    .DS_Store|*/.DS_Store) return 0 ;;
+    .pytest_cache|.pytest_cache/*|*/.pytest_cache|*/.pytest_cache/*) return 0 ;;
+    .venv|.venv/*|*/.venv|*/.venv/*) return 0 ;;
+    *.bak|*.bak-*|*.bak/*) return 0 ;;
+    *.log) return 0 ;;
+    # zcode reads the newest human-minted ticket from captcha.txt, so the copy
+    # in the install root is live state: overwriting it with the kit's sample
+    # would throw away whatever the operator just minted.
+    captcha.txt|*/captcha.txt) return 0 ;;
+    auths|auths/*|*/auths|*/auths/*) return 0 ;;
+    */auths-archive-*|*/auths-archive-*/*) return 0 ;;
+    captcha_pool|captcha_pool/*|*/captcha_pool|*/captcha_pool/*) return 0 ;;
+    logs|logs/*|*/logs|*/logs/*) return 0 ;;
+    fleet.env|real_calls.json|free-windows.json|fleet-reach.json) return 0 ;;
+    */fleet.env|*/real_calls.json|*/free-windows.json|*/fleet-reach.json) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 copy_tree() {
   local src="$1" dst="$2" item rel target
   [ -d "$src" ] || return 0
@@ -166,18 +208,129 @@ copy_tree() {
   while IFS= read -r item; do
     rel="${item#"$src"/}"
     target="$dst/$rel"
+    sync_skip "$rel" && continue
     if [ -L "$target" ]; then
       info "keeping symlink $target -> $(readlink "$target")"
+    elif [ -L "$item" ]; then
+      # A kit-side symlink (shared helper, vendored asset) must stay a symlink.
+      ln -snf "$(readlink "$item")" "$target" 2>/dev/null \
+        && SYNC_CHANGED="${SYNC_CHANGED}${target}
+" \
+        || info "warn: cannot link $target"
     elif [ -d "$item" ] && [ ! -L "$item" ]; then
-      if [ ! -d "$target" ]; then
-        cp -R "$item" "$target" || info "warn: cannot copy $item"
-      fi
-    elif [ -d "$target" ]; then
-      cp -R "$item" "$target/" || info "warn: cannot copy $item"
+      # Create the directory only. A bulk cp -R here would drag __pycache__ and
+      # anything else sync_skip refuses straight into the install root; copying
+      # file by file is what makes that list the single gate.
+      [ -d "$target" ] || mkdir -p "$target"
+    elif [ -e "$target" ] && cmp -s "$item" "$target"; then
+      # Drift is the whole reason --sync-only exists, so name what moved and
+      # leave identical files alone: a 5 minute timer re-runs this often.
+      continue
     else
-      cp -R "$item" "$target" || info "warn: cannot copy $item"
+      if [ "$SYNC_PREVIEW" = "1" ]; then
+        [ -e "$target" ] || SYNC_NEW="${SYNC_NEW}${target}
+"
+        SYNC_CHANGED="${SYNC_CHANGED}${target}
+"
+        continue
+      fi
+      [ -e "$target" ] || SYNC_NEW="${SYNC_NEW}${target}
+"
+      cp "$item" "$target" || { info "warn: cannot copy $item"; continue; }
+      SYNC_CHANGED="${SYNC_CHANGED}${target}
+"
     fi
   done < <(find "$src" -mindepth 1 | sort)
+}
+
+# bridges/workbuddy/ is the single copy of the shared WorkBuddy modules and the
+# dashboard logo. An install root created before that refactor still has them
+# inside bridges/workbuddy-cn/ and bridges/workbuddy-gpt/, and copy_tree never
+# deletes: Python would then load whichever copy came first. Strip exactly this
+# allowlist, only in those two directories -- state (auths/, bridge-settings.json,
+# assets/, captcha.txt) and rescue copies are never touched.
+SHARED_WB_NAMES="account_pool.py dashboard.py desensitize.py wbb.py workbuddy_account_service.py workbuddy_checkin.py bridge-logo.png"
+SYNC_PRUNED=""
+
+prune_shared_workbuddy() {
+  local bridges="$1" dir name path
+  for dir in workbuddy-cn workbuddy-gpt; do
+    for name in $SHARED_WB_NAMES; do
+      path="$bridges/$dir/$name"
+      [ -e "$path" ] || continue
+      find "$path" -maxdepth 0 -delete 2>/dev/null \
+        || { info "warn: cannot prune $path"; continue; }
+      SYNC_PRUNED="${SYNC_PRUNED}${path}
+"
+    done
+  done
+  return 0
+}
+
+sync_report() {
+  local count=0 f
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    count=$((count + 1))
+  done <<EOF
+$SYNC_CHANGED
+EOF
+  info "sync: ${count} file(s) copied into ${FLEET_HOME}"
+  if [ "${FLEET_SYNC_VERBOSE:-0}" = "1" ]; then
+    printf '%s' "$SYNC_CHANGED" | while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      info "  $f"
+    done
+  fi
+  if [ -n "$SYNC_NEW" ]; then
+    info "sync: newly created:"
+    printf '%s' "$SYNC_NEW" | while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      info "  $f"
+    done
+  fi
+  if [ -n "$SYNC_PRUNED" ]; then
+    info "sync: pruned $(printf '%s' "$SYNC_PRUNED" | grep -c .) stale file(s) now shared via bridges/workbuddy/"
+    printf '%s' "$SYNC_PRUNED" | while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      info "  $f"
+    done
+  fi
+}
+
+# Same one-way copy for the loose top-level files, with the same "did it move"
+# bookkeeping and the same refusal to clobber an operator's rescue copy.
+copy_file() {
+  local src="$1" dst="$2"
+  [ -f "$src" ] || return 0
+  if [ -e "$dst" ] && cmp -s "$src" "$dst"; then
+    return 0
+  fi
+  [ -e "$dst" ] || SYNC_NEW="${SYNC_NEW}${dst}
+"
+  cp "$src" "$dst" || { info "warn: cannot copy $src"; return 0; }
+  SYNC_CHANGED="${SYNC_CHANGED}${dst}
+"
+}
+
+# cp keeps the destination's mode, so a script the kit marks executable can end
+# up non-executable in the install root and launchd dies with 126. Mirror the
+# kit's own bits instead of blanket chmod +x: several tools are intentionally
+# not executable.
+sync_modes() {
+  local f rel target
+  for f in "${KIT_DIR}/tools"/* "${KIT_DIR}/bridges"/*/*; do
+    [ -f "$f" ] || continue
+    rel="${f#"${KIT_DIR}"/}"
+    target="${FLEET_HOME}/$rel"
+    [ -f "$target" ] || continue
+    if [ -x "$f" ]; then
+      [ -x "$target" ] || chmod +x "$target" 2>/dev/null || true
+    else
+      [ -x "$target" ] && chmod -x "$target" 2>/dev/null || true
+    fi
+  done
+  return 0
 }
 
 # ---------- 1. layout ----------
@@ -190,16 +343,37 @@ run mkdir -p "$LOG_DIR"
 run mkdir -p "$LAUNCH_DIR"
 
 if [ "$DRY_RUN" = "1" ]; then
-  info "would copy bridges/ tools/ docs/ opencodex/ README.md requirements.txt uninstall.sh"
+  info "would copy bridges/ tools/ docs/ opencodex/ README.md requirements.txt install.sh uninstall.sh"
 else
   copy_tree "${KIT_DIR}/bridges" "${FLEET_HOME}/bridges"
   copy_tree "${KIT_DIR}/tools" "${FLEET_HOME}/tools"
   copy_tree "${KIT_DIR}/docs" "${FLEET_HOME}/docs"
   copy_tree "${KIT_DIR}/opencodex" "${FLEET_HOME}/opencodex"
-  cp "${KIT_DIR}/README.md" "${FLEET_HOME}/README.md"
-  cp "${KIT_DIR}/requirements.txt" "${FLEET_HOME}/requirements.txt"
-  cp "${KIT_DIR}/uninstall.sh" "${FLEET_HOME}/uninstall.sh"
-  chmod +x "${FLEET_HOME}/uninstall.sh"
+  # copy_tree never deletes, so moving the shared WorkBuddy modules into
+  # bridges/workbuddy/ would otherwise leave stale duplicates behind and
+  # Python would load whichever copy came first. Remove exactly that
+  # allowlist (never a wildcard) so only the shared copy survives.
+  prune_shared_workbuddy "${FLEET_HOME}/bridges"
+  copy_file "${KIT_DIR}/README.md" "${FLEET_HOME}/README.md"
+  copy_file "${KIT_DIR}/requirements.txt" "${FLEET_HOME}/requirements.txt"
+  copy_file "${KIT_DIR}/uninstall.sh" "${FLEET_HOME}/uninstall.sh"
+  # install.sh sits at the kit root, outside the four synced trees, so
+  # nothing ever refreshed this copy. tools/test_install_dry_run.py reads
+  # the one beside it, so the install root's suite went red on a stale
+  # snapshot while the kit's own copy was already fixed.
+  copy_file "${KIT_DIR}/install.sh" "${FLEET_HOME}/install.sh"
+  if [ -f "${FLEET_HOME}/uninstall.sh" ]; then
+    chmod +x "${FLEET_HOME}/uninstall.sh"
+  fi
+  sync_modes
+fi
+
+if [ "$SYNC_ONLY" = "1" ]; then
+  sync_report
+  info "sync-only: skipped virtualenv, services and opencodex wiring"
+  echo "  hint: restart the moved services, e.g."
+  echo "    launchctl kickstart -k gui/$(id -u)/${LABEL_PREFIX}.fleet-ui"
+  exit 0
 fi
 
 # ---------- 2. python environment ----------
@@ -305,6 +479,19 @@ pick_key() {
   echo "$value"
 }
 
+# pick_key mints a placeholder when the operator never set one, which is right
+# for a local bridge key (any string works) but wrong for an upstream API key:
+# a fabricated Qwen credential would 401 on every chat call. Keep it empty.
+pick_optional() {
+  local want="$1" value=""
+  if [ -n "$EXISTING" ]; then
+    value="$(echo "$EXISTING" | grep -m1 "^${want}=" | cut -d= -f2- | tr -d '"' || true)"
+  fi
+  echo "$value"
+}
+
+QWEN_API_KEY="$(pick_optional QWEN_API_KEY)"
+
 CODEBUDDY2OPENAI_KEY="$(pick_key CODEBUDDY2OPENAI_KEY)"
 QODER2CODEX_KEY="$(pick_key QODER2CODEX_KEY)"
 CODELY2CODEX_KEY="$(pick_key CODELY2CODEX_KEY)"
@@ -317,24 +504,26 @@ ANTIGRAVITY2CODEX_KEY="$(pick_key ANTIGRAVITY2CODEX_KEY)"
 QWEN2CODEX_KEY="$(pick_key QWEN2CODEX_KEY)"
 CLINE2CODEX_KEY="$(pick_key CLINE2CODEX_KEY)"
 ZCODE2CODEX_KEY="$(pick_key ZCODE2CODEX_KEY)"
+KIMI2CODEX_KEY="$(pick_key KIMI2CODEX_KEY)"
+MINIMAX2CODEX_KEY="$(pick_key MINIMAX2CODEX_KEY)"
 
 # Antigravity google oauth client pair is never committed to git (push protection
 # rejects it) and every install ships it in its own binary, so read it from there.
-pick_agy_oauth() {
-  local want="$1" value=""
-  if [ -n "$EXISTING" ]; then
-    value="$(echo "$EXISTING" | grep -m1 "^${want}=" | cut -d= -f2- | tr -d '"' || true)"
-  fi
-  echo "$value"
-}
-
-ANTIGRAVITY_OAUTH_CLIENT_ID="$(pick_agy_oauth ANTIGRAVITY_OAUTH_CLIENT_ID)"
-ANTIGRAVITY_OAUTH_CLIENT_SECRET="$(pick_agy_oauth ANTIGRAVITY_OAUTH_CLIENT_SECRET)"
-ANTIGRAVITY_LEGACY_CLIENTS="$(pick_agy_oauth ANTIGRAVITY_LEGACY_CLIENTS)"
+# Same "operator-owned, never minted" rule for the Antigravity google oauth
+# client pair: it is deliberately not committed to git (push protection rejects
+# it), so the only source is the previous fleet.env.
+ANTIGRAVITY_OAUTH_CLIENT_ID="$(pick_optional ANTIGRAVITY_OAUTH_CLIENT_ID)"
+ANTIGRAVITY_OAUTH_CLIENT_SECRET="$(pick_optional ANTIGRAVITY_OAUTH_CLIENT_SECRET)"
+ANTIGRAVITY_LEGACY_CLIENTS="$(pick_optional ANTIGRAVITY_LEGACY_CLIENTS)"
 
 if [ -z "$ANTIGRAVITY_OAUTH_CLIENT_ID" ] || [ -z "$ANTIGRAVITY_OAUTH_CLIENT_SECRET" ]; then
   AGY_BIN="${AGY_BIN:-/Applications/Antigravity.app/Contents/Resources/bin/language_server}"
-  AGY_LINES="$(python3 "${KIT_DIR}/bridges/antigravity/extract_client.py" --verify "$AGY_BIN" 2>/dev/null || true)"
+  # --verify refreshes the jetski token against oauth2.googleapis.com, once per
+  # candidate pair with a 25s timeout each. A dry run is a plan, not a probe:
+  # behind a blocking network it turns a 1s local scan into minutes of hang.
+  AGY_VERIFY="--verify"
+  if [ "$DRY_RUN" = "1" ]; then AGY_VERIFY=""; fi
+  AGY_LINES="$(python3 "${KIT_DIR}/bridges/antigravity/extract_client.py" $AGY_VERIFY "$AGY_BIN" 2>/dev/null || true)"
   if [ -z "$AGY_LINES" ]; then
     AGY_LINES="$(python3 "${KIT_DIR}/bridges/antigravity/extract_client.py" "$AGY_BIN" 2>/dev/null || true)"
   fi
@@ -350,12 +539,25 @@ if [ -z "$ANTIGRAVITY_OAUTH_CLIENT_ID" ] || [ -z "$ANTIGRAVITY_OAUTH_CLIENT_SECR
   fi
 fi
 
+# gemini2codex refreshes against the same oauth2.googleapis.com endpoint and
+# accepts any Google consumer pair Antigravity ships, so it reuses the pair
+# above instead of baking a second copy (and a second revocation risk) in git.
+GEMINI_OAUTH_CLIENT_ID="$(pick_optional GEMINI_OAUTH_CLIENT_ID)"
+GEMINI_OAUTH_CLIENT_SECRET="$(pick_optional GEMINI_OAUTH_CLIENT_SECRET)"
+if [ -z "$GEMINI_OAUTH_CLIENT_ID" ] && [ -n "$ANTIGRAVITY_OAUTH_CLIENT_ID" ]; then
+  GEMINI_OAUTH_CLIENT_ID="$ANTIGRAVITY_OAUTH_CLIENT_ID"
+  GEMINI_OAUTH_CLIENT_SECRET="$ANTIGRAVITY_OAUTH_CLIENT_SECRET"
+fi
 emit_fleet_env() {
   local preserved=""
   if [ -n "$EXISTING" ]; then
     # Operator-owned keys are not managed by install.sh: carry the exact
     # previous lines across so a re-install never drops them.
-    preserved="$(echo "$EXISTING" | grep -E '^(HOMEBREW_PYTHON|TOKENDANCE_API_KEY|STEPFUN_PLAN_API_KEY)=' || true)"
+    # Operator-owned settings, not managed by install.sh: carry the exact
+    # previous lines across so a re-install never drops them.
+    # FLEET_DEFAULT_MODEL matters as much as a key -- losing it silently reverts
+    # the Codex picker default to the hardcoded fallback.
+    preserved="$(echo "$EXISTING" | grep -E '^(HOMEBREW_PYTHON|TOKENDANCE_API_KEY|STEPFUN_PLAN_API_KEY|FLEET_DEFAULT_MODEL)=' || true)"
   fi
   cat <<ENV
 # FleetKit environment -- generated by install.sh v${KIT_VERSION}
@@ -378,12 +580,24 @@ GEMINI2CODEX_KEY="${GEMINI2CODEX_KEY}"
 CATPAW2CODEX_KEY="${CATPAW2CODEX_KEY}"
 ANTIGRAVITY2CODEX_KEY="${ANTIGRAVITY2CODEX_KEY}"
 QWEN2CODEX_KEY="${QWEN2CODEX_KEY}"
+# Optional: real Qwen Cloud key. Empty means the bridge has no upstream key at
+# all: /v1/models serves the static fallback catalog and every chat call fails
+# locally with qwen_key_missing until a real key is set here.
+QWEN_API_KEY="${QWEN_API_KEY}"
 CLINE2CODEX_KEY="${CLINE2CODEX_KEY}"
 ZCODE2CODEX_KEY="${ZCODE2CODEX_KEY}"
+KIMI2CODEX_KEY="${KIMI2CODEX_KEY}"
+MINIMAX2CODEX_KEY="${MINIMAX2CODEX_KEY}"
 ANTIGRAVITY_OAUTH_CLIENT_ID="${ANTIGRAVITY_OAUTH_CLIENT_ID}"
 ANTIGRAVITY_OAUTH_CLIENT_SECRET="${ANTIGRAVITY_OAUTH_CLIENT_SECRET}"
 # Optional extra id:secret pairs tried after the primary (Antigravity rotates these).
 ANTIGRAVITY_LEGACY_CLIENTS="${ANTIGRAVITY_LEGACY_CLIENTS}"
+
+# gemini2codex shares the Antigravity Google OAuth pair: the bridge reads
+# GEMINI_OAUTH_CLIENT_ID/SECRET first (bridges/gemini/gemini_bridge.py) and a
+# revoked pair fails refresh with 401, which is what took this bridge down.
+GEMINI_OAUTH_CLIENT_ID="${GEMINI_OAUTH_CLIENT_ID}"
+GEMINI_OAUTH_CLIENT_SECRET="${GEMINI_OAUTH_CLIENT_SECRET}"
 
 # Optional: TokenDance gateway models (https://tokendance.space).
 # Operator keys preserved from the previous fleet.env are appended below.
@@ -443,6 +657,12 @@ for row in "${BRIDGES[@]}"; do
       extraenv="${extraenv};ANTIGRAVITY_LEGACY_CLIENTS=${ANTIGRAVITY_LEGACY_CLIENTS}"
     fi
   fi
+  if [ "$name" = "gemini" ] && [ -n "$GEMINI_OAUTH_CLIENT_ID" ]; then
+    extraenv="${extraenv};GEMINI_OAUTH_CLIENT_ID=${GEMINI_OAUTH_CLIENT_ID};GEMINI_OAUTH_CLIENT_SECRET=${GEMINI_OAUTH_CLIENT_SECRET}"
+  fi
+  if [ "$name" = "qwen" ] && [ -n "$QWEN_API_KEY" ]; then
+    extraenv="${extraenv};QWEN_API_KEY=${QWEN_API_KEY}"
+  fi
   label="${LABEL_PREFIX}.${labelsuffix}"
   scriptpath="${FLEET_HOME}/bridges/${bridgedir}/${script}"
   workdir="${FLEET_HOME}/bridges/${bridgedir}"
@@ -491,6 +711,25 @@ if [ "$WITH_UI" = "1" ]; then
   else
     bash "${FLEET_HOME}/tools/status_ui.sh" --home "${FLEET_HOME}" install-timer
   fi
+fi
+
+# ---------- 4d. stepfun image-cap shim ----------
+# StepFun's Plan API refuses a 71st image with 400 images_too_many, and Codex
+# re-sends its whole history every turn (tools/image_cap.py holds the
+# measurement).
+# The shim de-duplicates and caps photos *below* CC Switch on 15722 and forwards
+# everything else byte for byte, so it stays harmless on a fleet that has no
+# stepfun provider registered. Below CC Switch, not in front of it: measured
+# 2026-09-30, the in-front arrangement lost to CC Switch owning
+# ~/.codex/config.toml, which rewrote the pinned base_url back to its own port
+# while Codex was already running. setup-providers.sh re-points CC Switch's
+# routing table at this port; CC Switch has to be restarted to pick that up.
+echo "[shim] installing stepfun image-cap shim (127.0.0.1:15722 -> https://api.stepfun.com/step_plan/v1)"
+if [ "$DRY_RUN" = "1" ]; then
+  info "[dry-run] tools/stepfun_image_shim.sh install-timer"
+else
+  bash "${FLEET_HOME}/tools/stepfun_image_shim.sh" --home "${FLEET_HOME}" install-timer || \
+    echo "  [warn] stepfun image-cap shim install failed; run it later: bash ${FLEET_HOME}/tools/stepfun_image_shim.sh install-timer" >&2
 fi
 
 # ---------- 5. opencodex ----------

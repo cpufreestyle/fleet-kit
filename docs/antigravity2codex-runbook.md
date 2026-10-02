@@ -126,3 +126,42 @@ antigravity    8797  claude-opus-4-8@default   None   FAIL | 90.0s | models=12 |
   会把其余 live 模型从 Codex catalog 里删掉。tokendance 就因此从 95 条掉到 1 条，
   已在 `opencodex/setup-providers.sh` 改成 `--clear`（= all models）。stepfun 是 plan API、
   本来就只放 5 个，属预期。
+
+## 2026-09-29 更新：单次 chat 总时限（`ANTIGRAVITY_CHAT_BUDGET`）
+
+- 现象：`call_upstream()` 带 `timeout=180` 遍历 `model_variants` × `IDE_TYPES`，
+  加上 `get_access()` 里每个 OAuth client 各 30s 的 refresh，
+  挂起时几分钟没有响应，最后只剩 `BrokenPipeError`。
+- 修复：`call_model(model, msgs, stream, budget=None)` 内部维护一个
+  deadline = `CHAT_BUDGET`（默认 60s，env `ANTIGRAVITY_CHAT_BUDGET`）；
+  每次尝试只拿到 `max(FALLBACK_FLOOR, 剩余)`，variant 循环与
+  IDE 循环都在 `spent()` 时提前退出。`FALLBACK_FLOOR` 默认 1s
+  （env `ANTIGRAVITY_FALLBACK_FLOOR`）。`_send()` 容断开的客户端。
+- 兜底链没被削掉：预算充足时仍然 2 个 model variant + 1 个 IDE type 全试一遍。
+- 测试：`tools/test_chat_budget.py`。
+
+### 2026-09-29 追查：连接层才是真因
+
+`call_model` 的 deadline 只框住了每次 `call_upstream` 的**HTTP 参数**，
+但 `urlopen()` 给 getaddrinfo 返回的每个地址都发一份完整 timeout：
+`cloudcode-pa.googleapis.com` 解析出 16 个地址（前 8 个 IPv6），
+本机 VPN 黑洞 IPv6，于是单次调用就可能 16 × timeout。
+体检里 60.0s 那个 502 只是运气好（1 个 OAuth client）。
+
+修法与 gemini 一致：模块级替换 `socket.create_connection`，自己走地址列表，
+每次尝试按 thread-local deadline 的剩余时间封顶；`call_model` 用
+`try/finally` 保证 deadline 一定 disarm（漏 disarm 会悄悄拖慢之后每次连接）。
+`_send()` 同批修掉：BrokenPipeError 实际来自 `end_headers()`，不只 body 写入。
+
+## 2026-10-02 更新：VALI 账号门禁的 502 信封透传验证链接
+- 现象: 与 gemini (8794) 共用同一 Google 账号: OAuth refresh 正常, 但
+  generateContent 一律 403 VALI 「Verify your account to continue.」;
+  桥按老逻辑把异常包进 502 并截断到 300 字符, 官方
+  `validation_url` 验证链接只剩 "r...", 操作者无从下手。
+- 修复（与 gemini 同批）: `google_validation_url(body)` 解析 403 JSON 的
+  `error.details[].metadata.validation_url`; 命中即抛 `AccountVerification`
+  (UpstreamError 子类, `str()` 带完整链接), `_clip()` 见此异常不截断。
+- 同一链接两桥通用: 两桥共用同一账号, 浏览器完成验证一次, 8794 与 8797
+  一起恢复（本轮实测两桥透传的链接均可直接打开）。
+- 注意: validation_url 单次有效且每调用轮转; 重新调用拿新链, 尽快完成验证。
+- 测试: `tools/test_vali_403.py`（gemini 与 antigravity 两桥同参数化覆盖）。

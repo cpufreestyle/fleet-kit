@@ -134,8 +134,15 @@ fleet_port_in_use() {
     fleet_port_in_use_py "$port"
     return $?
   fi
+  # Two votes, one verdict: lsof has to be able to list the socket at all,
+  # and on a hardened runner (no procfs, seatbelt, a sandboxed user) it can
+  # stay silent about a port that answers connections just fine. Treating
+  # that silence as "free" is how the fleet used to look dead while every
+  # bridge was up, so the socket probe gets to overrule it.
   if command -v lsof >/dev/null 2>&1; then
     lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 && return 0
+    fleet_port_in_use_py "$port"
+    return $?
   fi
   fleet_port_in_use_py "$port"
 }
