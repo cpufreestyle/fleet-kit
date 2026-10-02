@@ -398,7 +398,6 @@ def bridge_key(name, env):
         return key
 
 
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--env", default=os.environ.get(

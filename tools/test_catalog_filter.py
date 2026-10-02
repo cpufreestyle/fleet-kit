@@ -17,6 +17,7 @@ the probe exists to detect could never be observed.
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,9 +34,15 @@ spec.loader.exec_module(catalog_filter)
 
 WRAPPER = os.path.join(HERE, "catalog-filter.sh")
 
+# A bare "bash" resolves to the WSL launcher on Windows (System32 wins
+# over PATH); which() asks PATH, like the rest of the suite.
+BASH = shutil.which("bash") or "/bin/bash"
+
 
 def _write(path, data, indent=1, tail="", ensure_ascii=False):
-    with open(path, "w", encoding="utf-8") as fh:
+    # newline="": a "\r\n" tail must land as exactly those bytes -- Windows
+    # text mode would double the CR and the layout probe would not find it.
+    with open(path, "w", encoding="utf-8", newline="") as fh:
         fh.write(json.dumps(data, indent=indent, ensure_ascii=ensure_ascii)
                  + tail)
     return path
@@ -474,8 +481,10 @@ def test_native_probe_treats_no_answer_as_usable():
     ok, detail = catalog_filter.probe_native_pool(
         "http://127.0.0.1:1", 2, ["gpt-5.5"])
     assert ok is True
-    # Nothing on port 1 answers, so the run falls back to "usable".
-    assert "refused" in detail
+    # Nothing on port 1 answers, so the run falls back to "usable". POSIX
+    # refuses the connect instantly; Windows often lets it time out instead,
+    # so accept either evidence in the detail.
+    assert "refused" in detail or "timed out" in detail
 
 
 def test_native_probe_without_a_base_is_usable():
@@ -508,7 +517,7 @@ def _run_wrapper(logdir, tmpdir, stub_code=None):
         _write_stub(stub, stub_code)
         env["CATALOG_FILTER_PY"] = stub
         argv = [WRAPPER, "run"]
-    proc = subprocess.run(["/bin/bash"] + argv, env=env,
+    proc = subprocess.run([BASH] + argv, env=env,
                           capture_output=True, text=True, timeout=120)
     log = os.path.join(logdir, "filter.log")
     text = open(log, encoding="utf-8").read() if os.path.exists(log) else ""
@@ -530,7 +539,7 @@ def test_wrapper_logs_a_failing_filter_as_a_failure(capsys):
         env["TMPDIR"] = tmpdir
         env["CATALOG_FILTER_PY"] = os.path.join(tmpdir, "stub_filter.py")
         env["CODEX_HOME"] = os.path.join(tmpdir, "no-codex-home")
-        subprocess.run(["/bin/bash", WRAPPER, "run"], env=env,
+        subprocess.run([BASH, WRAPPER, "run"], env=env,
                        capture_output=True, text=True, timeout=120)
         with open(os.path.join(logdir, "filter.log"), encoding="utf-8") as fh:
             text = fh.read()
@@ -564,7 +573,7 @@ def test_wrapper_logs_counts_on_success():
         env["TMPDIR"] = tmpdir
         env["CATALOG_FILTER_PY"] = os.path.join(tmpdir, "stub_filter.py")
         env["CODEX_HOME"] = os.path.join(tmpdir, "no-codex-home")
-        subprocess.run(["/bin/bash", WRAPPER, "run"], env=env,
+        subprocess.run([BASH, WRAPPER, "run"], env=env,
                        capture_output=True, text=True, timeout=120)
         with open(os.path.join(logdir, "filter.log"), encoding="utf-8") as fh:
             text = fh.read()
@@ -594,7 +603,7 @@ def test_wrapper_reports_a_broken_filter_report():
         env["TMPDIR"] = tmpdir
         env["CATALOG_FILTER_PY"] = os.path.join(tmpdir, "stub_filter.py")
         env["CODEX_HOME"] = os.path.join(tmpdir, "no-codex-home")
-        subprocess.run(["/bin/bash", WRAPPER, "run"], env=env,
+        subprocess.run([BASH, WRAPPER, "run"], env=env,
                        capture_output=True, text=True, timeout=120)
         with open(os.path.join(logdir, "filter.log"), encoding="utf-8") as fh:
             text = fh.read()

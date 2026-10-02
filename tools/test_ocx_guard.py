@@ -20,6 +20,17 @@ import os
 import subprocess
 import tempfile
 
+import pytest
+
+# The guard is a POSIX-host tool end to end: it installs as a launchd timer,
+# calls python3, and this harness spawns /bin/bash with a POSIX PATH. Porting
+# the harness to Git Bash would also need MSYS path conversion for the stub
+# PATH entry (a drive-letter colon splits the POSIX PATH) and a real python3,
+# which native Windows does not have.
+pytestmark = pytest.mark.skipif(os.name == "nt",
+                                reason="POSIX-host guard: launchd timer, "
+                                       "python3 and /bin/bash are assumed")
+
 GUARD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                      "tools", "ocx-catalog-guard.sh")
 

@@ -46,6 +46,11 @@ SETUP = os.path.join(KIT, "opencodex", "setup-providers.sh")
 INSTALL = os.path.join(KIT, "install.sh")
 UNINSTALL = os.path.join(KIT, "uninstall.sh")
 SHIM_SH = os.path.join(KIT, "tools", "stepfun_image_shim.sh")
+
+# Windows resolves a bare "bash" to System32ash.exe -- the WSL launcher,
+# which CreateProcess checks before PATH -- so ask PATH for the real bash and
+# decode defensively so stray host chatter cannot kill a stream reader.
+BASH = shutil.which("bash") or "bash"
 PLATFORM_SH = os.path.join(KIT, "tools", "platform.sh")
 WD_SUFFIX = "stepfun-image-cap-watchdog"
 
@@ -141,8 +146,8 @@ def _run_script(script, args, home, services):
         fh.write("#!/bin/sh\nexit 0\n")
     os.chmod(ocx, 0o755)
     env["PATH"] = "%s:%s" % (stub, os.environ.get("PATH", ""))
-    return subprocess.run(["bash", script] + args, capture_output=True,
-                          text=True, timeout=300, env=env)
+    return subprocess.run([BASH, script] + args, capture_output=True,
+                          text=True, errors="replace", timeout=300, env=env)
 
 
 class DryRunMutatesNothing(unittest.TestCase):
@@ -236,8 +241,8 @@ def _watchdog_env(home, services, logs, port, extra=None):
 
 
 def _run_shim(args, home, env, timeout=120):
-    return subprocess.run(["bash", SHIM_SH] + args + ["--home", home],
-                          capture_output=True, text=True, timeout=timeout,
+    return subprocess.run([BASH, SHIM_SH] + args + ["--home", home],
+                          capture_output=True, text=True, errors="replace", timeout=timeout,
                           env=env)
 
 
@@ -410,7 +415,9 @@ class WatchdogStrikes(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home, _services, logs, port, env = self._setup(
                 tmp, extra={"IMAGE_CAP_WATCHDOG_STRIKES": "2"})
-            with open(_strikes_path(logs), "w", encoding="utf-8") as fh:
+            # newline="\n": the shim parses this file with sh `read`, and Windows
+            # text mode would otherwise feed it a trailing \r that reads as 0.
+            with open(_strikes_path(logs), "w", encoding="utf-8", newline="\n") as fh:
                 fh.write("%d 1\n" % (int(time.time()) - 3600))
             proc = _run_shim(["watchdog"], home, env)
             self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
@@ -430,7 +437,9 @@ class WatchdogStrikes(unittest.TestCase):
             stub_path = os.path.join(tmp, "stub.py")
             with open(stub_path, "w", encoding="utf-8") as fh:
                 fh.write(_STUB_SERVER)
-            with open(_strikes_path(logs), "w", encoding="utf-8") as fh:
+            # newline="\n": the shim parses this file with sh `read`, and Windows
+            # text mode would otherwise feed it a trailing \r that reads as 0.
+            with open(_strikes_path(logs), "w", encoding="utf-8", newline="\n") as fh:
                 fh.write("0 2\n")
             devnull = open(os.devnull, "w")
             server = subprocess.Popen(
@@ -460,7 +469,9 @@ class WatchdogStrikes(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home, _services, logs, port, env = self._setup(
                 tmp, extra={"IMAGE_CAP_WATCHDOG_STRIKES": "2"})
-            with open(_strikes_path(logs), "w", encoding="utf-8") as fh:
+            # newline="\n": the shim parses this file with sh `read`, and Windows
+            # text mode would otherwise feed it a trailing \r that reads as 0.
+            with open(_strikes_path(logs), "w", encoding="utf-8", newline="\n") as fh:
                 fh.write("%d 1\n" % int(time.time()))
             self.addCleanup(_stop_shim, home, env, port)
 
