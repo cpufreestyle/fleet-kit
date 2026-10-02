@@ -153,10 +153,35 @@ macOS 即 `~/Library/Application Support/Claude-3p`，Linux 即 `~/.config/Claud
                              || id 含 claude/opus/sonnet/haiku/fable/mythos/anthropic)
            || 该行带 anthropic_family_tier
 
-也就是说：id 长得不像 Anthropic 的行会被整行丢掉。`stepfun/step-5-preview`、
-`workbuddy/glm-5.2` 全部命中 `jye`，所以 121 行只剩 4 个 claude-*。
-解法是网关给每一行打 `anthropic_family_tier` + 首行 `is_family_default`
+也就是说：id 长得不像 Anthropic 的行会在**发现阶段**被整行丢掉。
 （`anthropic_gateway.py` 的 `models_payload()`）：
+
+**但那只解决了一半。** 2026-10-03 修正：app 1.46388.4 的日志写得很清楚——
+
+    [custom-3p] Model discovery: 134 found in 3149ms; picker = 5 (discovery)
+
+发现阶段拿到 134 行，picker 只剩 5 行。因为 `resolvedModels()` 之后还有**第二道
+同样的 id 形状过滤**，而它不看 tier 标签：
+
+    h_e(id) = Va(id) ? {ok:!0} : {ok:!1, reason:"...expected a gateway model
+              route referencing an Anthropic model (e.g. claude-sonnet-4-5,
+              anthropic/claude-*)"}
+
+`Va` 就是上面那个黑名单+白名单判断。于是任何带厂商名的 id（glm、kimi、stepfun、
+qwen、deepseek、minimax…）在 picker 里照样被丢掉，tier 标签只买通了发现那一关。
+
+**解法**：网关把 `CLAUDE_ALIASES` 也作为模型行列出来。这些 id 天生就是
+Anthropic 形状（`claude-opus-5`、`haiku`…），`resolve()` 本来就认它们，而且
+它们排在目录行前面，所以每个 tier 的 `is_family_default` 由别名拿下，裸 tier 名
+解析到的是机队的路由而不是 antigravity 那一行。
+
+效果（实测）：picker 从 5 行变成 17 行；真实调用 `haiku` 返回 200，
+body 里 `"model":"workbuddy/glm-5.2"`。
+
+还剩的红利：app 对 gateway provider 的硬性要求就是 id 必须引用 Anthropic 模型，
+所以 146 行里的另外 129 行（纯厂商名 id）在桌面 picker 里仍然看不到。要让它们
+也出现，得给每条约路由都起一个 Anthropic 形状的名字——那是另一次改动，
+需要先点头。
 
     curl -s 'http://127.0.0.1:8801/v1/models?limit=1000' | python3 -c \
       "import sys,json;d=json.load(sys.stdin);r=d['data'][0];print(r)"

@@ -458,10 +458,60 @@ def test_every_listed_model_has_a_route_and_is_ordered():
         assert gw.route_for(slug) is not None, slug + " is listed but has no route"
 
 
-def test_the_listing_never_offers_a_claude_alias_row():
-    ids = {m["id"] for m in gw.models_payload()["data"]}
+def test_the_listing_offers_the_claude_alias_rows():
+    """They are the only ids the desktop picker keeps.
+
+    This test used to assert the opposite. Measured 2026-10-03 against app.asar
+    1.46388.4: the gateway listed 134 rows, discovery logged "134 found", and
+    the picker showed 5. The app filters the picker on the model id looking
+    like an Anthropic model -- a vendor-name blacklist that drops glm, kimi,
+    stepfun, qwen, deepseek, minimax and the rest -- and the family tier only
+    buys a row through discovery, not through that filter. CLAUDE_ALIASES are
+    Anthropic-shaped by construction and resolve() already honours them, so
+    listing them is whatmakes the desktop picker show the fleet.
+    """
+    payload = gw.models_payload()
+    ids = [m["id"] for m in payload["data"]]
     for alias in gw.CLAUDE_ALIASES:
-        assert alias not in ids
+        assert alias in ids, alias + " is a route the app will keep"
+    # every alias row must be usable, not decoration
+    for alias in gw.CLAUDE_ALIASES:
+        slug, _note = gw.resolve(alias)
+        assert slug, alias + " resolves to nothing"
+
+
+def test_alias_rows_come_first_and_own_their_tier_default():
+    """Where an alias exists for a tier, it must win that tier's default.
+
+    Otherwise a bare tier name the app resolves still lands on an antigravity
+    row instead of the fleet's route. mythos has no alias in the table, so its
+    default stays a catalog row -- that is the one tier this does not cover.
+    """
+    payload = gw.models_payload()
+    data = payload["data"]
+    alias_tiers = {gw.alias_tier(a) for a in gw.CLAUDE_ALIASES}
+    by_tier = {}
+    for entry in data:
+        by_tier.setdefault(entry["anthropic_family_tier"], []).append(entry)
+    for tier, entries in by_tier.items():
+        winners = [e for e in entries if e.get("is_family_default")]
+        assert len(winners) == 1, "%s has %d defaults" % (tier, len(winners))
+        if tier in alias_tiers:
+            assert winners[0]["id"] in gw.CLAUDE_ALIASES, (
+                "%s default is %s, not an alias" % (tier, winners[0]["id"]))
+    # and the alias rows really do come first
+    first_alias = next(i for i, e in enumerate(data)
+                       if e["id"] in gw.CLAUDE_ALIASES)
+    first_catalog = next(i for i, e in enumerate(data)
+                         if e["id"] not in gw.CLAUDE_ALIASES)
+    assert first_alias < first_catalog
+
+
+def test_an_alias_row_names_the_model_it_routes_to():
+    """A picker row that hides its target is a row nobody can audit."""
+    data = {m["id"]: m for m in gw.models_payload()["data"]}
+    for alias, target in gw.CLAUDE_ALIASES.items():
+        assert target in data[alias]["display_name"]
 
 
 def _fake_pool(monkeypatch):
@@ -605,7 +655,12 @@ def test_get_models_and_health(gateway):
     url, _opener = gateway
     status, payload = _get(url, "/v1/models")
     assert status == 200
-    assert payload["data"][0]["id"] == gw.catalog_rows()[0]["slug"]
+    # alias rows lead, because the desktop picker keeps only Anthropic-shaped
+    # ids; the catalog still follows behind them in its own order
+    assert payload["data"][0]["id"] in gw.CLAUDE_ALIASES
+    listed = [m["id"] for m in payload["data"]]
+    for row in gw.catalog_rows():
+        assert row["slug"] in listed
     status, health = _get(url, "/health")
     assert status == 200
     assert health["models_listed"] >= 1

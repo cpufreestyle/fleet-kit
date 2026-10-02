@@ -776,6 +776,58 @@ def status_error_type(code):
     return "api_error"
 
 
+def alias_tier(alias):
+    """The Claude family tier an alias names, or None when it names none.
+
+    A bare tier name is its own tier: the app's id check accepts exactly
+    ^(sonnet|opus|haiku|fable|mythos)(-[\\d.]+)?$, so "opus" is as valid a
+    route there as "claude-opus-5" is.
+
+    claude-opus-5 -> opus, claude-haiku-4-5 -> haiku, and the older
+    claude-3-5-sonnet-latest -> sonnet, where the version digits sit between
+    the family and the tier and a plain split on "-" reads "5" instead.
+    """
+    if alias in FAMILY_TIERS:
+        return alias
+    head, _sep, rest = alias.partition("-")
+    if head != "claude" or not rest:
+        return None
+    candidate = rest.partition("-")[0]
+    if candidate in FAMILY_TIERS:
+        return candidate
+    for name in FAMILY_TIERS:
+        if name in alias:
+            return name
+    return None
+
+
+def alias_rows():
+    """(id, display, route, tier) for every alias the fleet can still route.
+
+    The Claude desktop app filters its picker on the model id looking like an
+    Anthropic model, and that second filter is not the tier tag: measured
+    2026-10-03 against app.asar 1.46388.4, the gateway listed 134 rows,
+    discovery logged "134 found", and the picker showed 5 -- every id carrying
+    a vendor name (glm, kimi, stepfun, qwen, deepseek, minimax...) is dropped
+    by a blacklist there, and the tier only bought a row through discovery.
+
+    CLAUDE_ALIASES already names the fleet's Anthropic-shaped routes and
+    resolve() already honours them, so listing them is what makes the desktop
+    picker able to show the fleet at all. Aliases come first so each one wins
+    its tier's is_family_default rather than a catalog row earning it.
+    """
+    out = []
+    for alias, target in CLAUDE_ALIASES.items():
+        tier = alias_tier(alias)
+        if tier is None:
+            continue
+        route = route_for(target)
+        if route is None:
+            continue
+        out.append((alias, "%s -> %s" % (alias, target), route, tier))
+    return out
+
+
 def models_payload():
     """The catalog as Anthropic models, strongest first.
 
@@ -788,31 +840,36 @@ def models_payload():
     Anthropic-shaped (see FAMILY_TIERS). The tier brackets a row against
     its own provider's ladder rather than against the whole pool, so the
     label means "this strong for a <provider> model" and nothing more.
+
+    The Anthropic-shaped alias routes are listed first (see alias_rows): the
+    desktop app's picker drops every id carrying a vendor name no matter what
+    tier it carries, so without them the picker shows five antigravity rows
+    and none of the fleet.
     """
-    listed = []
-    for row in catalog_rows():
-        slug = row.get("slug")
-        if not slug:
-            continue
-        route = route_for(slug)
-        if route is None:
-            continue
-        listed.append((row, route))
+    rows = [(row.get("slug"),
+             DISPLAY_NAMES.get(row.get("slug"))
+             or row.get("display_name") or row.get("slug"),
+             route_for(row.get("slug")), None)
+            for row in catalog_rows() if row.get("slug")]
+    rows = [(i, d, r, t) for i, d, r, t in rows if r is not None]
+    # the Anthropic-shaped routes go first: they are the only ones the desktop
+    # picker will keep, and each should own its tier's default
+    rows = alias_rows() + rows
+
     data = []
     ranks = {}
     counts = {}
-    for _row, route in listed:
+    for _mid, _display, route, _tier in rows:
         counts[route["provider"]] = counts.get(route["provider"], 0) + 1
     defaults = set()
-    for row, route in listed:
+    for mid, display, route, forced in rows:
         rank = ranks.get(route["provider"], 0)
         ranks[route["provider"]] = rank + 1
-        tier = family_tier(rank, counts.get(route["provider"], 1))
+        tier = forced or family_tier(rank, counts.get(route["provider"], 1))
         entry = {
             "type": "model",
-            "id": row["slug"],
-            "display_name": (DISPLAY_NAMES.get(row["slug"])
-                             or row.get("display_name") or row["slug"]),
+            "id": mid,
+            "display_name": display,
             "created_at": "2026-01-01T00:00:00Z",
             "provider": route["provider"],
             "transport": route["transport"],
