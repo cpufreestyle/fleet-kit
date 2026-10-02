@@ -478,6 +478,11 @@ FREE_TTL_SECONDS = 30.0
 _FREE_LOCK = threading.Lock()
 _FREE_CACHE = {"at": 0.0, "value": None}
 
+# The collector walks every provider site and, when the international links
+# are down, used to stall past 60s -- long enough to pin /api/status on
+# "loading". Cap it instead and degrade to the last good annotation.
+FREE_SUBPROCESS_TIMEOUT = 25.0
+
 
 def free_models():
     """Free-model annotations from tools/free_models.py (cached, never raises)."""
@@ -492,11 +497,19 @@ def free_models():
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "free_models.py")
     try:
         out = subprocess.run([sys.executable, script, "--json"],
-                             capture_output=True, timeout=60)
+                             capture_output=True, timeout=FREE_SUBPROCESS_TIMEOUT)
         value = json.loads(out.stdout.decode("utf-8", "ignore"))
         value["available"] = True
     except Exception as exc:
         value["error"] = str(exc)[:160]
+        with _FREE_LOCK:
+            previous = _FREE_CACHE["value"]
+        if previous is not None and previous.get("available"):
+            # Timeout must not poison the cache: keep serving the last good
+            # annotation with the error attached.
+            degraded = dict(previous)
+            degraded["error"] = value["error"]
+            value = degraded
     with _FREE_LOCK:
         _FREE_CACHE["at"] = time.time()
         _FREE_CACHE["value"] = value
@@ -506,6 +519,12 @@ def free_models():
 NODE_CREDITS_TTL_SECONDS = 30.0
 _NC_LOCK = threading.Lock()
 _NC_CACHE = {"at": 0.0, "value": None}
+
+# node_credits.py polls every node serially (6s health / 30s checkin timeout
+# each); with dead international links a full pass ran past two minutes.
+# Cap the subprocess and degrade to the previous pass on timeout, same as
+# free_models above.
+NODE_CREDITS_SUBPROCESS_TIMEOUT = 25.0
 
 
 def node_credits(cfg):
@@ -525,11 +544,17 @@ def node_credits(cfg):
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "node_credits.py")
     try:
         out = subprocess.run([cfg["python"] or sys.executable, script, "--json"],
-                             capture_output=True, timeout=120)
+                             capture_output=True, timeout=NODE_CREDITS_SUBPROCESS_TIMEOUT)
         value = json.loads(out.stdout.decode("utf-8", "ignore"))
         value["available"] = True
     except Exception as exc:
         value["error"] = str(exc)[:160]
+        with _NC_LOCK:
+            previous = _NC_CACHE["value"]
+        if previous is not None and previous.get("available"):
+            degraded = dict(previous)
+            degraded["error"] = value["error"]
+            value = degraded
     with _NC_LOCK:
         _NC_CACHE["at"] = time.time()
         _NC_CACHE["value"] = value
@@ -589,7 +614,13 @@ def snapshot_actions():
 
 COLLECT_TTL_SECONDS = 1.5
 _COLLECT_LOCK = threading.Lock()
-_COLLECT_CACHE = {"at": 0.0, "value": None}
+_COLLECT_CACHE = {"at": 0.0, "value": None, "refreshing": False, "worker": None}
+
+# The cold round (no cached value at all) still blocks the triggering
+# request -- the page would render with no data otherwise. Everything after
+# it is stale-while-revalidate. Must exceed one full collect() round: the
+# two subprocess collectors below are capped at 25s each.
+COLLECT_COLD_TIMEOUT = 75.0
 
 
 def refresh_keys(cfg):
@@ -613,16 +644,69 @@ def refresh_keys(cfg):
 
 
 def collect_cached(cfg):
-    """Coalesce concurrent /api/status polls into a single probe round."""
+    """Serve /api/status from cache; refresh never blocks the page.
+
+    Stale-while-revalidate: an expired cache is returned immediately while a
+    single daemon worker re-collects, so one slow round -- the free-model and
+    node-credit collectors talk to every bridge and stall for minutes when
+    the international links are down -- can no longer pin every later poll
+    behind _COLLECT_LOCK and park the dashboard on "loading". Only a cold
+    start (no cached value yet) waits for one full round, because the page
+    would otherwise render with no data at all.
+    """
     with _COLLECT_LOCK:
         cached = _COLLECT_CACHE["value"]
-        if cached is not None and (time.time() - _COLLECT_CACHE["at"]) < COLLECT_TTL_SECONDS:
+        if (cached is not None
+                and (time.time() - _COLLECT_CACHE["at"]) < COLLECT_TTL_SECONDS):
             return cached
+        if not _COLLECT_CACHE["refreshing"]:
+            _COLLECT_CACHE["refreshing"] = True
+            worker = threading.Thread(target=_collect_worker, args=(cfg,),
+                                      daemon=True)
+            _COLLECT_CACHE["worker"] = worker
+            worker.start()
+        else:
+            worker = _COLLECT_CACHE["worker"]
+    if cached is not None:
+        # Expired data beats no data; the in-flight worker replaces it and
+        # the next poll picks the fresh value up.
+        stale = dict(cached)
+        stale["stale"] = True
+        return stale
+    if worker is not None:
+        worker.join(COLLECT_COLD_TIMEOUT)
+    with _COLLECT_LOCK:
+        value = _COLLECT_CACHE["value"]
+    if value is None:
+        # Cold round still running (or failed) past the wait: degrade with an
+        # empty shell so the page keeps polling instead of hanging.
+        return {"generated_at": now_str(), "stale": True, "config": {},
+                "error": "状态采集中,请稍候", "summary": {}, "warnings": [],
+                "bridges": [], "checkin": {"tasks": []}, "free": {"models": []},
+                "verify": {}, "credits": {"nodes": []}, "xhx_usage": {},
+                "ocx": {}, "actions": []}
+    return value
+
+
+def _collect_worker(cfg):
+    """Run one collect() round off the request path; never raises."""
+    try:
         refresh_keys(cfg)
         result = collect(cfg)
-        _COLLECT_CACHE["at"] = time.time()
-        _COLLECT_CACHE["value"] = result
-        return result
+        result["stale"] = False
+    except Exception as exc:              # a broken round must not wedge the panel
+        result = {"generated_at": now_str(), "stale": False,
+                  "error": str(exc)[:200], "summary": {},
+                  "warnings": ["采集失败:%s" % str(exc)[:120]],
+                  "bridges": [], "checkin": {"tasks": []}, "free": {"models": []},
+                  "verify": {}, "credits": {"nodes": []}, "xhx_usage": {},
+                  "ocx": {}, "actions": []}
+    finally:
+        with _COLLECT_LOCK:
+            _COLLECT_CACHE["at"] = time.time()
+            _COLLECT_CACHE["value"] = result
+            _COLLECT_CACHE["refreshing"] = False
+            _COLLECT_CACHE["worker"] = None
 
 
 # --------------------------------------------------------------------------- #
