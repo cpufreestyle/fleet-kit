@@ -362,8 +362,13 @@ def _mint_now() -> str:
         return ""
     import subprocess
     try:
+        # --headless is not optional: a headed mint opens a real Chrome
+        # window in the middle of a request, which is the verification
+        # jumping at the operator that the relay page replaced. A headless
+        # mint cannot solve the slider either, but it fails invisibly and
+        # the caller falls back to asking for one human ticket, once.
         proc = subprocess.run(
-            [sys.executable, str(MINTER), "--once"],
+            [sys.executable, str(MINTER), "--once", "--headless"],
             capture_output=True, text=True, timeout=MINT_TIMEOUT)
     except Exception as exc:  # noqa: BLE001
         log("mint failed:", _err(exc))

@@ -30,8 +30,11 @@ import time
 from pathlib import Path
 
 RELAY = os.environ.get("ZCODE_CAPTCHA_RELAY", "http://127.0.0.1:8910/")
+# Persistent on purpose: /tmp is cleaned (reboot, macOS periodic runs), and a
+# profile that keeps resetting is a device fingerprint that never matures --
+# which is what makes traceless fail and the slider pop up every time.
 PROFILE = os.environ.get(
-    "ZCAP_PROFILE", os.path.join(tempfile.gettempdir(), "fleetkit-captcha-profile"))
+    "ZCAP_PROFILE", str(Path(__file__).resolve().parent / "captcha_profile"))
 PAGE = os.environ.get("ZCAP_PAGE", RELAY.rstrip("/") + "/")
 POOL = Path(os.environ.get(
     "ZCODE_CAPTCHA_POOL",

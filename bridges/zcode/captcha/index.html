@@ -11,27 +11,39 @@ body{font-family:-apple-system,PingFang SC,sans-serif;padding:28px;max-width:720
 h3{margin:0 0 6px}
 p{color:#666;font-size:13px;line-height:1.6}
 #cap{min-height:44px}
-#zcode-aliyun-captcha-button{display:none}
+#verify{margin:14px 0 4px;padding:10px 26px;font-size:15px;border:0;border-radius:8px;background:#1677ff;color:#fff;cursor:pointer}
+#verify:disabled{background:#a9c7ff;cursor:default}
 #out{margin-top:18px;padding:12px;background:#f5f5f5;border-radius:8px;font-size:12px;white-space:pre-wrap;word-break:break-all}
 </style>
 </head>
 <body>
 <h3>ZCode 反代理 · captcha 换取</h3>
-<p>完成下方滑块后，验证票据会自动写入桥接器的 captcha 缓存；页面提示已保存即可关闭。<br>captcha 过期或上游返回 3007 时，重新打开本页完成一次即可。</p>
-<!-- 与 ZCode.app 内部结构对齐：container / element / button 三个挂载点 -->
-<div id="zcode-aliyun-captcha-container" aria-hidden="true" style="display:none"></div>
+<p>点「开始验证」完成一次滑块，票据自动存进桥接器的票池；<b>可以连续换几张备着</b>，
+调用会从池里静默取票，池干了才需要再来本页。页面试探性自动唤起已去掉——不点就不弹。<br>
+上游每次调用消耗一张票，票据 15 分钟内有效，一次多换几张即可覆盖一段时间的调用。</p>
 <div id="cap"></div>
-<button id="zcode-aliyun-captcha-button" type="button">verify</button>
+<button id="verify" type="button">开始验证</button>
 <pre id="out">status: idle</pre>
 <script>
 var out=document.getElementById('out');
+var verifyBtn=document.getElementById('verify');
+var banked=0, pool=0;
 function log(s){out.textContent='status: '+s;}
-window.__capParam=null;
-function save(p){
-  return fetch('/save',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'p='+encodeURIComponent(p||'')})
-    .then(function(r){return r.text();}).then(function(t){log('saved('+t+') len='+(p||'').length);document.title='CAP-OK';})
-    .catch(function(e){log('save-failed '+e.message+' (param len='+(p||'').length+')');});
+function refreshPool(){
+  return fetch('/status').then(function(r){return r.json();}).then(function(j){
+    pool=j.tickets||0;
+    if(banked) log('已存 '+banked+' 张，池内共 '+pool+' 张；可以再点「开始验证」继续备票');
+  }).catch(function(){});
 }
+function start(){
+  if(window.__capInst && typeof window.__capInst.startTracelessVerification==='function'){
+    window.__capInst.startTracelessVerification();
+    log('验证中…');
+  }else{
+    log('SDK 未就绪，稍候再点');
+  }
+}
+verifyBtn.addEventListener('click', function(){ start(); });
 try{
   var inst=window.initAliyunCaptcha({
     SceneId:'11xygtvd',
@@ -39,33 +51,27 @@ try{
     language:'cn',
     showErrorTip:true,
     element:'#cap',
-    button:'#zcode-aliyun-captcha-button',
     getInstance:function(i){
       window.__capInst=i;
-      log('instance-ready traceless='+(typeof (i&&i.startTracelessVerification)));
+      log('ready — 点「开始验证」换票');
+      refreshPool();
     },
     success:function(param){
-      window.__capParam=param;
-      log('success len='+(param&&param.length)+', saving...');
-      save(param);
+      banked+=1;
+      log('验证通过，正在存入票池…');
+      fetch('/save',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'p='+encodeURIComponent(param||'')})
+        .then(function(r){return r.text();}).then(function(t){
+          log('saved('+t+') len='+(param||'').length);
+          document.title='CAP-OK';
+          refreshPool();
+        })
+        .catch(function(e){log('save-failed '+e.message+' (param len='+(param||'').length+')');});
     },
     fail:function(err){log('fail '+(err&&err.message?err.message:JSON.stringify(err)));},
     onError:function(err){log('error '+(err&&err.message?err.message:JSON.stringify(err)));}
   });
-  log('sdk-initialized');
-  // ZCode 客户端走 auto 模式：先 startTracelessVerification()，8s 无响应再点按钮弹滑块。
-  setTimeout(function(){
-    try{
-      if(window.__capInst && typeof window.__capInst.startTracelessVerification==='function'){
-        window.__capInst.startTracelessVerification();
-        log('traceless-started');
-      }else{
-        document.getElementById('zcode-aliyun-captcha-button').click();
-        log('button-clicked');
-      }
-    }catch(e){ log('start-threw '+e.message); }
-  }, 2200);
 }catch(e){log('init-threw '+e.message);}
 </script>
 </body>
 </html>
+

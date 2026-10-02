@@ -45,7 +45,14 @@
 ## captcha minter 环境
 
 - 系统无 playwright 的解释器调 minter 会静默挂起：cli_client._mint_ticket
-  现在按 /usr/bin/python3（Xcode CLT, 有 playwright）优先，ZCAP_PY 可覆盖。
+  现在按 /usr/bin/python3（Xcode CLT, 有 playwright）优先，ZCAP_PY 可覆盖；
+  探测列表里也放上 `sys.executable`（桥自己就在带 playwright 的 venv 里）。
+- **调用路径上的 mint 一律 `--headless`**：2026-10-02 修，之前每请求现场
+  mint 是有头 Chrome，滑块窗直接弹到运营者脸上，40~60s 后失败再把人推去
+  relay 页——验证就是这么反复跳的。无头 mint 解不了滑块，但它静默失败，
+  由调用方回落成「开一次页换一张」。
+- minter 的 Chrome profile 落在 `bridges/zcode/captcha_profile`（不再 /tmp，
+  重启即清）：profile 每次重置等于设备指纹永远冷，无感验证必然不过。
 - mint 成功率间歇（traceless 卡 F001/F015），--serve 模式维持池子比
   每请求现场 mint 更稳；失败重试可成。
 
@@ -54,6 +61,24 @@
 
 launchd：`com.local.zcode2codex`（plist 由 install.sh 生成，offset 13）
 captcha 换取页：http://127.0.0.1:8910/ （launchd `com.local.zcode-captcha-relay`）
+
+
+## 别反复跳验证（2026-10-02 修的那一圈）
+
+症状：zcode 每次调用都跳一次验证——要么一个 Chrome 窗弹到脸上，要么被推去
+127.0.0.1:8910 拖一次滑块，刚存好的票只够一发，下一发再来一圈。
+
+根因是三个设计缺口叠出来的：
+
+1. 池子空了以后，调用路径上的 mint 是**有头** Chrome（滑块窗当场弹）；
+2. minter 的 profile 在 /tmp，重启/周期清理即重置，无感验证永远冷启失败；
+3. relay 页每次打开 2.2 秒后自动唤起验证，且把票覆写进 captcha.txt——
+   同一张 param 在池里一份、旧文件里一份，就是两次领取，第二次必 3007。
+
+现在的形状：页面手动唤起、可连续备票进池；调用只从池里静默取票；池干时
+无头 mint 静默失败一次，回落成「开一次页换一张」。备票的有效窗口按消费方
+不同：CLI 路线（cli_client）600s 新鲜度 + 900s 寿龄，桥的直连路线 75s。
+`tools/test_zcode_captcha_flow.py` 钉住这几条契约。
 
 ## 凭证
 
@@ -91,13 +116,17 @@ sceneId `11xygtvd` / region `cn` / prefix `no8xfe`。
 
 - `captchaVerifyParam` 一次性，用过即废；过期/失效时上游返回
   `{"code":3007,"msg":"captcha verify failed"}`。
-- 换取：打开 http://127.0.0.1:8910/ 完成滑块，param 自动写入
-  `runtime/bridges/zcode/captcha.txt`（桥每次调用现读现取）。
+- 换取：打开 http://127.0.0.1:8910/ 点「开始验证」完成滑块，param 写入票池
+  `runtime/bridges/zcode/captcha_pool/<epoch>-<rand>.txt`（一个文件一张票，
+  桥凭 claim-by-delete 领取）。页面不再自动唤起验证，也**不再覆写
+  captcha.txt**——同一张票放两处就是两次领取，第二次必 3007。
 - 桥在没有 param 时返回 `503` + `captcha_relay` 字段；param 失效时同样 503
   并附上游原文，方便判断是「该换了」还是「别的错」。
 
-relay 页刻意与 ZCode.app 内部 SDK 调用对齐：`mode:'popup'`、真实
-`button` 元素、先 `startTracelessVerification()` 再 8s 回退按钮点击
+relay 页与 ZCode.app 内部 SDK 调用保持同构（`mode:'popup'`、真实 `button`、
+`startTracelessVerification()`），但 2026-10-02 起**唤起是手动的**：点一下
+「开始验证」才弹滑块，存完一张按钮立即可再点，页脚显示本次已存与池内总数，
+一次备几张覆盖一段时间的调用。
 （对齐 `onn()` 的 auto 分支）。
 
 ## 上游风控（当前未解决）
