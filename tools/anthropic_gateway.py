@@ -121,6 +121,42 @@ CLAUDE_ALIASES = {
     "claude-3-5-haiku-latest": "workbuddy/glm-5.2",
 }
 
+# The bare tier names, for a client that resolves a family default itself
+# and then asks for the tier rather than the id it resolved to. The
+# Claude desktop app picks a per-tier family default out of /v1/models, so
+# that is a request shape it can produce.
+CLAUDE_ALIASES.update({
+    "opus": CLAUDE_ALIASES["claude-opus-5"],
+    "sonnet": CLAUDE_ALIASES["claude-sonnet-5"],
+    "haiku": CLAUDE_ALIASES["claude-haiku-4-5"],
+    "fable": CLAUDE_ALIASES["claude-fable-5"],
+})
+
+# Claude Code inside the Claude desktop app builds its picker from GET
+# /v1/models and drops every row that does not look like an Anthropic model
+# -- unless the row carries anthropic_family_tier. Tagging each row with the
+# tier its rank inside its own provider earns is what makes the whole pool
+# pickable in that app; without the tag only the four claude-* names show.
+FAMILY_TIERS = ("opus", "sonnet", "haiku", "fable", "mythos")
+
+# Brackets on a provider's own strength ladder, strongest first. A row's
+# tier is where it lands among its provider's models, so a provider with
+# one model is that provider's opus and the tail of a twenty-model provider
+# is never dressed up as anything it is not.
+TIER_BRACKETS = ((0.20, "opus"), (0.40, "sonnet"), (0.60, "haiku"),
+                 (0.80, "fable"), (1.01, "mythos"))
+
+
+def family_tier(rank, total):
+    """The Claude tier a row stands in for, from its rank in its provider."""
+    if total <= 1:
+        return FAMILY_TIERS[0]
+    fraction = rank / float(total - 1)
+    for ceiling, tier in TIER_BRACKETS:
+        if fraction <= ceiling:
+            return tier
+    return FAMILY_TIERS[-1]
+
 # urllib otherwise hands loopback calls to the macOS system proxy and they
 # leave through the tunnel: fine in a terminal, a silent hang under launchd.
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -731,8 +767,15 @@ def models_payload():
 
     A row no route claims is left out on purpose: a model that cannot be
     reached must not sit in the picker looking like an answer.
+
+    Every row also carries the Claude family tier its rank earns, and the
+    first row of a tier carries is_family_default, because that is the only
+    shape in which the Claude desktop app will list a model whose id is not
+    Anthropic-shaped (see FAMILY_TIERS). The tier brackets a row against
+    its own provider's ladder rather than against the whole pool, so the
+    label means "this strong for a <provider> model" and nothing more.
     """
-    data = []
+    listed = []
     for row in catalog_rows():
         slug = row.get("slug")
         if not slug:
@@ -740,14 +783,30 @@ def models_payload():
         route = route_for(slug)
         if route is None:
             continue
-        data.append({
+        listed.append((row, route))
+    data = []
+    ranks = {}
+    counts = {}
+    for _row, route in listed:
+        counts[route["provider"]] = counts.get(route["provider"], 0) + 1
+    defaults = set()
+    for row, route in listed:
+        rank = ranks.get(route["provider"], 0)
+        ranks[route["provider"]] = rank + 1
+        tier = family_tier(rank, counts.get(route["provider"], 1))
+        entry = {
             "type": "model",
-            "id": slug,
-            "display_name": row.get("display_name") or slug,
+            "id": row["slug"],
+            "display_name": row.get("display_name") or row["slug"],
             "created_at": "2026-01-01T00:00:00Z",
             "provider": route["provider"],
             "transport": route["transport"],
-        })
+            "anthropic_family_tier": tier,
+        }
+        if tier not in defaults:
+            defaults.add(tier)
+            entry["is_family_default"] = True
+        data.append(entry)
     return {"object": "list", "data": data, "has_more": False,
             "first_id": data[0]["id"] if data else None,
             "last_id": data[-1]["id"] if data else None}

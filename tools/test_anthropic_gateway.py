@@ -134,6 +134,42 @@ def _sse_lines(chunks):
     return [line + b"\n" for line in lines]
 
 
+_FALLBACK_SLUGS = (
+    "stepfun/step-5-preview", "stepfun/step-3.7-flash",
+    "workbuddy-gpt/hy4-preview", "workbuddy-gpt/gpt-6-astra",
+    "workbuddy/glm-5.2", "workbuddy/hy3",
+    "trae/Doubao-Seed-Evolving", "trae/seed-code-pro-0430",
+    "qoder/Qwen3.8-Max", "qoder/Qwen3.8-Flash",
+    "zcode/GLM-5.3", "zcode/GLM-5.3-Flash",
+    "gemini/gemini-3-pro-preview", "catpaw/longcat-flash",
+    "xhx/raccoon-19b265", "codely/codely-core", "codely/codely-air",
+    "qwen/qwen3.8-flash", "lingxi/deepseek-flash",
+    "cline-free/deepseek-v4.1-flash",
+)
+
+
+def _write_catalog(path, slugs):
+    """rows as catalog_sort.py would leave them: priority ascending, slug as tiebreak."""
+    rows = [{"slug": slug, "priority": i + 1,
+             "display_name": slug.rpartition("/")[2]}
+            for i, slug in enumerate(slugs)]
+    path.write_text(json.dumps({"models": rows}), encoding="utf-8")
+
+
+@pytest.fixture
+def fleet_catalog(tmp_path, monkeypatch):
+    """A catalog file of our own, so the live one cannot decide the verdict.
+
+    catalog_rows() falls back to polling every bridge when the named file has
+    fewer than MIN_CATALOG_ROWS rows, which turns a resolve() test into a
+    loopback sweep whose answer depends on which bridges happen to be up.
+    A file we wrote ourselves keeps the assertion about resolve() alone.
+    """
+    path = tmp_path / "cc-switch-model-catalog.json"
+    monkeypatch.setattr(gw, "CATALOG_PATH", str(path))
+    return path
+
+
 # ------------------------------------------------------------ request translation
 def _route(slug="workbuddy/glm-5.2"):
     return {"url": "http://127.0.0.1:1/v1/chat/completions", "key": "k",
@@ -280,22 +316,25 @@ def test_upstream_refusal_marker_is_an_error_even_at_200(body, expected):
 
 
 # ----------------------------------------------------------------------- routing
-def test_resolve_prefers_the_exact_catalog_slug(monkeypatch):
+def test_resolve_prefers_the_exact_catalog_slug(monkeypatch, fleet_catalog):
     monkeypatch.setattr(gw, "route_alive", lambda route, timeout=1.0: True)
+    _write_catalog(fleet_catalog, _FALLBACK_SLUGS + ("trae/trae-seed-code-pro-0430",))
     slug, note = gw.resolve("trae/trae-seed-code-pro-0430")
     assert slug == "trae/trae-seed-code-pro-0430"
     assert note == "catalog slug"
 
 
-def test_resolve_alias_lands_on_its_target(monkeypatch):
+def test_resolve_alias_lands_on_its_target(monkeypatch, fleet_catalog):
     monkeypatch.setattr(gw, "route_alive", lambda route, timeout=1.0: True)
+    _write_catalog(fleet_catalog, _FALLBACK_SLUGS)
     slug, note = gw.resolve("claude-opus-5")
     assert slug == gw.CLAUDE_ALIASES["claude-opus-5"]
     assert "alias" in note
 
 
-def test_resolve_alias_falls_back_when_its_target_is_down(monkeypatch):
+def test_resolve_alias_falls_back_when_its_target_is_down(monkeypatch, fleet_catalog):
     target = gw.CLAUDE_ALIASES["claude-opus-5"]
+    _write_catalog(fleet_catalog, _FALLBACK_SLUGS)
 
     def alive(route, timeout=1.0):
         return route["model"] != target
@@ -306,19 +345,22 @@ def test_resolve_alias_falls_back_when_its_target_is_down(monkeypatch):
     assert "fell back" in note
 
 
-def test_resolve_unknown_claude_slot_lands_on_the_harbor(monkeypatch):
+def test_resolve_unknown_claude_slot_lands_on_the_harbor(monkeypatch, fleet_catalog):
     monkeypatch.setattr(gw, "route_alive", lambda route, timeout=1.0: True)
+    _write_catalog(fleet_catalog, _FALLBACK_SLUGS)
     slug, _note = gw.resolve("claude-sonnet-9-2030")
     assert slug == gw.HARBOR
 
 
-def test_resolve_refuses_an_unknown_model():
+def test_resolve_refuses_an_unknown_model(fleet_catalog):
+    _write_catalog(fleet_catalog, _FALLBACK_SLUGS)
     slug, note = gw.resolve("no-such-model-42")
     assert slug is None
     assert "unknown model" in note
 
 
-def test_resolve_bare_model_name_matches_a_catalog_slug():
+def test_resolve_bare_model_name_matches_a_catalog_slug(fleet_catalog):
+    _write_catalog(fleet_catalog, _FALLBACK_SLUGS)
     slug, note = gw.resolve("step-5-preview")
     assert slug and slug.endswith("/step-5-preview")
     assert "bare model name" in note
@@ -371,6 +413,64 @@ def test_the_listing_never_offers_a_claude_alias_row():
     ids = {m["id"] for m in gw.models_payload()["data"]}
     for alias in gw.CLAUDE_ALIASES:
         assert alias not in ids
+
+
+def _fake_pool(monkeypatch):
+    """Three rows over two providers, so a tier can be asserted exactly."""
+    rows = [{"slug": "stepfun/step-5-preview", "priority": 1,
+             "display_name": "step-5-preview"},
+            {"slug": "workbuddy/glm-5.2", "priority": 2,
+             "display_name": "glm-5.2"},
+            {"slug": "workbuddy/glm-5.1", "priority": 3,
+             "display_name": "glm-5.1"}]
+    routes = {"stepfun/step-5-preview": {"provider": "stepfun",
+                                       "transport": "direct"},
+              "workbuddy/glm-5.2": {"provider": "workbuddy",
+                                   "transport": "bridge"},
+              "workbuddy/glm-5.1": {"provider": "workbuddy",
+                                   "transport": "bridge"}}
+    monkeypatch.setattr(gw, "catalog_rows", lambda: rows)
+    monkeypatch.setattr(gw, "route_for", lambda slug: routes.get(slug))
+    return rows
+
+
+def test_family_tier_brackets_a_row_inside_its_own_provider():
+    assert gw.family_tier(0, 1) == "opus"
+    assert gw.family_tier(0, 22) == "opus"
+    assert gw.family_tier(21, 22) == "mythos"
+    assert gw.family_tier(11, 22) == "haiku"
+    for rank in range(0, 40):
+        assert gw.family_tier(rank, 40) in gw.FAMILY_TIERS
+
+
+def test_every_listed_row_carries_a_tier_the_desktop_app_accepts(monkeypatch):
+    """The desktop app drops a row whose id is not Anthropic-shaped unless the
+    row carries anthropic_family_tier from the app's own tier list, so a row
+    without one is a row the picker never shows.
+    """
+    _fake_pool(monkeypatch)
+    data = gw.models_payload()["data"]
+    assert data, "the picker would open empty"
+    for entry in data:
+        assert entry["anthropic_family_tier"] in gw.FAMILY_TIERS, entry["id"]
+
+
+def test_each_tier_names_one_default_row(monkeypatch):
+    """is_family_default is how a bare alias such as "opus" resolves, so a
+    tier with no default is a tier the app cannot route.
+    """
+    _fake_pool(monkeypatch)
+    data = gw.models_payload()["data"]
+    winners = {}
+    for entry in data:
+        if entry.get("is_family_default"):
+            winners.setdefault(entry["anthropic_family_tier"], []).append(entry["id"])
+    for tier, ids in winners.items():
+        assert len(ids) == 1, "%s has %d defaults: %s" % (tier, len(ids), ids)
+    # the first row listed must own its tier, because the app resolves a bare
+    # alias to the first entry it sees for that tier
+    first = data[0]
+    assert winners[first["anthropic_family_tier"]] == [first["id"]]
 
 
 def test_key_table_does_not_drift_from_the_guard(monkeypatch):
