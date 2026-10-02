@@ -11,6 +11,13 @@ counter, which is the only quota signal the platform hands out. The raw
 reply is printed so the number can be read straight off the console when
 the body carries one.
 
+Probed 2026-10-02 without a key: on api.minimaxi.com and api.minimax.io,
+/v1/chat/completions answers 401 with authorized_error while /v1/usage,
+/v1/usages, /v1/credits, /v1/quota and /v1/account all answer 404, so there
+is no balance route to query. On api.kimi.com, /coding/v1/usages answers
+401 with invalid_authentication_error while its sibling /coding/v1/usage
+answers 404, which is what pins that path as the right one.
+
 Usage:
   plan_credits.py kimi    --key KEY [--base URL] [--json]
   plan_credits.py minimax --key KEY [--base URL] [--model ID] [--json]
@@ -31,6 +38,10 @@ import urllib.request
 
 KIMI_BASE = "https://api.kimi.com/coding"
 MINIMAX_BASE = "https://api.minimaxi.com"
+# A MiniMax key is minted against one region, so an international key reads as
+# 401 against the CN host and the other way round. Both are tried before the
+# key is called dead; --base pins one host and skips the retry.
+MINIMAX_INTL_BASE = "https://api.minimax.io"
 MINIMAX_MODEL = "MiniMax-M2"
 
 # loopback and vendor calls must not leave through a system proxy; the same
@@ -81,22 +92,33 @@ def kimi(key, base=KIMI_BASE):
     return outcome
 
 
-def minimax(key, base=MINIMAX_BASE, model=MINIMAX_MODEL):
-    """One one-token MiniMax chat call: proves the key, spends a sliver."""
-    url = base.rstrip("/") + "/v1/chat/completions"
-    status, text = fetch(
-        url,
-        {"Authorization": "Bearer " + key},
-        method="POST",
-        body={"model": model, "max_tokens": 1,
-              "messages": [{"role": "user", "content": "hi"}]})
-    out = {"platform": "minimax", "endpoint": url, "model": model,
-           "http": status}
-    try:
-        out["body"] = json.loads(text)
-    except ValueError:
-        out["body"] = text[:400]
-    return status, out
+def minimax(key, base=None, model=MINIMAX_MODEL, bases=None):
+    """One one-token MiniMax chat call: proves the key, spends a sliver.
+
+    A 401 is the only answer that means "this key is dead", and it is also
+    what the wrong region answers, so the other region is tried before that
+    verdict is written down. bases pins the host list.
+    """
+    hosts = [base] if base else list(bases or (MINIMAX_BASE, MINIMAX_INTL_BASE))
+    outcome = (None, {})
+    for host in hosts:
+        url = host.rstrip("/") + "/v1/chat/completions"
+        status, text = fetch(
+            url,
+            {"Authorization": "Bearer " + key},
+            method="POST",
+            body={"model": model, "max_tokens": 1,
+                  "messages": [{"role": "user", "content": "hi"}]})
+        out = {"platform": "minimax", "endpoint": url, "model": model,
+               "http": status}
+        try:
+            out["body"] = json.loads(text)
+        except ValueError:
+            out["body"] = text[:400]
+        if status not in (401, 403):
+            return status, out
+        outcome = (status, out)
+    return outcome
 
 
 def report(name, status, out):
@@ -128,7 +150,7 @@ def main(argv=None):
                   file=sys.stderr)
             worst = worst or 3
             continue
-        base = args.base or (KIMI_BASE if name == "kimi" else MINIMAX_BASE)
+        base = args.base or (KIMI_BASE if name == "kimi" else None)
         if name == "kimi":
             status, out = kimi(key, base)
         else:

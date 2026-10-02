@@ -59,3 +59,32 @@ def test_trailing_slash_base_is_tolerated(monkeypatch):
     calls = _monkey(monkeypatch, 200, "{}")
     pc.kimi("sk-x", "https://api.kimi.com/coding/")
     assert calls[0][0] == "https://api.kimi.com/coding/v1/usages"
+
+
+def test_minimax_retries_the_other_region_before_calling_a_key_dead(monkeypatch, capsys):
+    calls = []
+
+    def fake(url, headers=None, method="GET", body=None, timeout=25):
+        calls.append(url)
+        if "minimaxi.com" in url:
+            return 401, json.dumps({"error": {"message": "login fail"}})
+        return 200, json.dumps({"choices": [{"message": {"content": "hi"}}]})
+
+    monkeypatch.setattr(pc, "fetch", fake)
+    assert pc.main(["minimax", "--key", "mm-intl"]) == 0
+    assert calls == ["https://api.minimaxi.com/v1/chat/completions",
+                     "https://api.minimax.io/v1/chat/completions"]
+    assert "minimax.io" in capsys.readouterr().out
+
+
+def test_minimax_base_pins_one_host_and_keeps_the_401_verdict(monkeypatch, capsys):
+    calls = []
+
+    def fake(url, headers=None, method="GET", body=None, timeout=25):
+        calls.append(url)
+        return 401, json.dumps({"error": {"message": "login fail"}})
+
+    monkeypatch.setattr(pc, "fetch", fake)
+    assert pc.main(["minimax", "--key", "mm",
+                    "--base", "https://example.invalid"]) == 2
+    assert calls == ["https://example.invalid/v1/chat/completions"]
