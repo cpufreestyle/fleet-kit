@@ -178,6 +178,16 @@ def mint_once(page, timeout: float = 40.0) -> str:
         param = _claim_pool_ticket(seen)
         if param:
             return param
+        # A refused verification is terminal for this attempt -- the SDK
+        # says so (verifyCode F001 and friends). Bailing now costs a retry
+        # seconds instead of the whole timeout, which is what a keeper
+        # spinning on an intermittent verdict needs.
+        try:
+            status = page.text_content("#out") or ""
+        except Exception:  # noqa: BLE001
+            status = ""
+        if status.startswith("status: fail") or status.startswith("status: error"):
+            raise RuntimeError("aliyun refused this attempt: %s" % status)
     try:
         page.screenshot(path=FAIL_SHOT)
     except Exception:  # noqa: BLE001

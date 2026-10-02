@@ -189,6 +189,13 @@ class MinterContracts(unittest.TestCase):
                       "the interpreter probe no longer starts with the bridge's own venv")
 
 
+    def test_a_refused_verification_ends_the_mint_at_once(self):
+        """F001 and friends are terminal; waiting out the timeout is wasted."""
+        src = _source(MINTER)
+        self.assertIn("aliyun refused this attempt", src,
+                      "a refused verification burns the whole mint timeout again, so a keeper retries at 30s cadence instead of seconds")
+
+
 class PoolKeeper(unittest.TestCase):
     """The keeper that keeps tickets flowing must be silent and self-contained."""
 
