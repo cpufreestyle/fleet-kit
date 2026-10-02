@@ -64,7 +64,8 @@ finish.sh kimi 之后直接就能用，不用手贴 key。
 
 ## 安装与使用
 
-    bash bridges/finish.sh kimi        # 装 launchd 服务 + 注入 catalog
+    bash install.sh --skip-deps --home '<FleetKit>/runtime'   # 同步代码 + 装服务
+    bash bridges/finish.sh kimi --home '<FleetKit>/runtime'   # 重启 + 注入 catalog
     bash bridges/finish.sh minimax
     bash tools/status.sh               # 看两座桥的健康与 key 状态
 
@@ -79,9 +80,39 @@ Codex 里模型以 kimi/kimi-for-coding、minimax/MiniMax-M2.7 出现。
   https://www.minimax.cn/v1/token_plan/remains 查额度（见 plan_credits.py），
   不走本桥的 /v1。
 
-两座桥都已注册进全部 8 张桥表（status.sh、status_ui.py、verify_real_calls.py、
-fleet_chat_test.py、finish.sh、fleet_probe.py、default_model_guard.py、
-fleet_platform.py），test_bridge_tables_agree.py 会一直盯着它们不再漏。
+## 注册表：一共十张，不是八张
+
+上轮说「8 张桥表」，漏了两张真正决定能不能用的：
+
+- install.sh 的 BRIDGES 数组——决定服务是否存在。漏了它，桥有代码但没进程。
+- opencodex/setup-providers.sh 的 PROVIDERS 列表——决定 Codex 能不能调到。
+  漏了它，桥在听、目录里有、但模型选择器里根本没有。
+
+两座桥推出时正是只改了八张、漏了这两张，所以第一版测试全绿但跑不起来。
+现在这两张也进了 test_bridge_tables_agree.py，一共十张互锁。
+
+## 现状：全链路已通
+
+    Codex 选择器 --> ocx 代理 10100 --> 本地桥 8802/8803 --> 上游
+                                    --> FleetKit Anthropic 网关 8801 --> 同上
+
+2026-10-03 实测：
+
+- 8802 kimi /v1/models    -> 200，拉到上游实时 4 个模型
+- 8803 minimax /v1/models -> 200，出静态 9 个模型
+- 10100 ocx /v1/models    -> 231 个（原 218，新增 kimi 4 + minimax 9）
+- 10100 -> minimax chat   -> 401，原文是 MiniMax 自己的
+  login fail: Please carry the API secret key——链路通到厂商了
+- 8801 -> kimi chat       -> 403 kimi_plan_inactive，带续费地址
+
+注意 minimax 在 ocx 里是双前缀 minimax/minimax/MiniMax-M3。这是机队存量
+行为（231 个里 58 个都双前缀：trae/cline/lingxi/qwen/xhx 全一样），不是新 bug。
+
+换机器部署时若 10100 不认新模型，是代理缓存：
+
+    launchctl kickstart -k gui/$(id -u)/com.opencodex.proxy
+
+磁盘上的 opencodex-catalog.json 是对的，只有跑着的代理是旧的。
 
 ## 测试
 
