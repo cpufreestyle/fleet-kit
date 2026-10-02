@@ -70,8 +70,8 @@ except Exception:                                        # pragma: no cover
 
 NODE_ORDER = ("workbuddy", "workbuddy-gpt", "xhx", "zcode", "qoder", "codely",
               "trae", "lingxi", "cline", "qwen", "gemini", "catpaw",
-              "antigravity", "stepfun", "tokendance",
-              "kimi-code", "minimax")
+              "antigravity", "kimi", "minimax", "stepfun", "tokendance",
+              "kimi-code", "minimax-code")
 
 VENDORS = {
     "workbuddy": "腾讯云代码助手 CodeBuddy（国内版）",
@@ -87,10 +87,12 @@ VENDORS = {
     "qwen": "阿里 Qwen（MaaS）",
     "cline": "Cline（cline.bot 免费档）",
     "zcode": "智谱 Z.AI Coding（ZCode）",
+    "kimi": "月之暗面 Kimi Code（kimi 桥）",
+    "minimax": "MiniMax（minimax 桥）",
     "stepfun": "阶跃星辰 StepFun（ocx 原生）",
     "tokendance": "TokenDance 词元跳动（ocx 原生）",
     "kimi-code": "月之暗面 Kimi Code（coding 套餐）",
-    "minimax": "MiniMax（编程套餐 / Agent）",
+    "minimax-code": "MiniMax（编程套餐 / Agent）",
 }
 
 # Which upstream facts each bridge reports, and where. The bridges disagree on
@@ -415,8 +417,10 @@ def credits_kind(name):
 PLAN_ACCOUNTS = {
     "kimi-code": {"vendor": "月之暗面 Kimi Code（coding 套餐）",
                   "env": "KIMI_CODING_API_KEY", "plan": "kimi"},
-    "minimax": {"vendor": "MiniMax（编程套餐 / Agent）",
-                "env": "MINIMAX_API_KEY", "plan": "minimax"},
+    # "minimax-code", not "minimax": the fleet's minimax *bridge* node owns the
+    # plain name (fleet_probe.PORTS), and one name cannot be two rows.
+    "minimax-code": {"vendor": "MiniMax（编程套餐 / Agent）",
+                     "env": "MINIMAX_API_KEY", "plan": "minimax"},
 }
 
 

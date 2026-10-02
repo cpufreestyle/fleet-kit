@@ -52,7 +52,7 @@ def test_minimax_row_reports_the_call_it_made(monkeypatch):
     _isolate(monkeypatch)
     monkeypatch.setenv("MINIMAX_API_KEY", "mm-key-1234")
     monkeypatch.setattr(plan_credits, "minimax", lambda k: MINIMAX_OK)
-    row = nc.read_node("minimax")
+    row = nc.read_node("minimax-code")
     assert row["up"] is True
     assert row["credits_kind"] == "subscription"
     assert "控制台" in row["credits_note"]

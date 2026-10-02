@@ -240,8 +240,8 @@ async def task_workbuddy_gpt(client: httpx.AsyncClient) -> dict:
 # dropping them. "na" marks "this node has no such endpoint", which is a
 # different thing from a failed attempt and must not read as one.
 NO_CHECKIN_NODES = ("qoder", "codely", "trae", "lingxi", "cline", "qwen",
-                    "gemini", "catpaw", "antigravity", "zcode", "stepfun",
-                    "tokendance")
+                    "gemini", "catpaw", "antigravity", "zcode", "kimi",
+                    "minimax", "stepfun", "tokendance")
 
 
 def _no_checkin_task(name: str) -> dict:

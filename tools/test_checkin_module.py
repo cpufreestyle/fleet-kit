@@ -34,7 +34,7 @@ def test_the_registry_covers_every_node_in_the_fleet():
     import fleet_probe
     every = set(fleet_probe.PORTS) | set(fleet_probe.GATEWAY)
     assert set(checkin.TASKS) == every, sorted(every - set(checkin.TASKS))
-    assert len(checkin.TASKS) == 15
+    assert len(checkin.TASKS) == len(every)
     # the nodes that really claim must not share the placeholder task
     placeholder = checkin.TASKS["qoder"]["fn"]
     for name in ("xhx", "workbuddy", "workbuddy-gpt"):
