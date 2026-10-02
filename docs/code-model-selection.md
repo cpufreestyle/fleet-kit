@@ -40,6 +40,35 @@ DeepSeek-V4-Pro full marks came from the 2026-10-02 60-call real run (Chinese
 RAG QA plus code generation), where it and MiniMax-M3 led the field and
 Codely-Core faltered on 100s timeouts.
 
+### 2026-10-02 evening re-run (all 15 bridges listed in /v1/models)
+
+`code_model_bench.py live` over the same two tasks, plus one retry pass so a
+transient blip is not mistaken for a dead route:
+
+| model | bridge | task1 | task2 | seconds | result |
+| --- | --- | --- | --- | --- | --- |
+| `deepseek-v4-flash` | workbuddy | 8/8 | 7/7 | 7.0-8.3 | **primary, three consecutive full-mark runs** |
+| `deepseek-v4-pro` | workbuddy | 8/8 | 7/7 | 9.6 | full marks on both standard tasks too |
+| `hy4-preview` | workbuddy-gpt | - | - | - | smoke 429 rate-limited, both attempts |
+| `kimi/kimi-for-coding` | kimi | - | - | - | smoke 403 (account/key) |
+| `trae/seed-code-pro-0430` | trae | - | - | - | smoke 502 upstream |
+| `cline-free/deepseek-v4.1-flash` | cline | - | - | - | smoke 502 upstream |
+| `stealth/pixel-canary` | cline | - | - | - | smoke 502 upstream |
+| `claude-opus-4-8@default` | antigravity | - | - | - | smoke 502 upstream |
+| `gemini-3-pro-preview` | gemini | - | - | - | smoke 502 upstream |
+| `gemini-3-flash-preview` | gemini | - | - | - | smoke 502 upstream |
+| `qwen/qwen3.8-max` | qwen | - | - | - | smoke 503 |
+| `xhx/sn-deepseek-v4-1-flash` | xhx | 8/8 | NO_RUNNABLE | 17.1 | convert not runnable |
+| `lingxi/deepseek-flash` | lingxi | - | - | - | 429 on task1 |
+| `codely-core` | codely | NO_RUNNABLE | NO_RUNNABLE | ~13 | both tasks unusable |
+| `GLM-5.3` | zcode | - | - | - | smoke 503 (22s slow fail) |
+
+The same error code on the retry pass means route state, not a blip. Note the
+panel's /v1/models answers 200 for these bridges: the model catalogue is
+served locally and only the chat call goes upstream, so a green dashboard
+row does not mean a usable code model. re-run `live` on any row above once
+its bridge recovers.
+
 ## Conclusion
 
 - **Primary coding model: `workbuddy/deepseek-v4-flash`.** Full marks on both
@@ -53,6 +82,12 @@ Codely-Core faltered on 100s timeouts.
 - **`deepseek-v4-pro` is not the coding default** despite its speed: the user
   saw off-by-one behavior on long files. Use flash for code; pro only where
   its extra strength is worth the risk and the edits are small.
+
+**2026-10-02 evening update:** pro also scored 8/8 + 7/7 on the standard
+tasks, so the off-by-one note is about long files the user edited by hand,
+not the task suite. flash remains the default for the tight edit-run loop;
+pro is the validated fallback when flash is rate-limited, as it was for
+hy4-preview and most external bridges that evening.
 
 ## Refreshing the tables
 
