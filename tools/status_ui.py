@@ -639,9 +639,11 @@ def _default_home():
     did not match where install.sh had actually put things.
 
     Evaluated per call, not at import: HOME is read when the question is asked,
-    so a process that changes HOME (tests, a wrapper) is honoured.
+    so a process that changes HOME (tests, a wrapper) is honoured. HOME wins
+    over expanduser explicitly: on Windows expanduser consults it only after
+    USERPROFILE, which would ignore exactly that override.
     """
-    home = os.path.expanduser("~")
+    home = os.environ.get("HOME") or os.path.expanduser("~")
     candidates = (
         os.path.join(home, "FleetKit", "runtime"),
         os.path.join(home, "fleet"),
