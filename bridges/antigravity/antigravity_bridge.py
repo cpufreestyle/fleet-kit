@@ -191,6 +191,35 @@ def _budgeted_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
 socket.create_connection = _budgeted_create_connection
 
 
+# 上游代理开关：与 gemini 桥同一用意。urllib 默认吃 macOS 系统代理，而本机
+# 2026-10-02 的系统代理（MacPacket）没有国际路由，cloudcode-pa.googleapis.com
+# 一律 000 / ProxyError 503。ANTIGRAVITY_UPSTREAM_PROXY 可显式指定出口。
+UPSTREAM_PROXY = 'ANTIGRAVITY_UPSTREAM_PROXY'
+
+
+def proxy_info() -> dict:
+    """当前上游出口：{'proxy': url|None, 'source': 'env'|'system'|'direct'}。"""
+    explicit = (os.environ.get(UPSTREAM_PROXY) or '').strip()
+    if explicit:
+        return {'proxy': explicit, 'source': 'env'}
+    try:
+        env_proxies = urllib.request.getproxies() or {}
+    except Exception:
+        env_proxies = {}
+    system = env_proxies.get('https') or env_proxies.get('http') or ''
+    return {'proxy': system or None, 'source': 'system' if system else 'direct'}
+
+
+def _urlopen(req, timeout):
+    """按 UPSTREAM_PROXY 走出口；未设置时与 urllib.request.urlopen 等价。"""
+    info = proxy_info()
+    if info['source'] == 'env':
+        handler = urllib.request.ProxyHandler({'http': info['proxy'],
+                                               'https': info['proxy']})
+        return urllib.request.build_opener(handler).open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def http_json(url, payload, headers=None, method='POST', timeout=90):
     hdrs = {'User-Agent': UA, 'Content-Type': 'application/json;charset=UTF-8', 'Accept-Encoding': 'identity'}
     if headers:
@@ -200,7 +229,7 @@ def http_json(url, payload, headers=None, method='POST', timeout=90):
         data = None
     req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     try:
-        r = urllib.request.urlopen(req, timeout=timeout)
+        r = _urlopen(req, timeout)
         return r.read(), dict(r.headers)
     except urllib.error.HTTPError as e:
         raw = e.read().decode('utf-8', 'ignore')
@@ -488,7 +517,8 @@ class H(BaseHTTPRequestHandler):
                     'tier': ST['tier'], 'project': bool(ST['project']), 'ide': ST['ide'],
                     'client_ok': bool(ST['client_ok']), 'models': len(MODELS),
                     'oauth': len(CLIENT_CANDIDATES),
-                    'calls': ST['calls'], 'last_model': ST['last_model'], 'last_ok': ST['last_ok']}
+                    'calls': ST['calls'], 'last_model': ST['last_model'], 'last_ok': ST['last_ok'],
+                    'upstream_proxy': proxy_info()}
             self._send(200, json.dumps(info))
         else:
             self._send(404, json.dumps({'error': 'not found'}))

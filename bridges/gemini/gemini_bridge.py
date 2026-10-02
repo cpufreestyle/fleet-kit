@@ -257,6 +257,36 @@ def _spent(deadline):
     return deadline is not None and time.time() >= deadline
 
 
+# 上游代理开关。urllib 默认吃 macOS 系统代理；2026-10-02 实测本机系统代理
+# （MacPacket）没有国际路由，google 域名一律 000 / ProxyError 503，与账号是否
+# 验证无关。GEMINI_UPSTREAM_PROXY 显式指定出口（例如 http://127.0.0.1:7890），
+# 设了就走它，没设沿用系统代理。/health 的 upstream_proxy 报告当前生效的出口。
+UPSTREAM_PROXY = 'GEMINI_UPSTREAM_PROXY'
+
+
+def proxy_info() -> dict:
+    """当前上游出口：{'proxy': url|None, 'source': 'env'|'system'|'direct'}。"""
+    explicit = (os.environ.get(UPSTREAM_PROXY) or '').strip()
+    if explicit:
+        return {'proxy': explicit, 'source': 'env'}
+    try:
+        env_proxies = urllib.request.getproxies() or {}
+    except Exception:
+        env_proxies = {}
+    system = env_proxies.get('https') or env_proxies.get('http') or ''
+    return {'proxy': system or None, 'source': 'system' if system else 'direct'}
+
+
+def _urlopen(req, timeout):
+    """按 UPSTREAM_PROXY 走出口；未设置时与 urllib.request.urlopen 等价。"""
+    info = proxy_info()
+    if info['source'] == 'env':
+        handler = urllib.request.ProxyHandler({'http': info['proxy'],
+                                               'https': info['proxy']})
+        return urllib.request.build_opener(handler).open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def http_json(url, payload, headers=None, method='POST', timeout=90):
     hdrs = {'User-Agent': UA, 'Content-Type': 'application/json;charset=UTF-8', 'Accept-Encoding': 'identity'}
     if headers:
@@ -266,7 +296,7 @@ def http_json(url, payload, headers=None, method='POST', timeout=90):
         data = None
     req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     try:
-        r = urllib.request.urlopen(req, timeout=timeout)
+        r = _urlopen(req, timeout)
         raw = r.read()
         enc = (r.headers.get('Content-Encoding') or '').lower()
         if 'gzip' in enc:
@@ -548,7 +578,8 @@ class H(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'status': 'ok', 'account_pool': _pool().summary()}))
         elif self.path.startswith('/health') or self.path == '/':
             info = {'status': 'ok', 'account': os.environ.get('GEMINI_ACCOUNT_LABEL', 'google-one'),
-                    'tier': _st()['tier'], 'project': bool(_st()['project']), 'last_channel': _st()['last_channel']}
+                    'tier': _st()['tier'], 'project': bool(_st()['project']), 'last_channel': _st()['last_channel'],
+                    'upstream_proxy': proxy_info()}
             self._send(200, json.dumps(info))
         else:
             self._send(404, json.dumps({'error': 'not found'}))
