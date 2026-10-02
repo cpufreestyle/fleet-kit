@@ -192,11 +192,24 @@ run ocx sync
 # model discovery.
 if [ -n "${STEPFUN_PLAN_API_KEY:-}" ]; then
   run ocx provider add stepfun --adapter openai-chat --base-url https://api.stepfun.com/step_plan/v1 --api-key "${STEPFUN_PLAN_API_KEY}" --allow-private-network --force
+  # A freshly added provider only enters the routing table after a restart;
+  # without it `ocx models` shows no stepfun rows at all (Windows, 2026-10-01).
+  run ocx restart
+  sleep 3
   # bare `ocx models` refreshes the discovery cache; without it
   # `ocx models provider stepfun on` reports "no models are available".
   run ocx models >/dev/null
   run ocx models provider stepfun on
   run ocx models selected stepfun --set step-5-preview,step-3.7-flash,step-3.5-flash-2603,step-3.5-flash,step-router-v1
+  # `selected` alone does not inject the rows: ocx sync keeps printing
+  # "+N models appended" while /v1/models has no stepfun entry. Without an
+  # explicit enable the picker has no stepfun row, so a bare `step-5-preview`
+  # request falls through to the ChatGPT account pool and comes back as
+  # 400 "The 'step-5-preview' model is not supported when using Codex with a
+  # ChatGPT account."
+  for m in step-5-preview step-3.7-flash step-3.5-flash-2603 step-3.5-flash step-router-v1; do
+    run ocx models enable "stepfun/${m}"
+  done
 else
   echo "  (STEPFUN_PLAN_API_KEY not set; skipping stepfun plan api)"
 fi

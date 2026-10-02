@@ -142,24 +142,22 @@ def app_support_root() -> Path:
 
 
 def storage_candidates() -> list[dict]:
+    # macOS  : ~/Library/Application Support/<edition>/User/globalStorage/storage.json
+    # Windows: %APPDATA%\<edition>\User\globalStorage\storage.json
+    # Some installs nest the IDE folder under a vendor folder (.../Trae/Trae CN),
+    # so both roots are probed. Different version dirs can share one app data
+    # root, so the IDE dir is unioned with its parent to catch nested layouts.
     out = []
-    # 各版本目录并列放在同一个容器目录下（%APPDATA%\Trae CN、~/Library/Application
-    # Support/Trae CN、~/.config/Trae CN ...），不能自己再拼一层 "Trae"，否则会得到
-    # %APPDATA%\Trae\Trae CN 这种不存在的路径。
     roots = [Path(app_support_root())]
     for base in _platform.app_data_containers():
-        p = Path(base)
-        if p not in roots:
-            roots.append(p)
+        q = Path(base)
+        if q not in roots:
+            roots.append(q)
     for base in roots:
         for name in APP_NAMES:
             out.append({"edition": name,
                         "path": base / name / "User" / "globalStorage" / "storage.json",
                         "source": "desktop"})
-    # ~/.trae-cn/trae-jwt-token 与 ~/.trae/trae-jwt-token 是 RS256 JWT，
-    # payload.data 只有 id/tenant_id/type/user_id，既没有 access token 也没有
-    # refresh token；直接拿整个 JWT 当 Bearer 打 get_detail_param 实测返回 0 个
-    # 模型。接进来只会得到一个永远失败的登录源，所以不列。
     return [c for c in out if c["path"].exists()]
 
 

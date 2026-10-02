@@ -31,6 +31,7 @@ import _platform
 import _common
 import time
 import uuid
+from typing import Optional
 from pathlib import Path
 import httpx
 from fastapi import HTTPException, Request
@@ -48,9 +49,24 @@ DEVICE_TIMEOUT = float(os.environ.get("CODELY_DEVICE_TIMEOUT") or "900")
 # 2026-09-28 实测：该团队密钥只允许 alias-only-proxy-models。
 # 原始模型名（DeepSeek-V4.1-Flash / GLM-5.3-FLASH / KIMI-K3）会被网关 401
 # team_model_access_denied 拒绝，只有 5 个 codely-* 别名真实可调用，全部已验证。
+# The official CLI's `--cmd "/model list"` lists these aliases; /health degrades to them.
 FALLBACK_MODELS = [
     "codely-core", "codely-flash", "codely-air", "codely-basic", "codely-vl",
 ]
+# 上游给团队虚拟密钥放行的是 alias-only 模型（/v1/models 实测 is_alias:true）：
+# 直接请求 DeepSeek-V4.1-Flash / GLM-5.3-FLASH / KIMI-K3 会被网关拒
+# "team not allowed to access model. This team can only access models=
+# ['alias-only-proxy-models']"。所以无凭据降级的目录只列这 5 个，避免选择器出现
+# 必然 401 的死行。
+ALIAS_MODELS = ["codely-core", "codely-flash", "codely-air", "codely-basic", "codely-vl"]
+# 上游 alias → display_name 的反查（实测：basic/flash/air=DeepSeek-V4.1-Flash，
+# core=GLM-5.3）。旧目录里的裸模型名按 display_name 归一到可访问的 alias。
+DISPLAY_TO_ALIAS = {
+    "deepseek-v4.1-flash": "codely-flash",
+    "glm-5.3": "codely-core",
+    "glm-5.3-flash": "codely-flash",
+    "kimi-k3": "codely-core",
+}
 CATALOG_PREFIX = "codely/"
 
 # 网关策略：团队密钥仅允许 alias-only-proxy-models。任何出现在这里之外的名字
@@ -170,22 +186,38 @@ def save_creds(creds: dict) -> None:
 
 check_bridge_auth = _common.make_auth_checker(BRIDGE_KEY)
 
-# 把 Codex 侧带 codely/ 前缀的模型名还原成 Tuanjie 网关原生模型名。
-remap_model = _common.make_model_remapper(
-    CATALOG_PREFIX, double_prefix="codely-codely", double_strip="codely-")
-
-
 def _strip_provider_prefix(model: str) -> str:
-    """去掉 Codex 侧可能带来的 provider 前缀。
+    """Drop the provider prefix Codex may have attached to the model name.
 
-    opencodex 的 codely provider 有 alias `cdl`，请求常以 `cdl/<model>` 到达；
-    不剥的话白名单会把整个串当成未知模型拒掉。"""
-    for prefix in ("cdl/", "codely/", "codely-"):
+    opencodex gives the codely provider the alias `cdl`, so a request can
+    arrive as `cdl/<model>`; without stripping it the whitelist below sees the
+    whole string as an unknown model and refuses it.
+    """
+    for prefix in ("cdl/", CATALOG_PREFIX, "codely-"):
         if model.startswith(prefix):
             return model[len(prefix):]
-    if model.startswith("codely-codely"):
-        return model[len("codely-"):]
     return model
+
+
+# Normalize a Codex-side model name to an alias the Tuanjie gateway accepts.
+def remap_model(model: Optional[str]) -> Optional[str]:
+    if not model:
+        return model
+    m = model
+    for prefix in ("cdl/", CATALOG_PREFIX, "codely-"):
+        if m.startswith(prefix):
+            m = m[len(prefix):]
+            break
+    if m.startswith("codely-codely"):
+        m = m[len("codely-"):]
+    if m in ALIAS_TO_MODEL:
+        m = ALIAS_TO_MODEL[m]
+    if m in LEGACY_DENIED:
+        return LEGACY_DENIED[m]
+    if m in ALIAS_MODELS:
+        return m
+    key = m.lower().replace("_", "-")
+    return DISPLAY_TO_ALIAS.get(key)
 
 
 # ---------------- 官方链路：设备码登录 / 刷新 / 虚拟密钥 ----------------
@@ -346,7 +378,7 @@ async def health():
         "has_cli_api_key": bool(creds.get("cli_api_key")),
         "user_id": creds.get("user_id"),
         "gateway": GATEWAY_BASE,
-        "models": FALLBACK_MODELS,
+        "models": ALIAS_MODELS,
     }
 
 
@@ -400,15 +432,23 @@ async def list_models(request: Request):
             )
         if r.status_code == 200:
             try:
-                payload = r.json()
-                allowed = [m for m in payload.get("data", [])
-                           if (m.get("id") or "").split("/", 1)[-1] not in DENIED_MODELS]
-                if len(allowed) != len(payload.get("data", [])):
-                    payload["data"] = allowed
-                content = json.dumps(payload, ensure_ascii=False)
+                # The team key only reaches aliases, so the alias rows survive
+                # and the retired raw names (DeepSeek-V4.1-Flash /
+                # GLM-5.3-FLASH / KIMI-K3) are dropped: ocx syncs them into the
+                # catalog as rows that can only ever answer 401
+                # "team not allowed to access model".
+                live = r.json()
+                data = live.get("data", [])
+                data = [
+                    m for m in data
+                    if m.get("is_alias")
+                    or (m.get("id") or "").split("/", 1)[-1] in ALIAS_MODELS
+                ]
+                live["data"] = data
+                return Response(content=json.dumps(live, ensure_ascii=False),
+                                media_type="application/json")
             except Exception:
-                content = r.content.decode("utf-8", "replace")
-            return Response(content=content, media_type="application/json")
+                return Response(content=r.content, media_type="application/json")
         detail = r.text[:200]
     except HTTPException as e:
         detail = e.detail
@@ -420,7 +460,7 @@ async def list_models(request: Request):
         "object": "list",
         "data": [
             {"id": f"{CATALOG_PREFIX}{m}", "object": "model", "created": 0, "owned_by": "tuanjie-ai"}
-            for m in FALLBACK_MODELS
+            for m in ALIAS_MODELS
         ],
     }
     # The upstream body carries newlines; h11 aborts the whole response if one
@@ -452,8 +492,9 @@ async def chat_completions(request: Request):
     if str(body["model"] or "") not in FALLBACK_MODELS:
         raise HTTPException(
             status_code=400,
-            detail=f"model '{body['model']}' is not allowed for this team key. "
-                   f"Allowed models (alias-only): {', '.join(FALLBACK_MODELS)}",
+            detail=(f"model '{body.get('model')}' is not allowed for this team key. "
+                    f"Allowed models (alias-only): "
+                    f"{", ".join(FALLBACK_MODELS)}"),
         )
     stream = bool(body.get("stream"))
     try:
