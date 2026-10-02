@@ -25,9 +25,9 @@ GitHub 是本仓库的主 remote（origin）。当国际出口阻断、GitHub �
     Codex ──▶ opencodex 代理 (127.0.0.1:10100)
                  │  [model_providers.*] allow-private-network
                  ▼
-           11 座本地桥 (127.0.0.1:8787 .. 8798)
+           15 座本地桥 (127.0.0.1:8787 .. 8803)
                  ▼
-           WorkBuddy 国内版 / 海外版 / Qoder / 团结AI / Trae / 灵犀 / 小浣熊 / Gemini / CatPaw / TokenDance
+           WorkBuddy 国内版 / 海外版 / Qoder / 团结AI / Trae / 灵犀 / 小浣熊 / Gemini / CatPaw / TokenDance / Cline / ZCode / Kimi Code / MiniMax
 
 | 桥 (name)        | 默认端口 | 上游服务            | 探针模型                  |
 |------------------|---------|---------------------|---------------------------|
@@ -42,12 +42,16 @@ GitHub 是本仓库的主 remote（origin）。当国际出口阻断、GitHub �
 | catpaw           | 8795    | CatPawAI (美团)     | glm-5.2 等                |
 | antigravity      | 8797    | Google Antigravity  | claude-opus-4-8 / gemini-3.1-pro-preview 等 |
 | qwen             | 8798    | 阿里 Qwen Cloud     | qwen3.8-flash / qwen3.8-max 等          |
+| cline            | 8799    | Cline 免费池        | deepseek-v4.1-flash 等    |
+| zcode            | 8800    | ZCode / 阿里云      | GLM-5.3 / GLM-5.3-Flash   |
+| kimi             | 8802    | Kimi Code (Moonshot)| kimi-for-coding / k3      |
+| minimax          | 8803    | MiniMax             | MiniMax-M3 / M2.7 等      |
 
 Codex 里模型以 `桥名/模型` 出现，例如 `workbuddy/hy4-preview`。
 
 ## 项目命名与目录
 
-项目名 **FleetKit**（十一桥反代理舰队）。git 源码与运行目录分离：
+项目名 **FleetKit**（十五桥反代理舰队）。git 源码与运行目录分离：
 
     <项目目录>/kit/       git 仓库（本文档所在）：改代码、git pull 都在这里
     <项目目录>/runtime/   运行根（FLEET_HOME）：13 座桥、fleet.env、logs、checkin

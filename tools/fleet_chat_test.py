@@ -46,6 +46,8 @@ BRIDGE_NAMES = [
     ('qwen',         11, 'qwen3.8-flash'),
     ('cline',        12, 'cline-free/deepseek-v4.1-flash'),
     ('zcode',         13, 'zcode/GLM-5.3-Flash'),
+    ('kimi',          15, 'kimi/kimi-for-coding'),
+    ('minimax',       16, 'minimax/MiniMax-M2.7'),
 ]
 
 

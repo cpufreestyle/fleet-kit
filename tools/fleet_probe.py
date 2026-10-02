@@ -36,6 +36,7 @@ PORTS = {
     "xhx": 8793, "gemini": 8794, "catpaw": 8795,
     "antigravity": 8797, "qwen": 8798, "cline": 8799,
     "zcode": 8800,
+    "kimi": 8802, "minimax": 8803,
 }
 
 # Providers that do not own a local bridge: ocx forwards them straight to the
@@ -56,6 +57,7 @@ KEY_ENV = {
     "catpaw": "CATPAW2CODEX_KEY", "antigravity": "ANTIGRAVITY2CODEX_KEY",
     "qwen": "QWEN2CODEX_KEY", "cline": "CLINE2CODEX_KEY",
     "zcode": "ZCODE2CODEX_KEY",
+    "kimi": "KIMI2CODEX_KEY", "minimax": "MINIMAX2CODEX_KEY",
 }
 
 # One bridge needs longer than the sweep default before it can answer
