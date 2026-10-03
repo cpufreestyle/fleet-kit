@@ -54,7 +54,7 @@ MAX_BODY_BYTES = 2 * 1024 * 1024
 
 # Order bare model ids are resolved in when the caller omits a bridge. xhx then
 # lingxi first keeps the relay's own recommendation stable.
-PREFERRED = ["xhx", "lingxi", "codely", "workbuddy", "kimi", "minimax",
+PREFERRED = ["xhx", "lingxi", "codely", "workbuddy", "kimi-code", "minimax",
              "qoder", "trae", "zcode", "cline", "qwen", "gemini",
              "antigravity", "catpaw", "workbuddy-gpt"]
 

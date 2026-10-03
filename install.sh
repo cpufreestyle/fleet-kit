@@ -142,7 +142,7 @@ BRIDGES=(
   "qwen|qwen2codex|qwen|qwen_bridge.py|11|QWEN2CODEX_KEY|--host 127.0.0.1 --port @PORT@|QWEN_CALL_TIMEOUT=300"
   "cline|cline2codex|cline|cline_bridge.py|12|CLINE2CODEX_KEY|--host 127.0.0.1 --port @PORT@|CLINE_CALL_TIMEOUT=300"
   "zcode|zcode2codex|zcode|zcode_bridge.py|13|ZCODE2CODEX_KEY|--host 127.0.0.1 --port @PORT@|ZCODE_CALL_TIMEOUT=300"
-  "kimi|kimi2codex|kimi|kimi_bridge.py|15|KIMI2CODEX_KEY|--host 127.0.0.1 --port @PORT@|KIMI_CALL_TIMEOUT=300"
+  "kimi-code|kimi2codex|kimi|kimi_bridge.py|15|KIMI2CODEX_KEY|--host 127.0.0.1 --port @PORT@|KIMI_CALL_TIMEOUT=300"
   "minimax|minimax2codex|minimax|minimax_bridge.py|16|MINIMAX2CODEX_KEY|--host 127.0.0.1 --port @PORT@|MINIMAX_CALL_TIMEOUT=300"
 )
 

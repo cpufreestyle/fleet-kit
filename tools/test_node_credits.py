@@ -97,11 +97,11 @@ def test_every_node_in_the_fleet_has_a_row():
     rows = node_credits.read_all()
     names = [row["node"] for row in rows]
     assert set(EVERY_NODE) <= set(names)
-    # the two coding plans run no bridge, so fleet_probe never names them;
-    # they are the rows plan_credits.py fills, and forgetting one is just as
-    # invisible as forgetting a bridge
+    # the two coding plans run their own bridges now (kimi-code on 8802,
+    # minimax on 8803), so PLAN_ACCOUNTS overlaps EVERY_NODE: the fleet is
+    # the union of the two sets, not the sum -- one name, one row
     assert set(node_credits.PLAN_ACCOUNTS) <= set(names)
-    assert len(rows) == len(EVERY_NODE) + len(node_credits.PLAN_ACCOUNTS)
+    assert len(rows) == len(set(EVERY_NODE) | set(node_credits.PLAN_ACCOUNTS))
 
 
 def test_every_row_declares_where_its_number_came_from():
@@ -359,3 +359,105 @@ def test_a_machine_that_never_logged_in_keeps_the_dash(monkeypatch, tmp_path):
 def test_a_node_that_keeps_no_credential_file_has_no_fallback():
     """Only the two JWT-on-disk bridges have a local identity to read."""
     assert node_credits.local_account("trae") == ""
+
+
+# ---------------- the bridge account pool ----------------
+
+def _pool_health(accounts):
+    """What the kimi/minimax bridge answers on /health with a pool."""
+    return {"ok": True, "account_pool": {"accounts": accounts,
+                                         "count": len(accounts)}}
+
+
+def _account(tail, *, points, state="ready", primary=False, unit="credits",
+           brand="kimi"):
+    """One status() row of bridges/plan_key_pool.py, as the bridge publishes."""
+    return {"name": "%s\u2026%s" % (brand, tail), "key_tail": tail,
+            "state": state,
+            "primary": primary, "points": points, "points_unit": unit,
+            "source": "admin"}
+
+
+class _PoolBridge:
+    """PLAN_ACCOUNTS pointed at a fake bridge on the ports under test."""
+
+    def __init__(self, monkeypatch, health):
+        self.server = _Server({"/health": (health, 200)})
+        monkeypatch.setattr(node_credits, "PLAN_ACCOUNTS",
+                            {name: {**spec, "port": self.server.port}
+                             for name, spec in node_credits.PLAN_ACCOUNTS.items()})
+
+    def read(self, name):
+        return node_credits._pool_accounts_row(name, node_credits._row(name))
+
+    def close(self):
+        self.server.close()
+
+
+def test_the_bridge_pool_fills_the_credits_row(monkeypatch):
+    """The pool is what the bridge burns, so it is the honest source."""
+    bridge = _PoolBridge(monkeypatch, _pool_health([
+        _account("irst", points=6420, primary=True),
+        _account("cond", points=300, state="cooling"),
+    ]))
+    try:
+        row, from_pool = bridge.read("kimi-code")
+    finally:
+        bridge.close()
+
+    assert from_pool is True
+    assert row["credits_source"] == "bridge /health account_pool"
+    assert row["credits_value"] == 6420, "the primary account is the headline"
+    assert row["credits_unit"] == "credits"
+    assert row["account"] == "kimi\u2026irst"
+    assert row["up"] is True
+    assert row["logged_in"] is True
+    # one line the panel can put under the account name
+    assert row["credits_accounts"] == "kimi\u2026irst 6,420 / kimi\u2026cond 300"
+    note = row["credits_note"]
+    assert "2 account(s)" in note
+    assert "6,720 points total" in note
+    assert "kimi\u2026cond 300 (cooling)" in note
+
+
+def test_a_pool_without_accounts_falls_back_to_the_key(monkeypatch):
+    """A bridge up with an empty pool has nothing to say about accounts."""
+    bridge = _PoolBridge(monkeypatch, _pool_health([]))
+    try:
+        row, from_pool = bridge.read("kimi-code")
+    finally:
+        bridge.close()
+
+    assert from_pool is False
+
+
+def test_a_dead_bridge_port_falls_back(monkeypatch):
+    """No bridge running: the key in the environment is still the fallback."""
+    monkeypatch.setattr(node_credits, "PLAN_ACCOUNTS",
+                        {name: {**spec, "port": _dead_port()}
+                         for name, spec in node_credits.PLAN_ACCOUNTS.items()})
+
+    _row, from_pool = node_credits._pool_accounts_row(
+        "kimi-code", node_credits._row("kimi-code"))
+
+    assert from_pool is False
+
+
+def test_an_account_without_a_published_balance_says_so(monkeypatch):
+    """A pay-as-you-go key has no Token Plan behind it: not a zero."""
+    bridge = _PoolBridge(monkeypatch, _pool_health([
+        _account("real", points=None, primary=True, unit="", brand="minimax"),
+    ]))
+    try:
+        row, from_pool = bridge.read("minimax")
+    finally:
+        bridge.close()
+
+    assert from_pool is True
+    assert row["credits_value"] is None
+    assert row["credits_unit"] == ""
+    # a single account is not a pool: no one-line roster was earned
+    assert row["credits_accounts"] is None
+    assert "the balance route only accepts a subscription Key" in row["credits_note"]
+    assert "pay-as-you-go" in row["credits_note"]
+    assert "1 account(s)" in row["credits_note"]

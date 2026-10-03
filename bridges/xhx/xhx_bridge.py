@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import sys
@@ -50,9 +51,23 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import _common
 import usage_ledger
-from account_pool import AccountPool
 
-BRIDGE_VERSION = "0.2.0"
+# The raccoon pool ships as a sibling file and is loaded by explicit path
+# under a private module name: the bare name "account_pool" also belongs to
+# the workbuddy bridge, so a process that loads that bridge first would
+# otherwise leave its pool in sys.modules and silently answer with the
+# wrong account_pool.
+_pool_spec = importlib.util.spec_from_file_location(
+    "xhx_account_pool",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "account_pool.py"))
+_pool_module = importlib.util.module_from_spec(_pool_spec)
+# dataclasses resolves bare-identifier annotations (KW_ONLY, ClassVar)
+# through sys.modules, so the module must be registered before it executes.
+sys.modules[_pool_spec.name] = _pool_module
+_pool_spec.loader.exec_module(_pool_module)
+AccountPool = _pool_module.AccountPool
+
+BRIDGE_VERSION = "0.2.1"
 
 WEB_BASE = os.environ.get("XHX_WEB_BASE_URL") or "https://xiaohuanxiong.com"
 API_BASE = f"{WEB_BASE}/api/web/llm/v2"
