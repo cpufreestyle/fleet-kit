@@ -49,6 +49,12 @@ HTML 提取 script/link 的 .js 资产并下载，按关键词（免费/限免/�
 | `own` | 不走客户端积分 | tokendance / stepfun 独立 API Key 按量；openai 为 ChatGPT 原生订阅 |
 | `unknown` | 无法核实 | catpaw 需美团 VPN |
 
+口径是**逐模型**标注的（free_models.py 对每个模型单独判定），但当前每个平台内部
+口径一致：限额免费类 trae 26/26、cline 14/14、antigravity 12/12、gemini 4/4、
+qoder 2/2 全是 limit。面板免费模型表的积分徽章旁因此带 `N/M` 覆盖标记：`全平台 N/N`
+= 该平台所有模型同一口径；`本模型 N/M` = 只覆盖部分模型，出现即说明同平台存在不同
+口径的模型，选型时要逐个看。
+
 排查额度耗尽：`python3 tools/free_models.py --credits client`；
 要区分「免费但限流」和「按量扣费」：对比 `--credits limit` 与 `--credits own`。
 

@@ -1358,12 +1358,22 @@ function renderFree(){
  var clg=document.getElementById('free-credits-legend');
   if(clg){clg.textContent='客户端积分口径：'+(f.legend&&f.legend.credits?Object.keys(f.legend.credits).map(function(k){
    return (CREDITS_BADGE[k]||k)+'='+f.legend.credits[k];}).join('  ·  '):'');}
+  if(clg){clg.textContent+='；口径为逐模型标注：徽章旁 N/M = 该平台走此口径的模型数，「全平台」即整平台一致（如限额免费），「本模型」即只覆盖部分';}
   var klg=document.getElementById('free-code-legend');
   if(klg){klg.textContent='写代码口径：两个真实编码任务的实测判定（code_model_bench snapshot）：全过=全分 · 部分=未全过 · NO_RUN=只出文本 · 断桥=不可达 · ?=无实测；超过 '+(f.code_stale_after_days||7)+' 天标 stale';}
  var co=document.getElementById('free-credits-only');
   var creditsOnly=!!(co&&co.checked);
   var hide=document.getElementById('free-hide');
   var hiding=!!(hide&&hide.checked);
+  // 口径覆盖范围：积分四档是逐模型标注的，徽章旁 N/M 表示该平台有多少模型走
+  // 同一口径——N=M 即整平台一致（如限额免费），N<M 即只覆盖部分模型。
+  var pkind={};(f.models||[]).forEach(function(m){
+    if(!pkind[m.provider]){pkind[m.provider]={};}
+    pkind[m.provider][m.credits]=(pkind[m.provider][m.credits]||0)+1;});
+  function credCover(m){
+    var d=pkind[m.provider]||{};var tot=0;for(var k in d){tot+=d[k];}
+    var n=d[m.credits]||0;
+    return '<span class=dim style="font-size:11px">'+(n===tot?'全平台 ':'本模型 ')+n+'/'+tot+'</span>';}
   var all=(f.models||[]).filter(function(m){
     return m.in_picker||m.free==='free'||m.free==='free-window'||m.free==='quota'||m.free==='trial';});
   var list=[],hidden={},hiddenN=0;
@@ -1379,7 +1389,7 @@ function renderFree(){
   rows.innerHTML=list.length?list.map(function(m){
    return '<tr><td>'+esc(m.picker_name||m.picker_slug||m.model)+'</td>'+
      '<td>'+pill(freeKind(m.free),m.badge)+'</td>'+
-     '<td title="'+esc(m.credits_note||'')+'">'+pill(creditsKind(m.credits),m.credits_badge||m.credits)+'</td>'+
+     '<td title="'+esc(m.credits_note||'')+'">'+pill(creditsKind(m.credits),m.credits_badge||m.credits)+' '+credCover(m)+'</td>'+
       '<td title="'+esc(codeTip(m))+'">'+pill(codeKind(m.code_verdict),m.code_badge||'?')+'</td>'+
      '<td class="dim">'+esc(m.window)+'</td>'+
      '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('')
