@@ -45,7 +45,23 @@
 ## captcha minter 环境
 
 - 系统无 playwright 的解释器调 minter 会静默挂起：cli_client._mint_ticket
-  现在按 /usr/bin/python3（Xcode CLT, 有 playwright）优先，ZCAP_PY 可覆盖。
+  的探测顺序是 `sys.executable`（桥自己就在带 playwright 的 venv 里）优先，
+  然后 /usr/bin/python3（Xcode CLT）、`python3`；ZCAP_PY 可覆盖。
+- **调用路径上的 mint 一律 `--headless`**：2026-10-02 修，之前每请求现场
+  mint 是有头 Chrome，滑块窗直接弹到运营者脸上，40~60s 后失败再把人推去
+  relay 页——验证就是这么反复跳的。无头 mint 解不了滑块，但它静默失败，
+  由调用方回落成「开一次页换一张」。2026-10-03 起默认连无头也不跑了：
+  `ZCODE_CAPTCHA_AUTOMINT=0` 时调用路径完全不 mint（见下节）。
+- minter 的 Chrome profile 落在 `bridges/zcode/captcha_profile`（不再 /tmp，
+  重启即清）：profile 每次重置等于设备指纹永远冷，无感验证必然不过。
+- minter 改为**盯票池判断成功**：人工在页面存票即写池文件，minter 读池领取；
+  原先读 `window.__capParam` 实测不可靠（人工存票成功它仍超时），自动拖滑块
+  （`drag_slider`）从来没成功过、已删除。副作用是好事：任何浏览器在窗口期内
+  存的票都会被这次 mint 捡走。
+- **无感验证只认有头**（2026-10-02 实测）：同样养过的 profile，有头 4/4 自动出票
+  （2~4 秒），无头 3/3 被弹滑块；换桌面 UA 救不了无头（判别比 UA 深）。所以
+  minter 自己会点「开始验证」（页面的人工手动语义不变），keeper 用有头+屏幕外
+  （`ZCAP_ARGS=--window-position=20000,20000`）把窗口藏出屏幕。
 - mint 成功率间歇（traceless 卡 F001/F015），--serve 模式维持池子比
   每请求现场 mint 更稳；失败重试可成。
 
@@ -54,6 +70,68 @@
 
 launchd：`com.local.zcode2codex`（plist 由 install.sh 生成，offset 13）
 captcha 换取页：http://127.0.0.1:8910/ （launchd `com.local.zcode-captcha-relay`）
+
+
+## 别反复跳验证（2026-10-02 修的那一圈）
+
+症状：zcode 每次调用都跳一次验证——要么一个 Chrome 窗弹到脸上，要么被推去
+127.0.0.1:8910 拖一次滑块，刚存好的票只够一发，下一发再来一圈。
+
+根因是三个设计缺口叠出来的：
+
+1. 池子空了以后，调用路径上的 mint 是**有头** Chrome（滑块窗当场弹）；
+2. minter 的 profile 在 /tmp，重启/周期清理即重置，无感验证永远冷启失败；
+3. relay 页每次打开 2.2 秒后自动唤起验证，且把票覆写进 captcha.txt——
+   同一张 param 在池里一份、旧文件里一份，就是两次领取，第二次必 3007。
+
+现在的形状：页面手动唤起、可连续备票进池；调用只从池里静默取票；池干时
+无头 mint 静默失败一次，回落成「开一次页换一张」。备票的有效窗口按消费方
+不同：CLI 路线（cli_client）600s 新鲜度 + 900s 寿龄，桥的直连路线 75s。
+`tools/test_zcode_captcha_flow.py` 钉住这几条契约。
+
+## 票池与自动验证开关（2026-10-03 起默认关）
+
+按用户要求「zcode 不要调自动验证」，两条自动路径都已停：
+
+1. **后台 keeper 已卸载**——`com.local.zcode-captcha-keeper`（每 120s 一次
+   有头、屏幕外补票）已 uninstall，`~/Library/LaunchAgents` 里 plist 也已删。
+   恢复：从 **runtime 树**执行
+   `bash runtime/bridges/zcode/captcha-keeper.sh install`
+   （从 kit 装会把票补进 kit 的池、桥读不到；控制脚本向上找 platform.sh
+   定位自己的树，理由也在此）。
+2. **桥内现场 mint 默认关**——`zcode_bridge.py` 的 `ZCODE_CAPTCHA_AUTOMINT`
+   开关（默认 1，保持旧行为；`com.local.zcode2codex` 的 plist 已置 0 并重启）。
+   置 0 后 `take_captcha()` 顺序仍是「池 → captcha.txt → 现场 mint」，但现场
+   mint 直接短路返回空，不再启动 Chrome 跑无感验证；没票时按缺票路径向上一层
+   要一张人工票。
+
+取票现在只认票池和 `captcha.txt`：打开 http://127.0.0.1:8910/ 点「开始验证」
+人工换一张即写池（桌面 `zcode验证.app` 就是拉起这个 relay 的入口）。
+
+    bash bridges/zcode/captcha-keeper.sh status    # 应为 not installed + 池内存量
+
+## 桌面快捷方式（2026-10-03）
+
+`tools/make_desktop_apps.sh` 生成桌面 `.app` 启动器，内置两个目标：
+
+    bash tools/make_desktop_apps.sh                       # all：两个都（重）建
+    bash tools/make_desktop_apps.sh zcode                 # 重建 ~/Desktop/zcode验证.app
+    bash tools/make_desktop_apps.sh panel                 # 重建 ~/Desktop/FleetKit面板.app
+    bash tools/make_desktop_apps.sh panel --name 自定义   # 换个名字
+
+- `zcode`：双击唤醒 launchd 上的 relay（`launchctl kickstart`，服务未加载时回落直启
+  python），打开 http://127.0.0.1:8910/ ，并按票池新鲜张数发一条中文通知。
+- `panel`：双击唤醒 `com.local.fleet-ui`，打开 http://127.0.0.1:8796/ ，按在册桥数发
+  通知（探活走 `/api/status`）。
+
+图标由 PIL 现画转 icns：zcode 琥珀-橙渐变+盾牌对勾（验证语义），panel 翠绿-青渐变+仪表盘
+（机队语义），色相拉开，桌面上不会认错。osacompile 产出的 applet 会带一份 Assets.car，
+在 Sequoia/Tahoe 上那张 asset catalog 里的默认脚本图标会盖过 CFBundleIconFile，所以构建
+末尾 rm -f 掉 Assets.car，自定义 applet.icns 才会生效；之后 ad-hoc 签名 + lsregister
+重注册。若图标仍不刷新，`killall Finder` 即可。生成的 payload（`Contents/Resources/launch.sh`）里烘焙的是 **runtime 树**的
+路径（部署的那份才接桥），端口可用 `ZCODE_CAPTCHA_RELAY_PORT` / `FLEET_UI_PORT` 覆盖。
+keeper 已卸载、自动验证已关，现在票只来自人工（开一次 8910 换一张）；panel 快捷方式比旧的
+`FleetKit面板.webloc` 多了一层「先把服务拉起来」的能力。
 
 ## 凭证
 
@@ -91,13 +169,17 @@ sceneId `11xygtvd` / region `cn` / prefix `no8xfe`。
 
 - `captchaVerifyParam` 一次性，用过即废；过期/失效时上游返回
   `{"code":3007,"msg":"captcha verify failed"}`。
-- 换取：打开 http://127.0.0.1:8910/ 完成滑块，param 自动写入
-  `runtime/bridges/zcode/captcha.txt`（桥每次调用现读现取）。
+- 换取：打开 http://127.0.0.1:8910/ 点「开始验证」完成滑块，param 写入票池
+  `runtime/bridges/zcode/captcha_pool/<epoch>-<rand>.txt`（一个文件一张票，
+  桥凭 claim-by-delete 领取）。页面不再自动唤起验证，也**不再覆写
+  captcha.txt**——同一张票放两处就是两次领取，第二次必 3007。
 - 桥在没有 param 时返回 `503` + `captcha_relay` 字段；param 失效时同样 503
   并附上游原文，方便判断是「该换了」还是「别的错」。
 
-relay 页刻意与 ZCode.app 内部 SDK 调用对齐：`mode:'popup'`、真实
-`button` 元素、先 `startTracelessVerification()` 再 8s 回退按钮点击
+relay 页与 ZCode.app 内部 SDK 调用保持同构（`mode:'popup'`、真实 `button`、
+`startTracelessVerification()`），但 2026-10-02 起**唤起是手动的**：点一下
+「开始验证」才弹滑块，存完一张按钮立即可再点，页脚显示本次已存与池内总数，
+一次备几张覆盖一段时间的调用。
 （对齐 `onn()` 的 auto 分支）。
 
 ## 上游风控（当前未解决）

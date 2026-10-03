@@ -18,6 +18,7 @@ What is checked here, and why each one earned a test:
 No test here touches the network: the upstream is a fake response object
 behind a fake opener, so the whole HTTP path runs in-process.
 """
+import importlib.util
 import json
 import os
 import threading
@@ -318,9 +319,9 @@ def test_upstream_refusal_marker_is_an_error_even_at_200(body, expected):
 # ----------------------------------------------------------------------- routing
 def test_resolve_prefers_the_exact_catalog_slug(monkeypatch, fleet_catalog):
     monkeypatch.setattr(gw, "route_alive", lambda route, timeout=1.0: True)
-    _write_catalog(fleet_catalog, _FALLBACK_SLUGS + ("trae/trae-seed-code-pro-0430",))
-    slug, note = gw.resolve("trae/trae-seed-code-pro-0430")
-    assert slug == "trae/trae-seed-code-pro-0430"
+    _write_catalog(fleet_catalog, _FALLBACK_SLUGS + ("trae/kimi-k2.7-code",))
+    slug, note = gw.resolve("trae/kimi-k2.7-code")
+    assert slug == "trae/kimi-k2.7-code"
     assert note == "catalog slug"
 
 
@@ -343,6 +344,54 @@ def test_resolve_alias_falls_back_when_its_target_is_down(monkeypatch, fleet_cat
     slug, note = gw.resolve("claude-opus-5")
     assert slug and slug != target
     assert "fell back" in note
+
+
+def _load_catalog_sort():
+    spec = importlib.util.spec_from_file_location(
+        "catalog_sort", os.path.join(KIT, "catalog_sort.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_alias_targets_never_double_the_bridge_prefix():
+    """An alias may not name a slug with the provider prefix pasted on twice.
+
+    Measured 2026-10-02: every claude-sonnet slot pointed at
+    trae/trae-seed-code-pro-0430 while the trae bridge lists
+    trae/seed-code-pro-0430, and remap_model only ever strips the one
+    prefix -- so each sonnet call reached upstream as a model that does
+    not exist and came back 502 "the param is invalid". route_alive cannot
+    catch this class: the port answers, the slug is not there. No bridge
+    in the fleet exposes a doubled spelling (every live /v1/models read
+    on 2026-10-02), so doubled means drift.
+    """
+    doubled = []
+    for slot, target in gw.CLAUDE_ALIASES.items():
+        provider, sep, name = target.partition("/")
+        if sep and name.startswith(provider + "-"):
+            doubled.append((slot, target))
+    assert doubled == [], "alias doubles the prefix: %r" % (doubled,)
+
+
+def test_alias_targets_are_models_catalog_sort_ranks_important():
+    """Each alias slot may only name a model the sorter already ranks.
+
+    PER_PROVIDER_IMPORTANT is written from each bridge's live /v1/models,
+    so an alias whose target is absent from it names a model nobody has
+    measured -- the same 502 the doubled prefix caused: the port answers
+    and the slug does not exist. Membership is exact, not the substring
+    match important_rank() uses, because the drifted
+    trae-seed-code-pro-0430 contains seed-code-pro-0430 as a substring.
+    """
+    catalog_sort = _load_catalog_sort()
+    missing = []
+    for slot, target in gw.CLAUDE_ALIASES.items():
+        provider, _sep, name = target.partition("/")
+        known = catalog_sort.PER_PROVIDER_IMPORTANT.get(provider, ())
+        if name not in known:
+            missing.append((slot, target))
+    assert missing == [], "alias target not ranked important: %r" % (missing,)
 
 
 def test_resolve_unknown_claude_slot_lands_on_the_harbor(monkeypatch, fleet_catalog):
@@ -406,13 +455,126 @@ def test_every_listed_model_has_a_route_and_is_ordered():
     assert priorities == sorted(priorities), "strongest model is not first"
     listed = {m["id"] for m in payload["data"]}
     for slug in listed:
-        assert gw.route_for(slug) is not None, slug + " is listed but has no route"
+        # resolve(), not route_for(): a minted route has no provider prefix,
+        # so route_for() would answer with the ocx fallback and call that a
+        # route. What matters is that the id resolves to a real slug.
+        target, note = gw.resolve(slug)
+        assert target, slug + " is listed but resolves to nothing"
 
 
-def test_the_listing_never_offers_a_claude_alias_row():
-    ids = {m["id"] for m in gw.models_payload()["data"]}
+def test_every_minted_route_survives_the_desktop_picker_filter():
+    """The whole point of minting: the app's id check must keep the row.
+
+    anthropic_shaped() mirrors the app's Va() from app.asar 1.46388.4. If a
+    digest ever lands on a vendor substring the row is published and dropped,
+    which is the bug this whole mechanism exists to avoid.
+    """
+    for alias, slug in gw.alias_index().items():
+        assert gw.anthropic_shaped(alias), alias + " would be dropped by the app"
+        assert alias not in {r.get("slug") for r in gw.catalog_rows()}, \
+            alias + " collides with a catalog slug"
+
+
+def test_a_minted_route_resolves_back_to_the_row_it_was_minted_for():
+    index = gw.alias_index()
+    assert index, "nothing was minted"
+    for alias, slug in index.items():
+        target, note = gw.resolve(alias)
+        assert target == slug, alias + " resolves to " + str(target)
+        assert slug in note
+
+
+def test_a_minted_route_is_stable_for_the_same_slug():
+    """A client saves the id it picked; it must not move next restart."""
+    entries = gw.catalog_entries()
+    for slug, _display, _route, tier in entries:
+        if gw.anthropic_shaped(slug):
+            continue
+        assert gw.route_alias(slug, tier) == gw.route_alias(slug, tier)
+        # and it is derived from the slug, not from a counter
+        assert gw.route_alias(slug, tier) != gw.route_alias(slug + "x", tier)
+
+
+def test_every_catalog_row_is_visible_to_the_desktop_picker():
+    """One way or another, each model must have an id the app will keep.
+
+    This is the regression the whole alias mechanism guards: before it, 146
+    catalog rows produced 5 picker rows.
+    """
+    listed = {m["id"] for m in gw.models_payload()["data"]}
+    aliased = set(gw.alias_index().values())
+    for slug in {r.get("slug") for r in gw.catalog_rows() if r.get("slug")}:
+        assert slug in listed or slug in aliased, (
+            slug + " has no id the desktop picker keeps")
+
+
+def test_the_alias_digest_alphabet_cannot_spell_a_blacklisted_token():
+    """'abab' is the one vendor token made only of hex letters.
+
+    The minting alphabet leaves out a and b, so a digest can never contain it
+    and be rejected for a reason that has nothing to do with the model.
+    """
+    assert "abab" in gw.VENDOR_ID_BLACKLIST
+    assert not (set("ab") & set(gw._ALIAS_ALPHABET))
+    for alias in gw.alias_index():
+        digest = alias.rsplit("-", 1)[-1]
+        assert set(digest) <= set(gw._ALIAS_ALPHABET)
+
+
+def test_the_listing_offers_the_claude_alias_rows():
+    """They are the only ids the desktop picker keeps.
+
+    This test used to assert the opposite. Measured 2026-10-03 against app.asar
+    1.46388.4: the gateway listed 134 rows, discovery logged "134 found", and
+    the picker showed 5. The app filters the picker on the model id looking
+    like an Anthropic model -- a vendor-name blacklist that drops glm, kimi,
+    stepfun, qwen, deepseek, minimax and the rest -- and the family tier only
+    buys a row through discovery, not through that filter. CLAUDE_ALIASES are
+    Anthropic-shaped by construction and resolve() already honours them, so
+    listing them is whatmakes the desktop picker show the fleet.
+    """
+    payload = gw.models_payload()
+    ids = [m["id"] for m in payload["data"]]
     for alias in gw.CLAUDE_ALIASES:
-        assert alias not in ids
+        assert alias in ids, alias + " is a route the app will keep"
+    # every alias row must be usable, not decoration
+    for alias in gw.CLAUDE_ALIASES:
+        slug, _note = gw.resolve(alias)
+        assert slug, alias + " resolves to nothing"
+
+
+def test_alias_rows_come_first_and_own_their_tier_default():
+    """Where an alias exists for a tier, it must win that tier's default.
+
+    Otherwise a bare tier name the app resolves still lands on an antigravity
+    row instead of the fleet's route. mythos has no alias in the table, so its
+    default stays a catalog row -- that is the one tier this does not cover.
+    """
+    payload = gw.models_payload()
+    data = payload["data"]
+    alias_tiers = {gw.alias_tier(a) for a in gw.CLAUDE_ALIASES}
+    by_tier = {}
+    for entry in data:
+        by_tier.setdefault(entry["anthropic_family_tier"], []).append(entry)
+    for tier, entries in by_tier.items():
+        winners = [e for e in entries if e.get("is_family_default")]
+        assert len(winners) == 1, "%s has %d defaults" % (tier, len(winners))
+        if tier in alias_tiers:
+            assert winners[0]["id"] in gw.CLAUDE_ALIASES, (
+                "%s default is %s, not an alias" % (tier, winners[0]["id"]))
+    # and the alias rows really do come first
+    first_alias = next(i for i, e in enumerate(data)
+                       if e["id"] in gw.CLAUDE_ALIASES)
+    first_catalog = next(i for i, e in enumerate(data)
+                         if e["id"] not in gw.CLAUDE_ALIASES)
+    assert first_alias < first_catalog
+
+
+def test_an_alias_row_names_the_model_it_routes_to():
+    """A picker row that hides its target is a row nobody can audit."""
+    data = {m["id"]: m for m in gw.models_payload()["data"]}
+    for alias, target in gw.CLAUDE_ALIASES.items():
+        assert target in data[alias]["display_name"]
 
 
 def _fake_pool(monkeypatch):
@@ -473,6 +635,77 @@ def test_each_tier_names_one_default_row(monkeypatch):
     assert winners[first["anthropic_family_tier"]] == [first["id"]]
 
 
+
+def test_a_hash_slug_is_listed_under_a_readable_name(monkeypatch):
+    """xhx reports its models under build hashes (raccoon-19b265), and a
+    picker that shows the hash is a picker nobody can choose from. The id
+    stays the routable slug, so nothing that already references it moves.
+    """
+    rows = [{"slug": "xhx/raccoon-19b265", "priority": 1,
+             "display_name": "raccoon-19b265"}]
+    routes = {"xhx/raccoon-19b265": {"provider": "xhx",
+                                       "transport": "bridge"}}
+    monkeypatch.setattr(gw, "catalog_rows", lambda: rows)
+    monkeypatch.setattr(gw, "route_for", lambda slug: routes.get(slug))
+    entry = gw.models_payload()["data"][0]
+    assert entry["id"] == "xhx/raccoon-19b265", "the routable id must not change"
+    assert entry["display_name"] == "xhx/小浣熊Work-A"
+
+
+def test_the_bridge_reported_name_beats_the_id_in_the_listing(monkeypatch):
+    """xhx reports Raccoon-Work-260817-A next to raccoon-19b265, so the
+    listing shows the name; a bridge that reports only an id still lists,
+    with the id standing in for the missing name.
+    """
+    monkeypatch.setattr(gw, "bridge_ports", lambda: {"xhx": 8793})
+    monkeypatch.setattr(gw, "service_key", lambda provider: "k")
+    monkeypatch.setattr(gw, "DIRECT_UPSTREAMS", {})
+    monkeypatch.setattr(gw, "_tcp_alive", lambda host, port, timeout=1.0: True)
+    body = json.dumps({"data": [
+        {"id": "raccoon-19b265", "name": "Raccoon-Work-260817-A"},
+        {"id": "sn-glm-5-3-flash", "name": "GLM-5-3-Flash"},
+        {"id": "sn-kimi-k3"}]}).encode()
+
+    class Resp:
+        def __init__(self, payload):
+            self.body = payload
+
+        def read(self, *args):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(gw.OPENER, "open",
+                        lambda req, timeout=None: Resp(body))
+    saved = dict(gw._BRIDGE_CATALOG)
+    gw._BRIDGE_CATALOG["stamp"] = 0.0
+    gw._BRIDGE_CATALOG["rows"] = []
+    try:
+        rows = gw.bridge_catalog_rows()
+    finally:
+        gw._BRIDGE_CATALOG.clear()
+        gw._BRIDGE_CATALOG.update(saved)
+    names = {r["slug"]: r["display_name"] for r in rows}
+    assert names["xhx/raccoon-19b265"] == "Raccoon-Work-260817-A"
+    assert names["xhx/sn-glm-5-3-flash"] == "GLM-5-3-Flash"
+    assert names["xhx/sn-kimi-k3"] == "sn-kimi-k3", "no name reported: the id stands"
+
+
+def test_every_raccoon_hash_in_the_pool_has_a_readable_name():
+    """A new upstream build hash must not reach the picker unnamed.
+
+    xhx lists whatever build the SenseTime app is on today, so the map is
+    the only thing between a fresh raccoon-<hash> and an unreadable row.
+    """
+    unnamed = [row["slug"] for row in gw.catalog_rows()
+               if (row.get("slug") or "").startswith("xhx/raccoon-")
+               and row["slug"] not in gw.DISPLAY_NAMES]
+    assert not unnamed, "unnamed raccoon build(s): %s" % unnamed
+
 def test_key_table_does_not_drift_from_the_guard(monkeypatch):
     import default_model_guard as guard
     assert gw.KEY_ENV == guard.KEY_ENV
@@ -485,7 +718,12 @@ def test_get_models_and_health(gateway):
     url, _opener = gateway
     status, payload = _get(url, "/v1/models")
     assert status == 200
-    assert payload["data"][0]["id"] == gw.catalog_rows()[0]["slug"]
+    # alias rows lead, because the desktop picker keeps only Anthropic-shaped
+    # ids; the catalog still follows behind them in its own order
+    assert payload["data"][0]["id"] in gw.CLAUDE_ALIASES
+    listed = [m["id"] for m in payload["data"]]
+    for row in gw.catalog_rows():
+        assert row["slug"] in listed
     status, health = _get(url, "/health")
     assert status == 200
     assert health["models_listed"] >= 1

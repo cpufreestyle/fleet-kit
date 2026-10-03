@@ -32,6 +32,7 @@ PORT_OFFSETS = {
     "workbuddy": 0, "workbuddy-gpt": 1, "qoder": 2, "codely": 3, "trae": 4,
     "lingxi": 5, "xhx": 6, "gemini": 7, "catpaw": 8, "antigravity": 10,
     "qwen": 11, "cline": 12, "zcode": 13,
+    "kimi-code": 15, "minimax": 16,
 }
 # label suffixes as installed: com.local.<name>2codex
 LABEL_SUFFIX = {
@@ -40,6 +41,7 @@ LABEL_SUFFIX = {
     "lingxi": "lingxi2codex", "xhx": "xhx2codex", "gemini": "gemini2codex",
     "catpaw": "catpaw2codex", "antigravity": "antigravity2codex",
     "qwen": "qwen2codex", "cline": "cline2codex", "zcode": "zcode2codex",
+    "kimi-code": "kimi2codex", "minimax": "minimax2codex",
 }
 
 

@@ -42,7 +42,7 @@ FleetKit installer v${KIT_VERSION}
 Usage: install.sh [options]
 
   --home DIR        install root (default: ~/FleetKit/runtime)
-  --port-base N     first bridge port; bridges use N..N+13 (default: 8787)
+  --port-base N     first bridge port; bridges use N..N+16 (default: 8787)
   --with-opencodex  register bridges with opencodex after install (default)
   --no-opencodex    skip opencodex wiring
   --with-checkin   install the daily check-in timer (09:00 CST)
@@ -173,12 +173,14 @@ BRIDGES=(
   "qwen|qwen2codex|qwen|qwen_bridge.py|11|QWEN2CODEX_KEY|--host 127.0.0.1 --port @PORT@|QWEN_CALL_TIMEOUT=300"
   "cline|cline2codex|cline|cline_bridge.py|12|CLINE2CODEX_KEY|--host 127.0.0.1 --port @PORT@|CLINE_CALL_TIMEOUT=300"
   "zcode|zcode2codex|zcode|zcode_bridge.py|13|ZCODE2CODEX_KEY|--host 127.0.0.1 --port @PORT@|ZCODE_CALL_TIMEOUT=300"
+  "kimi-code|kimi2codex|kimi|kimi_bridge.py|15|KIMI2CODEX_KEY|--host 127.0.0.1 --port @PORT@|KIMI_CALL_TIMEOUT=300"
+  "minimax|minimax2codex|minimax|minimax_bridge.py|16|MINIMAX2CODEX_KEY|--host 127.0.0.1 --port @PORT@|MINIMAX_CALL_TIMEOUT=300"
 )
 
 echo "FleetKit installer v${KIT_VERSION}"
 info "kit        : ${KIT_DIR}"
 info "fleet home : ${FLEET_HOME}"
-info "ports      : ${PORT_BASE} .. $((PORT_BASE + 13))"
+info "ports      : ${PORT_BASE} .. $((PORT_BASE + 16))"
 info "launch dir : ${LAUNCH_DIR}"
 info "log dir    : ${LOG_DIR}"
 if [ "$DRY_RUN" = "1" ]; then info "mode       : DRY RUN (nothing is written)"; fi
@@ -415,8 +417,13 @@ else
   FLEET_PYTHON="${FLEET_HOME}/.venv/bin/python"
 fi
 VENV_PIP="${FLEET_HOME}/.venv/bin/pip"
-[ -x "${FLEET_HOME}/.venv/Scripts/pip.exe" ] && VENV_PIP="${FLEET_HOME}/.venv/Scripts/pip.exe"
-
+if command -v fleet_is_windows >/dev/null 2>&1 && fleet_is_windows; then
+  VENV_PIP="${FLEET_HOME}/.venv/Scripts/pip.exe"
+fi
+VENV_PY="${FLEET_HOME}/.venv/bin/python"
+if command -v fleet_is_windows >/dev/null 2>&1 && fleet_is_windows; then
+  VENV_PY="${FLEET_HOME}/.venv/Scripts/python.exe"
+fi
 if [ "$SKIP_DEPS" = "1" ]; then
   if [ ! -x "$FLEET_PYTHON" ]; then
     FLEET_PYTHON="$(command -v ${SYS_PYTHON%% *})"
@@ -430,27 +437,25 @@ else
     info "[dry-run] ${SYS_PYTHON} -m venv ${FLEET_HOME}/.venv ; pip install -r requirements.txt"
   else
     ${SYS_PYTHON} -m venv "${FLEET_HOME}/.venv"
-    # FLEET_PYTHON/VENV_PIP above were resolved BEFORE the venv existed, so a
-    # fresh install always fell through to the posix layout (bin/) even on
-    # Windows. Now that the layout is real, re-resolve it: a Windows venv keeps
-    # pip/python under Scripts/, and bin/pip does not exist there.
+    # FLEET_PYTHON/VENV_PIP/VENV_PY above were resolved BEFORE the venv existed,
+    # so a fresh install always fell through to the posix layout (bin/) even on
+    # Windows. Now that the layout is real, re-resolve all three: a Windows venv
+    # keeps pip/python under Scripts/, and bin/pip does not exist there.
     if [ -x "${FLEET_HOME}/.venv/Scripts/pip.exe" ]; then
       VENV_PIP="${FLEET_HOME}/.venv/Scripts/pip.exe"
+      VENV_PY="${FLEET_HOME}/.venv/Scripts/python.exe"
       FLEET_PYTHON="${FLEET_HOME}/.venv/Scripts/python.exe"
     elif [ -x "${FLEET_HOME}/.venv/bin/pip" ]; then
       VENV_PIP="${FLEET_HOME}/.venv/bin/pip"
+      VENV_PY="${FLEET_HOME}/.venv/bin/python"
       FLEET_PYTHON="${FLEET_HOME}/.venv/bin/python"
     fi
-    # pip.exe cannot overwrite itself on Windows ("ERROR: To modify pip, please
-    # run: python.exe -m pip install --upgrade pip"); under `set -e` that aborts
-    # the whole install. Drive it through the interpreter, and never fail here:
-    # upgrading pip is hygiene, the real dependency install is the next line.
-    if [ -x "${FLEET_HOME}/.venv/Scripts/python.exe" ]; then
-      "${FLEET_HOME}/.venv/Scripts/python.exe" -m pip install --quiet --upgrade pip || true
-    else
-      "$VENV_PIP" install --quiet --upgrade pip || true
-    fi
-    "$VENV_PIP" install --quiet -r "${KIT_DIR}/requirements.txt"
+    # pip cannot overwrite its own console script on Windows ("ERROR: To modify
+    # pip, please run: python.exe -m pip install --upgrade pip"); under `set -e`
+    # that aborts the whole install. Drive it through the interpreter, and never
+    # fail here: upgrading pip is hygiene, the real dependency install is next.
+    "$VENV_PY" -m pip install --quiet --upgrade pip || true
+    "$VENV_PY" -m pip install --quiet -r "${KIT_DIR}/requirements.txt"
     touch "${FLEET_HOME}/.venv/.fleet-deps-ok"
   fi
 fi
@@ -551,6 +556,8 @@ ANTIGRAVITY2CODEX_KEY="$(pick_key ANTIGRAVITY2CODEX_KEY)"
 QWEN2CODEX_KEY="$(pick_key QWEN2CODEX_KEY)"
 CLINE2CODEX_KEY="$(pick_key CLINE2CODEX_KEY)"
 ZCODE2CODEX_KEY="$(pick_key ZCODE2CODEX_KEY)"
+KIMI2CODEX_KEY="$(pick_key KIMI2CODEX_KEY)"
+MINIMAX2CODEX_KEY="$(pick_key MINIMAX2CODEX_KEY)"
 
 # Antigravity google oauth client pair is never committed to git (push protection
 # rejects it) and every install ships it in its own binary, so read it from there.
@@ -634,6 +641,8 @@ QWEN2CODEX_KEY="${QWEN2CODEX_KEY}"
 QWEN_API_KEY="${QWEN_API_KEY}"
 CLINE2CODEX_KEY="${CLINE2CODEX_KEY}"
 ZCODE2CODEX_KEY="${ZCODE2CODEX_KEY}"
+KIMI2CODEX_KEY="${KIMI2CODEX_KEY}"
+MINIMAX2CODEX_KEY="${MINIMAX2CODEX_KEY}"
 ANTIGRAVITY_OAUTH_CLIENT_ID="${ANTIGRAVITY_OAUTH_CLIENT_ID}"
 ANTIGRAVITY_OAUTH_CLIENT_SECRET="${ANTIGRAVITY_OAUTH_CLIENT_SECRET}"
 # Optional extra id:secret pairs tried after the primary (Antigravity rotates these).

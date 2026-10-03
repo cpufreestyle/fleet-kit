@@ -49,6 +49,12 @@ HTML 提取 script/link 的 .js 资产并下载，按关键词（免费/限免/�
 | `own` | 不走客户端积分 | tokendance / stepfun 独立 API Key 按量；openai 为 ChatGPT 原生订阅 |
 | `unknown` | 无法核实 | catpaw 需美团 VPN |
 
+口径是**逐模型**标注的（free_models.py 对每个模型单独判定），但当前每个平台内部
+口径一致：限额免费类 trae 26/26、cline 14/14、antigravity 12/12、gemini 4/4、
+qoder 2/2 全是 limit。面板免费模型表的积分徽章旁因此带 `N/M` 覆盖标记：`全平台 N/N`
+= 该平台所有模型同一口径；`本模型 N/M` = 只覆盖部分模型，出现即说明同平台存在不同
+口径的模型，选型时要逐个看。
+
 排查额度耗尽：`python3 tools/free_models.py --credits client`；
 要区分「免费但限流」和「按量扣费」：对比 `--credits limit` 与 `--credits own`。
 
@@ -156,3 +162,62 @@ gpt-5.6-sol / gpt-5.5。剩下的 gpt-6-luna / gpt-5.6-terra / gpt-5.6-luna
 不要用 `catalog-filter.sh --hide` 去盖这件事：它的判据是
 `real_calls.json` 的桥 verdict，只认反向代理桥，不认原生模型，
 跑一次会把 cline/gemini/antigravity/catpaw 一起扫掉（216 -> 136）。
+
+## 免费额度时段 = 算出来的状态（2026-10-03）
+
+以前时段只活在 `window` 自由文本里，手写的「（已结束）」会在表里躺到不再为真，
+而一个死掉的限时折扣看起来和长期免费档一模一样。现在 `window_start` /
+`window_end` / `window_standing` 三个结构化字段由人工显式填写，
+`free_models.py` 据此把时段算成 LIVE / SOON / EXPIRED / STANDING / `?`
+一列 badge（时间一律按北京时间，时刻取当前系统时间）。
+
+### 字段怎么写（放在 window 键后面）
+
+| 字段 | 含义 | 例 |
+|------|------|----|
+| `window_start` | 窗口起点，ISO 8601；裸日期按上海时区解析（`2026-09-10` = 09-10T00:00+08:00） | `"2026-09-10T00:00:00+08:00"` |
+| `window_end` | 窗口终点；当前时间过了它状态即 EXPIRED | `"2026-09-23T23:59:59+08:00"` |
+| `window_standing` | `true` = 官网写明长期免费/无固定截止；这是断言，不是推断 | `true` |
+| `window_why` | 这个口径的出处（官方弃用页、首发折扣同窗口…） | 见 free-windows.json |
+
+优先级同 credits 口径：模型级覆盖 provider 级；给了日期 `standing` 就不生效
+（workbuddy provider 是 standing，但 hy4-preview 模型带了日期，结果算 EXPIRED）。
+
+### 为什么不能从 window 文本解析日期
+
+`window` 一格里混着两种东西：真额度时段（「限免两周：2026-09-10 → 2026-09-23」）
+和实时状态记录（「2026-10-02 实测账号级额度用尽」——这是测量日期）。解析文本会把
+测量日期当成额度窗口，造出根本不存在的假窗口（antigravity 会变成
+2026-10-02 → 2026-10-02）。所以字段只由人工/脚本显式写，代码只读结构字段；
+`tools/test_free_windows.py::test_status_record_dates_stay_measurement_dates`
+守住这条决策。
+
+### --refresh
+
+    python3 tools/free_models.py --refresh               # 全量重探测
+    python3 tools/free_models.py --refresh --provider trae
+
+会真的改写 free-windows.json，写前先落一份 `free-windows.json.bak-<时间戳>`
+（`*.bak*` 已 gitignore）。每个 provider 打 `last_checked` 时间戳；`verified`
+的语义是「至少一个官方来源今天还答 200」，全部不可达才翻 false——一个死链挨着
+一个活链不推翻今天还读得动的记录。2026-10-03 实测：16 个 provider，13 个可达
+（HTTP 200），catpaw（美团 VPN）/ openai / qwen 不可达 → verified=false。
+
+### 哪些条目故意留 `?`
+
+trae 的 22 个模型和 antigravity 的 12 个（2026-06-18 是 Code Assist 关停，不是
+antigravity 的窗口）、qoder（「2 周试用」无绝对日期）、codely/lingxi（滚动额度无
+截止）、xhx/stepfun/openai/qwen/catpaw/tokendance。`?` 的意思是「没人查过」，
+不是「没有窗口」。
+
+### 实测输出（2026-10-03）
+
+    window states: EXPIRED=7  STANDING=68  ?=195
+
+EXPIRED 7 = gemini 4（Google 2026-06-18 起停服 individuals 档）+
+workbuddy/hy4-preview + workbuddy-gpt/hy4-preview + zcode/GLM-5.3-Flash。
+`--free-only` 下 cline 12 行全 STANDING、codely/lingxi/qoder 全 `?`。
+回归：`tools/test_free_windows.py`（27 例）+ `tools/test_free_models_credits.py`
+（2 例）。注意 `tools/test_no_undefined_names.py` 会全仓扫描，他人未提交的
+账号池改动（node_credits.py 引用未定义的 `_pool_accounts_row`）会让它红，
+与本节无关。

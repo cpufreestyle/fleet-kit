@@ -116,6 +116,8 @@ antigravity|antigravity2codex|10|ANTIGRAVITY2CODEX_KEY
 qwen|qwen2codex|11|QWEN2CODEX_KEY
 cline|cline2codex|12|CLINE2CODEX_KEY
 zcode|zcode2codex|13|ZCODE2CODEX_KEY
+kimi-code|kimi2codex|15|KIMI2CODEX_KEY
+minimax|minimax2codex|16|MINIMAX2CODEX_KEY
 ROWS
 
 echo

@@ -107,6 +107,17 @@ def test_no_app_key_flag_stops_the_fallback(tmp_path, monkeypatch, capsys):
     assert "no key for kimi" in capsys.readouterr().err
 
 
+def _no_remains(monkeypatch):
+    """Pretend the subscription route has nothing to say.
+
+    main() now tries /v1/token_plan/remains first. These tests are about
+    the chat-call fallback, so the route is stubbed out of the way rather
+    than the tests being rewritten around a call they never meant to make.
+    """
+    monkeypatch.setattr(pc, "minimax_remains",
+                        lambda key, hosts=None: (401, {"platform": "minimax"}))
+
+
 # ------------------------------------------------------------------ the answers
 def test_kimi_reads_the_usage_windows(monkeypatch, capsys):
     body = json.dumps({"usages": [{"window": "5h", "remaining": 128,
@@ -198,6 +209,7 @@ def test_a_windows_body_never_spends_a_token(monkeypatch):
 
 
 def test_minimax_spends_one_token_with_the_bearer(monkeypatch, capsys):
+    _no_remains(monkeypatch)
     body = json.dumps({"choices": [{"message": {"content": "hi"}}]})
     calls = _monkey(monkeypatch, 200, body)
     assert pc.main(["minimax", "--key", "mm-key",
@@ -212,6 +224,7 @@ def test_minimax_spends_one_token_with_the_bearer(monkeypatch, capsys):
 
 
 def test_minimax_retries_the_other_region_before_calling_a_key_dead(monkeypatch, capsys):
+    _no_remains(monkeypatch)
     calls = []
 
     def fake(url, headers=None, method="GET", body=None, timeout=25):
@@ -228,6 +241,7 @@ def test_minimax_retries_the_other_region_before_calling_a_key_dead(monkeypatch,
 
 
 def test_minimax_base_pins_one_host_and_keeps_the_401_verdict(monkeypatch, capsys):
+    _no_remains(monkeypatch)
     calls = []
 
     def fake(url, headers=None, method="GET", body=None, timeout=25):
@@ -252,13 +266,42 @@ def test_trailing_slash_base_is_tolerated(monkeypatch):
     pc.main(["kimi", "--key", "x", "--base", "https://example.com/"])
     assert calls[0][0] == "https://example.com/v1/usages"
 
-def test_a_missing_minimax_key_is_told_why_a_key_would_not_help(monkeypatch, capsys):
-    """A key is not the answer here, so the tool must not imply that it is."""
+def test_minimax_reads_the_token_plan_quota_from_its_documented_route(monkeypatch, capsys):
+    """The route MiniMax documents for this question, not one we guessed."""
+    def fake(url, headers=None, method="GET", body=None, timeout=25):
+        assert url == "https://www.minimax.cn/v1/token_plan/remains"
+        return 200, json.dumps({"remains": 4200, "limit": 6000})
+
+    monkeypatch.setattr(pc, "fetch", fake)
+    assert pc.main(["minimax", "--key", "sub-key"]) == 0
+    out = capsys.readouterr().out
+    assert "token_plan/remains" in out
+    assert "4200" in out
+
+
+def test_a_pay_as_you_go_key_falls_back_to_the_one_token_call(monkeypatch, capsys):
+    """A subscription key and a pay-as-you-go key are different things."""
+    seen = []
+
+    def fake(url, headers=None, method="GET", body=None, timeout=25):
+        seen.append(url)
+        if url.endswith("/v1/token_plan/remains"):
+            return 200, json.dumps({"base_resp": {"status_code": 1004,
+                                             "status_msg": "login fail"}})
+        return 200, json.dumps({"choices": [{"message": {"content": "hi"}}]})
+
+    monkeypatch.setattr(pc, "fetch", fake)
+    assert pc.main(["minimax", "--key", "payg-key"]) == 0
+    assert seen[0].endswith("/v1/token_plan/remains")
+    assert seen[-1].endswith("/v1/chat/completions")
+
+
+def test_a_missing_minimax_key_names_the_credential_it_needs(monkeypatch, capsys):
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
     assert pc.main(["minimax"]) == 3
     err = capsys.readouterr().err
     assert "no key for minimax" in err
-    assert "no balance route" in err
+    assert "subscription Key" in err
 
 
 def test_a_missing_kimi_key_is_told_where_one_comes_from(monkeypatch, capsys):

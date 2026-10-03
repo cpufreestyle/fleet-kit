@@ -118,6 +118,50 @@ def _apply_account(cand):
 class UpstreamError(Exception):
     pass
 
+def google_validation_url(body):
+    """The verification link inside a Google 403, when the gate asks for one.
+
+    Measured 2026-10-02: cloudcode-pa answers the VALI gate with 403 plus
+    ErrorInfo{reason: VALI, metadata.validation_url}. That link is the whole
+    fix -- the login itself is fine and only the account has to pass a browser
+    check -- and it sits deep in a JSON body the 502 envelope clips to 300
+    chars, so a truncated body reads as a bare "verify your account" dead end.
+    """
+    try:
+        j = json.loads(body)
+    except Exception:
+        return None
+    try:
+        for d in j["error"]["details"]:
+            u = (d.get("metadata") or {}).get("validation_url")
+            if u:
+                return u
+    except Exception:
+        pass
+    return None
+
+
+class AccountVerification(UpstreamError):
+    """Google wants the account verified in a browser before more calls.
+
+    Raised instead of a raw UpstreamError so the link survives every clip on
+    the way to the 502 envelope: _clip() prints this message in full, because
+    a truncated accounts.google.com/signin/continue/... URL is worthless to
+    the operator reading the error.
+    """
+
+    def __init__(self, url):
+        super().__init__("HTTP 403 VALIDATION_REQUIRED; account verification "
+                         "required, open: " + url)
+        self.validation_url = url
+
+
+def _clip(exc):
+    """Channel string for the 502 envelope -- long enough to keep a link."""
+    if getattr(exc, "validation_url", None):
+        return str(exc)
+    return str(exc)[:300]
+
 # 单次 chat 的总时限。原先 call_a(180s) 失败后再 call_b(180s)，最坏要 6 分钟
 # 才想起来回 502；客户端（Codex / 探测脚本）远早于此就超时断开，于是 502 写回
 # 管道时只剩 BrokenPipeError，健康检查也把这座桥误判成 BRIDGE_DOWN。
@@ -213,6 +257,36 @@ def _spent(deadline):
     return deadline is not None and time.time() >= deadline
 
 
+# 上游代理开关。urllib 默认吃 macOS 系统代理；2026-10-02 实测本机系统代理
+# （MacPacket）没有国际路由，google 域名一律 000 / ProxyError 503，与账号是否
+# 验证无关。GEMINI_UPSTREAM_PROXY 显式指定出口（例如 http://127.0.0.1:7890），
+# 设了就走它，没设沿用系统代理。/health 的 upstream_proxy 报告当前生效的出口。
+UPSTREAM_PROXY = 'GEMINI_UPSTREAM_PROXY'
+
+
+def proxy_info() -> dict:
+    """当前上游出口：{'proxy': url|None, 'source': 'env'|'system'|'direct'}。"""
+    explicit = (os.environ.get(UPSTREAM_PROXY) or '').strip()
+    if explicit:
+        return {'proxy': explicit, 'source': 'env'}
+    try:
+        env_proxies = urllib.request.getproxies() or {}
+    except Exception:
+        env_proxies = {}
+    system = env_proxies.get('https') or env_proxies.get('http') or ''
+    return {'proxy': system or None, 'source': 'system' if system else 'direct'}
+
+
+def _urlopen(req, timeout):
+    """按 UPSTREAM_PROXY 走出口；未设置时与 urllib.request.urlopen 等价。"""
+    info = proxy_info()
+    if info['source'] == 'env':
+        handler = urllib.request.ProxyHandler({'http': info['proxy'],
+                                               'https': info['proxy']})
+        return urllib.request.build_opener(handler).open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def http_json(url, payload, headers=None, method='POST', timeout=90):
     hdrs = {'User-Agent': UA, 'Content-Type': 'application/json;charset=UTF-8', 'Accept-Encoding': 'identity'}
     if headers:
@@ -222,7 +296,7 @@ def http_json(url, payload, headers=None, method='POST', timeout=90):
         data = None
     req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     try:
-        r = urllib.request.urlopen(req, timeout=timeout)
+        r = _urlopen(req, timeout)
         raw = r.read()
         enc = (r.headers.get('Content-Encoding') or '').lower()
         if 'gzip' in enc:
@@ -242,8 +316,11 @@ def http_json(url, payload, headers=None, method='POST', timeout=90):
                 raw = _zl.decompress(raw, -15)
         return raw, dict(r.headers)
     except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', 'ignore')[:400]
-        raise UpstreamError('HTTP %s %s: %s' % (e.code, url, body))
+        raw = e.read().decode('utf-8', 'ignore')
+        vurl = google_validation_url(raw)
+        if vurl:
+            raise AccountVerification(vurl)
+        raise UpstreamError('HTTP %s %s: %s' % (e.code, url, raw[:400]))
     except Exception as e:
         raise UpstreamError('%s: %s' % (type(e).__name__, str(e)[:200]))
 
@@ -501,7 +578,8 @@ class H(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'status': 'ok', 'account_pool': _pool().summary()}))
         elif self.path.startswith('/health') or self.path == '/':
             info = {'status': 'ok', 'account': os.environ.get('GEMINI_ACCOUNT_LABEL', 'google-one'),
-                    'tier': _st()['tier'], 'project': bool(_st()['project']), 'last_channel': _st()['last_channel']}
+                    'tier': _st()['tier'], 'project': bool(_st()['project']), 'last_channel': _st()['last_channel'],
+                    'upstream_proxy': proxy_info()}
             self._send(200, json.dumps(info))
         else:
             self._send(404, json.dumps({'error': 'not found'}))
@@ -599,8 +677,8 @@ class H(BaseHTTPRequestHandler):
                             text = call_b(prompt_from_messages(msgs), timeout=left)
                             channel = 'gemini-web'
                         except Exception as e2:
-                            raise _AcctFail('code_assist: %s; web: %s' % (str(e1)[:300], str(e2)[:300]),
-                                            {'code_assist': str(e1)[:300], 'web': str(e2)[:300]})
+                            raise _AcctFail('code_assist: %s; web: %s' % (_clip(e1), _clip(e2)),
+                                            {'code_assist': _clip(e1), 'web': _clip(e2)})
                     pool.mark_success(cand.ref)
                     err = None
                     break

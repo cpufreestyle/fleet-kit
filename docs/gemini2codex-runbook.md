@@ -196,5 +196,18 @@ curl -s -X POST -H 'Content-Type: application/json' \
   「Verify your account to continue.」; 用 antigravity 桥 (:8797, 有效 client) 打同一 Google
   端点同样 403, 证明是账号级门禁而非桥级。web 通道 302 跳 `google_abuse=GOOGLE_ABUSE_EXEMPTION`
   同指账号验证。修复路径: 浏览器登录该 Google 账号完成验证, 或 `POST /__gemini/accounts/import-current`
-  往池里加第二个账号。
+ 往池里加第二个账号。
 
+## 2026-10-02 更新：502 信封透传 VALI 验证链接（本轮修复）
+- 现象: 上述 VALI 403 被包进 502 信封后, `error.message` 在 300 字符处被截断,
+  Google 那串 `validation_url` 只剩 "r..."——看不到链接, 只知道"要验证账号"。
+- 修复: `google_validation_url(body)` 解析官方 403 JSON 的
+  `error.details[].metadata.validation_url`; 命中即抛 `AccountVerification`
+  (UpstreamError 子类, `str()` 带完整链接), `_clip()` 见此异常不截断。
+  502 信封现在是 `HTTP 403 VALIDATION_REQUIRED; account verification required,
+  open: https://accounts.google.com/signin/continue?...`, 可直接点开。
+- 注意: validation_url 每次调用都会轮转 (单次有效), 旧链接会过期;
+  重新打一次调用即可拿到新链接, 拿到后尽快完成浏览器验证。
+- verify_real_calls 新增 VERIFY_ACCOUNT 档位 (排在 PLAN_BLOCKED 之前,
+  因为 VALI body 也含 "permission denied"), status_ui 同步排序。
+- 测试: `tools/test_vali_403.py` (含真实 403 body 经本地服务器的 `http_json` 路径)。

@@ -50,8 +50,11 @@ import time
 
 DEFAULT_ORDER = os.environ.get(
     "FLEET_MODEL_ORDER",
-    "tokendance,trae,cline,workbuddy-gpt,workbuddy,stepfun,catpaw,xhx,codely,"
-    "gemini,qoder,lingxi,antigravity,zcode,qwen")
+    # workbuddy leads since 2026-10-03: the only bridge whose models passed
+    # both code tasks full-mark (deepseek trio, docs/code-model-selection.md),
+    # so its block belongs right after the pinned leads, not fifth in line.
+    "workbuddy,workbuddy-gpt,tokendance,trae,cline,stepfun,catpaw,xhx,codely,"
+    "gemini,qoder,lingxi,antigravity,zcode,qwen,spacebunny")
 
 # Model families, in the order the user wants them listed. A family is a
 # vendor substring matched against the model id, so zcode/GLM-5.3 and
@@ -68,8 +71,11 @@ FAMILY_ORDER = tuple(
 # (after the provider prefix), case-insensitive. Anything not listed falls
 # back to family + version-number ordering.
 PER_PROVIDER_IMPORTANT = {
-    "workbuddy": ("hy4-preview", "hy3", "deepseek-v4-pro", "deepseek-v4-flash",
-                  "glm-5.3", "glm-5.2"),
+    # deepseek leads workbuddy (the user's top pick); hy4 stays right behind.
+    "workbuddy": ("deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-flash",
+                  "hy4-preview", "hy3", "glm-5.3", "glm-5.3-flash",
+                  "kimi-k2.8-preview", "glm-5.2", "glm-5.1", "glm-5v-turbo",
+                  "minimax-m3", "kimi-k3-1", "kimi-k2.7", "kimi-k2.6", "auto"),
     "workbuddy-gpt": ("hy4-preview", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4",
                        "glm-5.3", "gemini-3.5-flash"),
     "stepfun": ("step-5-preview", "step-3.7-flash", "step-3.5-flash",
@@ -98,6 +104,7 @@ PER_PROVIDER_IMPORTANT = {
     "tokendance": ("deepseek-v4.1-flash", "deepseek-v4-pro", "glm-5.3",
                      "glm-5.2", "qwen-3.7-plus"),
     "qwen": ("qwen3.8-max", "qwen-3.7-plus"),
+    "spacebunny": ("space-bunny-alpha",),
 }
 
 
@@ -141,13 +148,33 @@ def family_rank(slug, families=FAMILY_ORDER):
         return len(families)
     return families.index(family)
 
-# hy4 is the model the user asks to see first, even when the bridge behind
-# it is momentarily unreachable. Everything else still obeys tiering.
-HY4_SLUGS = ("workbuddy/hy4-preview", "workbuddy-gpt/hy4-preview")
+# The model(s) the user asks to see first, pinned above every other row
+# (even above their own tier, so a momentarily unreachable bridge cannot push
+# the go-to off the top). The earliest listed slug wins the very first row.
+#
+# Configurable with FLEET_FIRST_MODEL (comma-separated <provider>/<model>) so
+# the top pick changes without a code edit. hy4 was the original pick; the
+# user moved the top slot to workbuddy's deepseek v4.1 flash (the CodeBuddy
+# app lists Deepseek-V4.1-Flash at 0.11x; the bridge's static table lagged
+# until 2026-10-03, when the model was added and routed for real).
+LEAD_SLUGS = tuple(
+    s.strip() for s in os.environ.get(
+        # the 2026-10-03 full-fleet code bench: the only three models that
+        # passed both coding tasks with full marks and zero prose. flash
+        # first because it is also FLEET_DEFAULT_MODEL.
+        "FLEET_FIRST_MODEL",
+        "workbuddy/deepseek-v4-flash,workbuddy/deepseek-v4.1-flash,"
+        "workbuddy/deepseek-v4-pro").split(",")
+    if s.strip())
 
 
-def is_hy4(slug):
-    return slug in HY4_SLUGS
+def is_lead(slug):
+    return slug in LEAD_SLUGS
+
+
+def lead_rank(slug):
+    """0 for the user's top pick; each backup after it; the rest out-of-band."""
+    return LEAD_SLUGS.index(slug) if slug in LEAD_SLUGS else len(LEAD_SLUGS) + 1
 
 # How many of a provider's strongest models get floated into the head band.
 # 1 left a platform's runner-up far below its own sibling: zcode/GLM-5.3 sat at
@@ -166,21 +193,25 @@ def interleave_reps(models, order, good=None, families=()):
     at the top; the full blocks follow in order.
 
     The band is the first REP_BAND models of that provider per
-    PER_PROVIDER_IMPORTANT. workbuddy hy4 is always the very first row,
+    PER_PROVIDER_IMPORTANT. the lead model is always the very first row,
     because the user wants it pinned first.
     """
     reps, rest = [], []
     taken = set()
     pool = [m for m in models
             if good is None or provider_of(slug_of(m)) in good]
-    # hy4 first — always, even before the other reps, so the user's go-to
-    # model is the first row in the picker.
-    for model in pool:
-        if is_hy4(slug_of(model)):
-            reps.append(model)
-            taken.add(slug_of(model))
-            break
-    # A short band per reachable provider, in --order order, skipping hy4
+    # The lead models first — always, even before the other reps, so the user's
+    # go-to models are the first rows in the picker. Every LEAD_SLUGS entry is
+    # pinned in listed order: the 2026-10-03 bench produced a winning trio,
+    # not a single winner, and a lone break() would have left two of the three
+    # buried inside the provider band below.
+    for lead_slug in LEAD_SLUGS:
+        for model in pool:
+            if slug_of(model) == lead_slug:
+                reps.append(model)
+                taken.add(lead_slug)
+                break
+    # A short band per reachable provider, in --order order, skipping the lead model
     # since it already leads. Picking the "most important" models per
     # provider gives the user a quick scan of the whole fleet on the first
     # screen, and keeps each platform's best pair together.
@@ -500,15 +531,15 @@ def main():
         # so every model from provider X stays together in a single block.
         pos = order.index(prov) if prov in order else len(order)
         proven = 0 if slug in proven_candidates(verified.get(prov), prov) else 1
-        # workbuddy hy4 is pinned first (even before the per-provider list)
-        hy4 = 0 if is_hy4(slug) else 1
+        # The lead model is pinned first (even before the per-provider list).
+        lead = lead_rank(slug)
         # Per-provider important models come next, in the listed order.
         imp = important_rank(slug)
         # Then fall back to family order and version-number (desc),
         # so pro > flash > older versions within the same family.
         fam = family_rank(slug, families)
         ver = _version_key(slug)
-        return (tier, pos, hy4, imp, proven, fam, ver, slug)
+        return (tier, pos, lead, imp, proven, fam, ver, slug)
 
     NATIVE_PRIORITY = 105
 
@@ -558,18 +589,18 @@ def main():
 
     # The picker sorts on priority, so prove reachable rows really sort first.
     slug_of = lambda m: m.get("slug") or m.get("id") or ""
-    # hy4 rows stay out of both sets: they are pinned above their own tier on
-    # purpose, so counting them would fail every sort while gpt is down.
+    # lead rows stay out of both sets: they are pinned above their own tier
+    # on purpose, so counting them would fail every sort while a bridge is down.
     good_idx = [i for i, m in enumerate(kept)
-                if provider_of(slug_of(m)) in good and not is_hy4(slug_of(m))]
+                if provider_of(slug_of(m)) in good and not is_lead(slug_of(m))]
     bad_idx = [i for i, m in enumerate(kept)
-               if provider_of(slug_of(m)) in sinking and not is_hy4(slug_of(m))]
+               if provider_of(slug_of(m)) in sinking and not is_lead(slug_of(m))]
     good_pri = [m["priority"] for m in kept
                 if provider_of(slug_of(m)) in good
                 and provider_of(slug_of(m)) is not None
-                and not is_hy4(slug_of(m))]
+                and not is_lead(slug_of(m))]
     bad_pri = [m["priority"] for m in kept
-               if provider_of(slug_of(m)) in sinking and not is_hy4(slug_of(m))]
+               if provider_of(slug_of(m)) in sinking and not is_lead(slug_of(m))]
     by_priority = sorted(kept, key=lambda m: m["priority"])
     summary["priority_rewritten"] = True
     summary["order_ok"] = bool(

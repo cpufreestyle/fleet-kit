@@ -65,11 +65,40 @@ stdlib（urllib），可单独跑，不进任何 venv：
     python3 tools/node_credits.py --json          # 机器可读
     python3 tools/node_credits.py --node zcode    # 单节点
 
-每行：状态 / 账号 / 登录 / 积分口径（free-windows.json）/ 积分值 / 来源 / 签到状态。
+每行：状态 / 账号 / 套餐 plan / 登录 / 积分口径（free-windows.json）/ 积分值 / 来源 / 签到状态。
+
 真数字来源：xhx 官方 points balance、workbuddy 两桥 /ui/checkin、zcode /entitlements
 （一次性 100,000,000 tokens）；其余节点口径来自 free-windows.json，数值留空并写清原因。
 status_ui 面板「节点积分 / 账号」就是这份数据（30s 缓存）。
 
+#### 2026-10-03：每行补上「套餐 plan」与到期日
+
+面板「节点积分 / 账号」从 8 列变 9 列，账号后面多一列 `套餐 plan`：套餐叫什么名字，
+以及带到期日的套餐什么时候到期。名字不只是给人看的——同一个桥换个套餐，模型池可能整个
+变掉，而到期日不显示出来，token 会在会话中间悄悄死掉。
+
+套餐名按节点来源不同：
+
+- `workbuddy` / `workbuddy-gpt`：Buddy 加油站 activity_name（本期活动名）
+- `trae`：bridge /health 的 `edition`，并附 `expires_at_ms` 折算的 UTC+8 到期日
+- `kimi-code` / `minimax`：/health account_pool 每账号的 `points_plan`（与积分同一处）
+- `zcode`：/entitlements 的 `plan`（实测 ZCode Trust Build，本节点 /health 无 plan 字段）
+- `gemini` / `antigravity`：Google Code Assist `currentTier.id`（账号 403 时为空）
+
+CLI 表格同样多一列，列宽 16，超长名字按 16 字符截断。
+
+#### 2026-10-03（下午）：积分板块重排为全宽，剩余积分与套餐余额一眼可见
+
+之前「节点积分 / 账号」挤在 `grid2` 半宽栅格里，9 列小字很难找到数值列。现在：
+
+- 板块移出半宽栅格，升级为**全宽**「节点积分 / 套餐余额」面板，排在桥表格下面
+- 9 列重排为：节点 / **剩余积分**（放大加粗、千分位）/ 口径徽章 / 套餐 plan / 账号 /
+  状态 / 登录 / 签到 / 来源与备注
+- 有数值的节点排前面；标题行给出汇总 `共 N 节点 · X 家有剩余数值`
+- 「只看有剩余数值」复选框，勾上即时筛选，自动刷新后保持勾选状态
+
+口径徽章配色沿用免费模型表四档语义（client=绿、limit=蓝、own=黄、unknown=灰），
+新增 subscription=紫。
 
 ### 两个编程套餐账号（Kimi Code / MiniMax，2026-10-01 加入）
 它们不是桥：机队没有为它们跑桥进程，所以每一行仍是同样三个问题——账号活着吗、哪个 key、
@@ -128,83 +157,54 @@ https://www.kimi.com/code/#pricing 。
   401 是两件事。旧代码把 403 一律说成 dead key，会把一个好 key 说成死的；
   现在这种情况单独走退出码 4，并把平台给的续费地址原样打出来。
 
-#### MiniMax：仍然没有凭据，而且本来也没有余额接口
+#### MiniMax：余额接口是有的，之前找错地方了（2026-10-03 更正）
 
-本机翻遍了也没有 MiniMax key：keychain 无条目、所有 `.env`（fleet.env、
-.openclaw/.env、.omniroute/.env 等 13 份）无 MINIMAX 相关、shell history 无、
-cc-switch provider 表里没有 MiniMax。`/Applications/MiniMax Agent.app`
-（com.ai.wanjuan 0.10.4）装着但从未启动——没有 userData 目录，所以连
-「从它自己存储里读」这条路都不存在。
+**先更正一个错误结论。** 10-02 那轮写下「MiniMax 不提供任何可编程的余额接口」，
+这是错的。当时只在开放平台和 Agent 扩展里找，而真正的路由在官网域的 www 主机上。
 
-而且平台本来就没有余额接口。这条结论有三个独立来源，逐条列清免得下次重查：
+MiniMax 自己的 FAQ 写明了这个接口（platform.minimaxi.com/docs/token-plan/faq.md，
+「如何查看 Token Plan 用量」的方式二）：
 
-**来源一：MiniMax 开放平台 API 主机（无 key 探活实测）**
+    curl --location 'https://www.minimax.cn/v1/token_plan/remains' \
+      --header 'Authorization: Bearer <API Key>' \
+      --header 'Content-Type: application/json'
 
-    api.minimaxi.com / api.minimax.io
-      /v1/chat/completions   401 authorized_error（路由在，验签在）
-      /v1/usage /v1/usages /v1/credits /v1/quota /v1/account   全部 404
+实测（无 key）：
 
-    platform.minimaxi.com  同样九个路径全返回它自己的 404 页
-    www.minimaxi.com/api/*  的 200 是 SPA 兜底页（返回 HTML 不是 JSON），不是接口
+    www.minimax.cn    /v1/token_plan/remains -> 200
+      {"base_resp":{"status_code":1004,
+       "status_msg":"login fail: Please carry the API secret key in the
+       'Authorization' field of the request header"}}
+    www.minimaxi.com  /v1/token_plan/remains -> 200 同上
+    api.minimax.cn / api.minimaxi.com       -> 200 同上（这三个域都接）
+    www.minimax.io    -> SSL EOF（不对公网开放）
+    platform.minimax.cn / platform.minimaxi.com -> 404（那是文档站）
 
-**来源二：MiniMax Agent 自己发布的 Safari 扩展（2026-10-02 逆）**
+**为什么之前全部找错：** 路由在 `www.minimax.cn`，不在 `api.minimax*.com`。
+前三轮把 api 域、hailuoai.com、平台文档站、营销站 /backend/ 前缀、Agent 扩展
+17 条路由全扫了一遍，唯独没扫官网 www 域——文档里给的示例 URL 就在那里。
 
-`/Applications/MiniMax Agent.app/Contents/PlugIns/MiniMax Agent Extension.appex/
-Contents/Resources/popup.5eb990aa.js` 里能数出它全部的 web 路由：
+**它要的是订阅 Key，不是按量计费 API Key。** FAQ 原话：订阅 Key 用于 Token Plan
+套餐内额度和已购积分，与普通按量计费 API Key 相互独立、不能混用。所以拿一把
+pay-as-you-go key 打这个接口只会得到 login fail，那不是 key 死了。
 
-    /v1/api/user/login/sms/send     POST  发验证码
-    /v1/api/user/login/phone        POST  手机号登录，换 token
-    /v1/api/user/renewal            POST  续 token
-    /v1/api/user/account            DELETE 登出
-    /v1/api/user/guide_status       GET
-    /v1/api/user/toast              GET
-    /v1/api/chat/msg                POST  聊天
-    /v1/api/chat/msg_choice / msg_tts / voice_msg / retry_msg / feedback / stop_generating
+套餐档位（同页）：Plus ¥49/月、Max ¥119/月、Ultra ¥469/月；1000 积分 = ¥7；
+套餐内额度受 5 小时固定窗口和周窗口控制，未用完不结转；超出部分由已购积分兜。
 
-鉴权是请求头 `token`（存在扩展自己的存储里），外加一个 `yy` 签名头——
-MD5(unix + url + method + data + "oouiplugin")。基址只有两个：`https://hailuoai.com`
-和它的预发 `https://hailuo-pre.xaminim.com`。
+本机凭据状态：没有任何 MiniMax key，subscription key 也没有。翻查范围——
+keychain、13 份 .env、shell history、cc-switch provider 表、Chrome/Edge/Safari
+四个 cookie 库、26367 个文件里的 MINIMAX* 变量名（18 个，全是脚本占位符）、
+fleet.env、kit/bridges/ 下所有桥、以及 MiniMax Agent 自己的 appex 容器
+（WebKit ITP 库 0 行，证明它一个页面都没加载过）。所以这一行现在是
+「有接口、没 key」。
 
-**整份路由表里没有任何 quota / balance / credits / usage / plan / vip 路径。**
-唯一的账号路由 `/v1/api/user/account` 从代码看是登出（`ul.delete(e)`），不是查余额。
+使用方法（拿到订阅 Key 之后）：
 
-**来源三：对活主机按这份路由表逐条打**
+    export MINIMAX_API_KEY=<订阅 Key>
+    python3 tools/plan_credits.py minimax     # 先打 /v1/token_plan/remains
 
-    https://hailuoai.com/v1/api/user/account  DELETE → 401（路由在，要 token）
-    https://hailuoai.com/v1/api/user/renewal  POST  → 400 {"statusInfo":{"code":2,
-        "message":"请求异常，请检查请求参数","requestID":...}}（路由在，缺参数）
-    https://hailuoai.com/v1/api/chat/msg       POST  → 401（路由在，要 token）
-    https://hailuoai.com/v1/api/user/quota     GET   → 404
-    https://hailuoai.com/v1/api/user/balance   GET   → 404
-    https://hailuoai.com/v1/api/user/credits   GET   → 404
-    hailuo-pre.xaminim.com 全部 SSL UNEXPECTED_EOF（预发不对公网开放）
-
-**来源四：MiniMax 各主机的真实身份（2026-10-02 补齐）**
-
-顺着扩展里出现的主机名单逐个看，确认了几个站各自是什么，免得下次再猜路径：
-
-- account.minimaxi.com / account.minimax.cn 是 **MiniMax Account SSO**（页面标题就是
-  "MiniMax Account SSO"），资源在 cdn.hailuoai.com/mmx-account/prod-web-sh-0.1.42/。
-  它只负责发登录态，buildManifest 里只有 /_app 和 /_error，没有任何业务路由。
-- platform.minimaxi.com 是**文档站**（/docs/ 前缀、katex、mintcdn），不是控制台。
-- www.minimaxi.com 是营销站，chunks 在
-  filecdn.minimax.chat/open_platform_web/prod-zh-minimax-0.1.80/。
-
-营销站 chunk 里唯一一条 /backend/ 路由是活的：
-
-    GET https://www.minimaxi.com/backend/user/biz_info
-      -> 401 {"base_resp":{"status_code":1004,"status_msg":"not login"}}
-
-路由存在、要登录态。同目录下 /backend/user/quota、/backend/user/balance 都是 404，
-所以连 /backend/ 这个前缀下也没有余额路由——余额只能是登录态页面渲染出来的。
-
-四个来源指向同一件事：**MiniMax 不提供任何可编程的余额接口**，网页控制台上的数字
-是登录态页面渲染的，没有对应 API。所以这一行永远只能是「key 或登录态还在吗」，
-问不出剩多少——这不是没找到，是它不存在。
-
-所以给了 key 也只能验证「key 还活着吗」。`plan_credits.py minimax` 会依次打
-CN、海外两个 host 再判 401—— MiniMax 的 key 按区域签发，海外 key 在 CN host
-上就是 401，旧代码会直接把好 key 判成死 key。
+`plan_credits.py minimax` 现在会先打这个文档接口，读到了就报套餐额度；
+读不到（按量 key 会被拒）才退回 1-token 聊天调用验证 key 是否活着。
 
 #### 2026-10-01 记录（已被上一节取代）
 

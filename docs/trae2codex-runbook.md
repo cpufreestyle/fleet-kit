@@ -72,3 +72,32 @@ codex exec -c model_provider=trae -m "trae/glm-5.2" "..."
 ## 未动/警告
 - workbuddy 桥（8787 CN + 8788 GPT）、qoder 桥（8789）、codely 桥（8790）保持运行，未受影响
 - Trae CN IDE 仍在后台运行（前序模型为排查登录态启动）；若其刷新循环与桥竞争 refresh token 轮换导致偶发 401，可 `osascript -e 'quit app "Trae CN"'`
+## 2026-10-02 更新：账号池 + 配额冷却 + 双区目录（本轮修复）
+
+架构位置已变：launchd 现在跑 runtime/bridges/trae/trae_bridge.py（kit 是源），改完必须
+cp kit/bridges/trae/trae_bridge.py runtime/bridges/trae/ 再 cd runtime/bridges && ./finish.sh trae --skip-chat
+（finish.sh 的 FLEET_HOME 取 runtime，在 kit/ 下跑会报 fleet.env not found）。
+
+- 账号池：credential_pool() 汇总桥缓存 + 每套桌面 edition 的登录态，按 (region, account) 去重，
+  活的排前、配额冷却中的垫底。本机实测两个账号：CN 用户6781982309（Trae CN / TRAE SOLO CN）、
+  国际 Q Micheal（region=ai，edition=Trae）。/health 的 accounts[] 现在给出
+  {account, region, edition, quota_dead}。
+- 配额冷却：配额错误（HTTP 200 流里的 event:error Your requests have exceeded the quota.）命中即
+  mark_quota_dead() 冷却 TRAE_QUOTA_COOLDOWN（默认 600s），顺延池内下一个凭证；流式请求在
+  _peek_quota() 流头窥探阶段就完成换号，不会把半截响写给客户端（窥探读走的字节由 _ReplayResponse 接回）。
+- 双区目录：get_catalog() 逐凭证 fetch_directory() 合并，模型带 region 标签；
+  chat_completions() 用 region_first(pool, want_region) 让同区凭证优先——否则拿 CN 模型 id 打国际网关
+  只会得到 param invalid。目录接口失败只跳过该凭证，不清空已有目录。
+- 失败信息：循环内维护 notes，逐个凭证记录「配额耗尽(冷却 Ns)」「网络不可达(ExcType)」「上游 <code>」；
+  400/422（请求体本身的问题）原样返回上游状态码，其他非 200 记账后 continue；全部不可用时 502 消息拼
+  「：<notes>」。实测形态：
+  trae upstream unreachable: ProxyError: 503 Service Unavailable：cn:用户6781982309 配额耗尽(冷却 600s)；ai:Q Micheal 网络不可达(ProxyError)
+- 头净化：x-uid 只保留可打印 ASCII；account.username 是中文昵称时，混进 HTTP 头会让 httpx 抛
+  UnicodeEncodeError，以前被误记成「网络不可达」，现在单独归类为「凭证非法」。
+- 测试：tools/test_trae_quota_failover.py（13 个，含新加的 region_first / 双区目录合并 / 502 逐号点名）。
+
+## 2026-10-02 实测结论（供运维判断）
+- CN 账号 22 个模型配额耗尽（账号级，非代码问题）：502 里 cn 那条就是「配额耗尽」。
+- 国际账号 Q Micheal 的网关 coresg-normal.trae.ai 本机不可达：本机系统代理（MacPacket :1082）没有国际出口，
+  Tunnel connection failed: 503 Service Unavailable。这不是账号问题，修出口或给桥配代理后才轮得到它。
+- 2026-10-03 续期一次：access token 从 2026-10-09 续到 2026-10-17，refresh token 轮换到 2027-04-01（备份 ~/.trae2codex/creds.json.bak-20261003-172845）。续期命令 `runtime/.venv/bin/python3 kit/tools/trae_renew.py`（默认 access 剩 7 天内才续，--refresh 强制，--json 机器可读）；桥自身仍只在会话末尾 5 分钟内自动刷新

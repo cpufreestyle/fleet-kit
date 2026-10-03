@@ -14,6 +14,7 @@ PLAN_BLOCKED, a silent 403 stays AUTH_EXPIRED, and the walk only stops early on
 a verdict that really is account-wide (401, or a 403 with no plan verb).
 """
 import importlib.util
+import json
 import os
 import re
 
@@ -81,6 +82,56 @@ def test_quota_403_is_plan_blocked_too():
                  "配额已用尽"):
         v, _ = vrc.classify(403, 0.1, "", "ABCD", 1, 2, body)
         assert v == "PLAN_BLOCKED", body
+
+
+KIMI_403 = ("""{"error":{"message":"Your current subscription does not have "
+            "access to Kimi Code right now. Upgrade your plan to keep coding "
+            "with Kimi Code: https://www.kimi.com/code/#pricing","type":"
+            "access_terminated_error"}}""")
+
+
+def test_a_lapsed_kimi_plan_is_not_an_expired_session():
+    """The kimi bridge answers this exact body, measured 2026-10-03.
+
+    Its key is accepted -- /v1/models still answers 200 with it -- and only
+    the coding plan has lapsed. Reporting AUTH_EXPIRED sends the operator to
+    regenerate a credential that is already fine; the renewal page is the
+    answer they need.
+    """
+    v, note = vrc.classify(403, 0.2, "", "ABCD", 1, 2, KIMI_403)
+    assert v == "PLAN_BLOCKED"
+    # the note is the plan wording plus the first 44 chars of the body,
+    # so what is pinned is that it took the plan path at all
+    assert "套餐受限" in note
+    assert "Your current subscri" in note
+
+
+def test_the_gateway_wording_for_the_same_case_is_plan_blocked_too():
+    """The bridge restates it in its own words; that must classify the same."""
+    body = ("""{"error":{"message":"kimi code has no active plan for this "
+             "key (the key itself is accepted): ... -- renew at "
+             "https://www.kimi.com/code/#pricing","type":"
+             "kimi_plan_inactive"}}""")
+    v, _note = vrc.classify(403, 0.2, "", "ABCD", 1, 2, body)
+    assert v == "PLAN_BLOCKED"
+
+
+def test_a_missing_upstream_key_is_not_an_upstream_outage():
+    """The minimax bridge answers 503 key_missing before dialing the vendor.
+
+    Measured 2026-10-03: minimax has no MINIMAX_API_KEY on this machine, and
+    verify_real_calls graded it UPSTREAM_DOWN, which sends the operator to the
+    vendor status page for a key that was never set. The fix is a fleet.env
+    line, not a vendor incident.
+    """
+    body = json.dumps({"error": {
+        "message": "minimax bridge has no MINIMAX_API_KEY; set a MiniMax "
+                   "pay-as-you-go key in fleet.env and re-run bash "
+                   "bridges/finish.sh minimax",
+        "type": "minimax_key_missing"}})
+    v, note = vrc.classify(503, 0.0, "", "ABCD", 1, 2, body)
+    assert v == "NO_KEY"
+    assert "finish.sh" in note
 
 
 def test_off_plan_model_does_not_sink_the_bridge():

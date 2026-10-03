@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated": "2026-09-29",
-  "note": "免费标注依据各服务官网/官方定价页于 2026-09-26 实际抓取整理。verified=false 表示官网未明示或页面抓不到。所有时段均为北京时间。修改本文件即可更新标注，无需改代码。",
+  "updated": "2026-10-03",
+  "note": "免费标注依据各服务官网/官方定价页于 2026-09-26 实际抓取整理。verified=false 表示官网未明示或页面抓不到。所有时段均为北京时间。修改本文件即可更新标注，无需改代码。 2026-10-02 活体复测：blocked=当前不可达（账号/凭证侧阻塞，非代码问题）。 2026-10-03：新增结构化时段字段 window_start / window_end / window_standing，只由人工或脚本显式填写，不从 window 自由文本解析日期（文本里的日期多为实测记录而非额度窗口）；free_models.py 据此把时段算成 LIVE/SOON/EXPIRED/STANDING 状态。",
   "legend": {
     "free": "长期免费档（限量使用）",
     "free-window": "限时免费（有明确起止日期）",
@@ -24,40 +24,49 @@
       "site": "https://www.codebuddy.cn/pricing",
       "free": "free-window",
       "window": "限时免费个人版（官网长期活动）；Hy4 preview 限免两周：2026-09-10 00:00 → 2026-09-23 23:59:59（已结束）",
+      "window_standing": true,
+      "window_why": "官网长期活动，未公布个人版免费档的截止日期",
       "facts": "官网定价页：推出「限时免费个人版、限时免费企业旗舰版、企业专享版」；Hy4 preview「邀您免费体验，限免两周」（国内 2026-09-10 起、海外 2026-08-28 起，均至 2026-09-23 23:59:59）；DeepSeek-v4.1-flash 独家联合首发享限时折扣（2026-09-10 → 09-23）。",
       "sources": [
         "https://www.codebuddy.cn/pricing"
       ],
       "verified": true,
       "credits": "client",
-      "credits_note": "客户端 credits 计量：每模型有 credits 倍率，仪表盘可见余额/折扣倍率（bridges/workbuddy/core.py 读 credits / discountedCredits）"
+      "credits_note": "客户端 credits 计量：每模型有 credits 倍率，仪表盘可见余额/折扣倍率（bridges/workbuddy/core.py 读 credits / discountedCredits）",
+      "last_checked": "2026-10-03 13:20:53"
     },
     "workbuddy-gpt": {
       "vendor": "腾讯 WorkBuddy（海外版）",
       "site": "https://www.workbuddy.ai/pricing",
       "free": "free-window",
       "window": "Hy4 preview 限免两周：2026-08-28 00:00 → 2026-09-23 23:59:59（已结束）；之后仍有 intlFree 免费计划",
+      "window_standing": true,
+      "window_why": "Hy4 窗口之后仍有 intlFree 免费计划，未公布截止日期",
       "facts": "官网定价页：Free 计划 $0（含 intlFree 入口）+ Pro 订阅；Hy4 preview「邀您免费体验！Agent 与复杂任务执行能力全面跃升，限免两周」，海外 2026-08-28 00:00 开始，至 2026-09-23 23:59:59 结束；DeepSeek-v4.1-flash 独家联合首发限时折扣（2026-09-10 → 09-23）。",
       "sources": [
         "https://www.workbuddy.ai/pricing"
       ],
       "verified": true,
       "credits": "client",
-      "credits_note": "海外版账号池 credits 计量：Hy4 preview 限免窗口 2026-09-23 已结束，之后按账号 credits/套餐额度扣减"
+      "credits_note": "海外版账号池 credits 计量：Hy4 preview 限免窗口 2026-09-23 已结束，之后按账号 credits/套餐额度扣减",
+      "last_checked": "2026-10-03 13:20:54"
     },
     "trae": {
       "vendor": "字节跳动 TRAE",
       "site": "https://www.trae.cn/pricing",
-      "free": "free",
-      "window": "长期免费档（限量使用），无固定截止；国内版免费计划所有功能可用、2 个并发云任务",
-      "facts": "国内版（trae.cn）免费计划：¥0，「所有功能均可免费使用」「支持 2 个云端任务同时执行」。国际版（trae.ai）Free $0：仅 Auto 模式、Limited usage、每月 5000 次自动补全、2 个并发云任务；Pro $20/月起（$20 用量/月、全模型、无限补全、10 并发云任务）；Pro+ $60、Ultra $200。",
+      "free": "blocked",
+      "window": "长期免费档（限量使用），无固定截止；国内版免费计划所有功能可用、2 个并发云任务；2026-10-02 实测：桥在线但账号级额度已用尽，全部模型聊天失败",
+      "window_standing": true,
+      "window_why": "官网写明长期免费档、无固定截止",
+      "facts": "国内版（trae.cn）免费计划：¥0，「所有功能均可免费使用」「支持 2 个云端任务同时执行」。国际版（trae.ai）Free $0：仅 Auto 模式、Limited usage、每月 5000 次自动补全、2 个并发云任务；Pro $20/月起（$20 用量/月、全模型、无限补全、10 并发云任务）；Pro+ $60、Ultra $200。2026-10-02 活体复测：桥 8791 session_alive、token 未过期；账号「用户6781982309」下 22 个活体模型统报 trae_upstream_error 「Your requests have exceeded the quota.」（账号级额度用尽，非代码/参数问题；网关别名已修为 trae/seed-code-pro-0430，502 param invalid 不再出现）。恢复：等额度重置或更新 ~/.trae2codex/creds.json 换号后 launchctl kickstart -k gui/501/com.local.trae2codex。 2026-10-02 19:40 桥已升级为账号池：/health 的 accounts 列出 {account,region,edition,quota_dead}；本机两套 Trae 登录态各自独立——CN 账号 用户6781982309（Trae CN / TRAE SOLO CN，22 模型配额耗尽）、国际账号 Q Micheal（region=ai，网关 coresg-normal.trae.ai）。聊天时按模型的 region 标签优先路由到同区凭证，单号配额耗尽冷却 600s 后自动顺延；全部不可用时 502 消息逐一点名每个账号的死因。国际账号目录需国际出口可达后才进 /v1/models。",
       "sources": [
         "https://www.trae.cn/pricing",
         "https://www.trae.ai/pricing"
       ],
       "verified": true,
       "credits": "limit",
-      "credits_note": "免费档不计点：官网免费计划「限量使用」（Auto 模式、每月 5000 次补全、2 个并发云任务），无积分扣减；Pro 套餐内才按 credits 计量"
+      "credits_note": "免费档不计点：官网免费计划「限量使用」（Auto 模式、每月 5000 次补全、2 个并发云任务），无积分扣减；Pro 套餐内才按 credits 计量",
+      "last_checked": "2026-10-03 13:20:55"
     },
     "codely": {
       "vendor": "团结AI Tuanjie AI（游戏开发助手）",
@@ -71,7 +80,8 @@
       ],
       "verified": true,
       "credits": "client",
-      "credits_note": "客户端积分计量：账户有「月度免费点数」+「充值点数」两类余额，扣减时优先扣月度免费点数"
+      "credits_note": "客户端积分计量：账户有「月度免费点数」+「充值点数」两类余额，扣减时优先扣月度免费点数",
+      "last_checked": "2026-10-03 13:20:55"
     },
     "lingxi": {
       "vendor": "灵犀AI LingXi",
@@ -84,7 +94,8 @@
       ],
       "verified": true,
       "credits": "client",
-      "credits_note": "客户端额度计量：登录后送的「灵力」额度，按 7 天滚动 + 5 小时 + 30 天窗口扣减"
+      "credits_note": "客户端额度计量：登录后送的「灵力」额度，按 7 天滚动 + 5 小时 + 30 天窗口扣减",
+      "last_checked": "2026-10-03 13:20:55"
     },
     "qoder": {
       "vendor": "阿里巴巴 Qoder",
@@ -98,20 +109,24 @@
       ],
       "verified": true,
       "credits": "limit",
-      "credits_note": "新用户 2 周 Pro 试用期内不计点；到期自动降级 Free(Community) 限量档"
+      "credits_note": "新用户 2 周 Pro 试用期内不计点；到期自动降级 Free(Community) 限量档",
+      "last_checked": "2026-10-03 13:20:56"
     },
     "cline": {
       "vendor": "Cline（cline.bot 免费档，经本机 hub daemon 反代理）",
       "site": "https://cline.bot/",
       "free": "free",
       "window": "长期免费档（input/output 计费均为 0，走 Cline 账号 entitlement；需本机开过 Cline App 拉起 hub daemon）",
+      "window_standing": true,
+      "window_why": "免费档 input/output 计费均为 0，未公布截止日期",
       "facts": "Cline.app 0.0.34 内置 catalog（code-sidecar）free 档 5 个，实测 cline-free/solar-pro4 上游返回 model not found 已剔除，剩余 4 个全部真实调用验证通过（deepseek-v4.1-flash / muse-spark-1.3-contributor / glm-5.3-flash / laguna-s-2.1:free）。",
       "sources": [
         "https://cline.bot/"
       ],
       "verified": true,
       "credits": "limit",
-      "credits_note": "free 档 input/output 计费均为 0，走 Cline 账号 entitlement（不计点，仅限流）；非 free 家族按 credits 计费"
+      "credits_note": "free 档 input/output 计费均为 0，走 Cline 账号 entitlement（不计点，仅限流）；非 free 家族按 credits 计费",
+      "last_checked": "2026-10-03 13:20:57"
     },
     "xhx": {
       "vendor": "商汤科技 小浣熊 RaccoonWork",
@@ -122,16 +137,19 @@
       "sources": [
         "https://www.xiaohuanxiong.com/"
       ],
-      "verified": false,
+      "verified": true,
       "credits": "client",
-      "credits_note": "客户端积分计量：每日登录发放积分，余额接口 available_points / daily_points / reward_points（tools/checkin.py）"
+      "credits_note": "客户端积分计量：每日登录发放积分，余额接口 available_points / daily_points / reward_points（tools/checkin.py）",
+      "last_checked": "2026-10-03 13:20:57"
     },
     "gemini": {
       "vendor": "Google Gemini Code Assist（个人消费者档）",
       "site": "https://codeassist.google.com/",
       "free": "blocked",
-      "window": "曾是免费档：个人 Google 账号自带额度（官方 Gemini CLI 文档：60 次/分、1000 次/天），Google AI Pro/Ultra 只抬高该免费档限额、不单独计费。但 Google 已宣布 2026-06-18 起 individuals / AI Pro / AI Ultra 档全面停止服务（含 Gemini CLI 的 Login with Google），需迁移 Antigravity；本机桥 502 refresh failed 即此因",
-      "facts": "官方弃用页（developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals，2026-09-02 更新）：Starting June 18, 2026, Gemini Code Assist IDE extensions stopped serving requests for the Gemini Code Assist for individuals, Google AI Pro, and Google AI Ultra tiers. This also applies to usage of Gemini CLI - Login with Google 已关闭，消费者账号需迁移 Antigravity；FAQ 明确 Code Assist Standard/Enterprise（GCP 付费订阅）不受影响。结论：这批模型不是按量付费也不占 AI Pro 独立额度，本就是个人账号免费档，且该档已被 Google 关停。",
+      "window": "曾是免费档：个人 Google 账号自带额度（官方 Gemini CLI 文档：60 次/分、1000 次/天），Google AI Pro/Ultra 只抬高该免费档限额、不单独计费。但 Google 已宣布 2026-06-18 起 individuals / AI Pro / AI Ultra 档全面停止服务（含 Gemini CLI 的 Login with Google），需迁移 Antigravity；本机桥 403 账号验证未过（VALI） 即此因；2026-10-02 19:45 实测当前不可达根因为本机国际出口全断（代理隧道 503），非账号问题",
+      "window_end": "2026-06-18T23:59:59+08:00",
+      "window_why": "Google 自 2026-06-18 起停止为 individuals 档提供服务（官方弃用页）",
+      "facts": "官方弃用页（developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals，2026-09-02 更新）：Starting June 18, 2026, Gemini Code Assist IDE extensions stopped serving requests for the Gemini Code Assist for individuals, Google AI Pro, and Google AI Ultra tiers. This also applies to usage of Gemini CLI - Login with Google 已关闭，消费者账号需迁移 Antigravity；FAQ 明确 Code Assist Standard/Enterprise（GCP 付费订阅）不受影响。结论：这批模型不是按量付费也不占 AI Pro 独立额度，本就是个人账号免费档，且该档已被 Google 关停。2026-10-02 活体复测（端口 8794）：OAuth（~/.gemini/jetski-standalone-oauth-token）刷新正常、loadCodeAssist 通过，generateContent 返回 403 PERMISSION_DENIED 「Verify your account to continue.」，reason 「VALI; web: SNlM0e not found (web session expired?)」；账号池 ~/.gemini2codex/auths/pool-state.json 唯一账号 failures:343。需在浏览器登录该 Google 账号完成验证，约 2 分钟后恢复（桥已 ignore cooldown）；B 通道（web cookie）cookies.txt 已损坏需重新导出。 2026-10-02 19:45 二次活体复测（端口 8794）：双通道 code_assist 与 web 都在代理隧道处失败，报 <urlopen error Tunnel connection failed: 503 Service Unavailable>——不是账号 VALI，是本机无国际出口；此前 403 VALI 记录保留（网络恢复后可能仍需浏览器验证）。网络出口：2026-10-02 19:45 复测，本机国际出口全断（baidu 200，google/oauth2.googleapis.com/cloudcode-pa.googleapis.com/coresg-normal.trae.ai 均 000，经系统代理 MacPacket :1082 也是 Tunnel connection failed: 503 Service Unavailable；系统代理 ExceptionsList 含 198.18.0.0/15 fake-ip 隧道）。两桥 /health 已带 upstream_proxy 字段（当前 {\"proxy\":\"http://127.0.0.1:1082\",\"source\":\"system\"}）。恢复二选一：修 MacPacket 国际线路，或给桥设 GEMINI_UPSTREAM_PROXY / ANTIGRAVITY_UPSTREAM_PROXY 指向可用出口（如 http://127.0.0.1:7890）后 ./finish.sh <name> --skip-chat。",
       "sources": [
         "https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals",
         "https://google-gemini.github.io/gemini-cli/",
@@ -139,7 +157,23 @@
       ],
       "verified": true,
       "credits": "limit",
-      "credits_note": "不走积分：个人 Google 账号自带免费档（官方 Gemini CLI 文档 60 次/分、1000 次/天），Pro/Ultra 只抬高限额"
+      "credits_note": "不走积分：个人 Google 账号自带免费档（官方 Gemini CLI 文档 60 次/分、1000 次/天），Pro/Ultra 只抬高限额",
+      "last_checked": "2026-10-03 13:20:59"
+    },
+    "spacebunny": {
+      "vendor": "Space Bunny Alpha（官方托管网关）",
+      "site": "https://spacebunnymodel.com/",
+      "free": "trial",
+      "window": "注册赠 $10 一次性额度；之后 $5 起按量计费；OpenRouter 隐身预览 2026-10-05 到期",
+      "facts": "OpenRouter 隐身模型 stealth/space-bunny-alpha；1M 上下文、text+image+video→text 多模态、reasoning mandatory（efforts: max/xhigh/high/medium/low，默认 max）；官方托管网关 spacebunnymodel.com/api/v1（OpenAI 兼容，model id: space-bunny-alpha，Bearer sb_live_ Key）；注册送 $10 额度，之后 $5 起按量 → 独立 Key 余额，不走客户端积分；⚠️ OpenRouter expiration 2026-10-05，隐身预览到期后可能下架。",
+      "sources": [
+        "https://spacebunnymodel.com/docs",
+        "https://openrouter.ai/stealth/space-bunny-alpha"
+      ],
+      "verified": true,
+      "credits": "own",
+      "credits_note": "不走客户端积分：spacebunnymodel.com 独立 sb_live_ Key 余额（注册赠 $10）",
+      "last_checked": "2026-10-03 19:50:00"
     },
     "tokendance": {
       "vendor": "TokenDance 词元跳动",
@@ -153,7 +187,8 @@
       ],
       "verified": true,
       "credits": "own",
-      "credits_note": "不走客户端积分：tokendance.space 独立 API Key 按量计费余额"
+      "credits_note": "不走客户端积分：tokendance.space 独立 API Key 按量计费余额",
+      "last_checked": "2026-10-03 13:20:59"
     },
     "catpaw": {
       "vendor": "美团 CatPawAI",
@@ -166,21 +201,23 @@
       ],
       "verified": false,
       "credits": "unknown",
-      "credits_note": "需美团公司 VPN（sankuai 内网域），当前不可达，无法核实积分规则"
+      "credits_note": "需美团公司 VPN（sankuai 内网域），当前不可达，无法核实积分规则",
+      "last_checked": "2026-10-03 13:21:04"
     },
     "antigravity": {
       "vendor": "Google Antigravity（Google 账号登录）",
       "site": "https://antigravity.google/",
-      "free": "quota",
-      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
-      "facts": "Antigravity 为 Google 官方 AI IDE，language server 后端 cloudcode-pa.googleapis.com 与 Gemini Code Assist 同源。Google 弃用页明确 2026-06-18 起个人/Pro/Ultra 档 Code Assist 与 Gemini CLI Login with Google 关停，需迁移 Antigravity。本机以 Antigravity 自有 OAuth client（自 /Applications/Antigravity.app/Contents/Resources/bin/language_server 提取，refresh_token 实测有效 3599 秒）接入，端口 8797。12 个模型名由二进制 strings 提取，其中 claude 家族命名（如 claude-opus-4-8@default）尚未实测，桥内已做 @后缀/裸名 与 ide 元数据回退。归入登录免费档，不占 Google AI Pro 独立额度（官方未公示具体关系）。",
+      "free": "blocked",
+      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口；2026-10-02 实测 403 账号验证未过；2026-10-02 19:45 实测当前不可达根因为本机国际出口全断（代理隧道 503），非账号问题",
+      "facts": "Antigravity 为 Google 官方 AI IDE，language server 后端 cloudcode-pa.googleapis.com 与 Gemini Code Assist 同源。Google 弃用页明确 2026-06-18 起个人/Pro/Ultra 档 Code Assist 与 Gemini CLI Login with Google 关停，需迁移 Antigravity。本机以 Antigravity 自有 OAuth client（自 /Applications/Antigravity.app/Contents/Resources/bin/language_server 提取，refresh_token 实测有效 3599 秒）接入，端口 8797。12 个模型名由二进制 strings 提取，其中 claude 家族命名（如 claude-opus-4-8@default）尚未实测，桥内已做 @后缀/裸名 与 ide 元数据回退。归入登录免费档，不占 Google AI Pro 独立额度（官方未公示具体关系）。2026-10-02 活体复测（端口 8797，calls 1341 last_ok false）：与 gemini 共用同一 Google 账号 jetski OAuth，generateContent 返回 403 PERMISSION_DENIED reason VALI（cloudcode-pa.googleapis.com 同源）。浏览器完成该 Google 账号验证后，gemini 与 antigravity 两桥一起恢复。 2026-10-02 19:45 二次活体复测（端口 8797）：loadCodeAssist 即报 ProxyError/Tunnel 503，cloudcode-pa.googleapis.com 同样不可达；与 gemini 同因（本机无国际出口），此前 403 VALI 记录保留。网络出口：2026-10-02 19:45 复测，本机国际出口全断（baidu 200，google/oauth2.googleapis.com/cloudcode-pa.googleapis.com/coresg-normal.trae.ai 均 000，经系统代理 MacPacket :1082 也是 Tunnel connection failed: 503 Service Unavailable；系统代理 ExceptionsList 含 198.18.0.0/15 fake-ip 隧道）。两桥 /health 已带 upstream_proxy 字段（当前 {\"proxy\":\"http://127.0.0.1:1082\",\"source\":\"system\"}）。恢复二选一：修 MacPacket 国际线路，或给桥设 GEMINI_UPSTREAM_PROXY / ANTIGRAVITY_UPSTREAM_PROXY 指向可用出口（如 http://127.0.0.1:7890）后 ./finish.sh <name> --skip-chat。",
       "sources": [
         "https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals",
         "https://antigravity.google/"
       ],
       "verified": true,
       "credits": "limit",
-      "credits_note": "不走积分：Google 账号登录即用、带速率限制（官方未公示具体数值）"
+      "credits_note": "不走积分：Google 账号登录即用、带速率限制（官方未公示具体数值）",
+      "last_checked": "2026-10-03 13:21:05"
     },
     "openai": {
       "vendor": "OpenAI / ChatGPT（ocx 原生）",
@@ -193,7 +230,8 @@
       ],
       "verified": false,
       "credits": "own",
-      "credits_note": "不走反代理客户端积分：Codex/ChatGPT 原生订阅账号"
+      "credits_note": "不走反代理客户端积分：Codex/ChatGPT 原生订阅账号",
+      "last_checked": "2026-10-03 13:21:06"
     },
     "zcode": {
       "vendor": "智谱 Z.AI Coding（ZCode 客户端 Start Plan / Weekend Build）",
@@ -207,7 +245,8 @@
       ],
       "verified": true,
       "credits": "client",
-      "credits_note": "客户端 entitlement 计量：Start Plan 3,000,000 tokens/天 + Weekend Build 300,000,000 tokens 一次性"
+      "credits_note": "客户端 entitlement 计量：Start Plan 3,000,000 tokens/天 + Weekend Build 300,000,000 tokens 一次性",
+      "last_checked": "2026-10-03 13:21:07"
     },
     "stepfun": {
       "vendor": "阶跃星辰 StepFun",
@@ -218,15 +257,32 @@
       "sources": [
         "https://platform.stepfun.com"
       ],
-      "verified": false,
+      "verified": true,
       "credits": "own",
-      "credits_note": "不走客户端积分：StepFun 官方 API Key 按量付费（stepfun plan api）"
+      "credits_note": "不走客户端积分：StepFun 官方 API Key 按量付费（stepfun plan api）",
+      "last_checked": "2026-10-03 13:21:07"
+    },
+    "qwen": {
+      "vendor": "阿里云 Qwen Cloud",
+      "site": "https://maas.qwencloudapi.com",
+      "free": "blocked",
+      "window": "待补上游 key，且上游在新加坡（本机国际出口恢复或配代理后才能通）",
+      "facts": "上游 https://maas.qwencloudapi.com/compatible-mode/v1，模型 qwen3.8-flash / qwen3.8-max。2026-10-02 /health 显示 has_api_key:false，调用一律 503 qwen_key_missing（本机只有本地鉴权用的 QWEN2CODEX_KEY）。恢复路径：runtime/fleet.env 增加 QWEN_API_KEY=<上游 key>，~/Library/LaunchAgents/com.local.qwen2codex.plist 增加同名 env，然后 launchctl kickstart -k gui/501/com.local.qwen2codex。 上游真实归属：AliDNS DoH 解析 maas.qwencloudapi.com → nlb-2hbq07mixiqm9nxn7e.ap-southeast-1.nlb.aliyuncsslbintl.com（8.219.175.122 / 47.245.102.28，新加坡 ap-southeast-1）；2026-10-02 19:45 经本机系统代理与直连均 503。即缺 key 与国际出口两个条件叠加，补 key 后仍可能有墙，需代理出口。",
+      "sources": [
+        "https://maas.qwencloudapi.com"
+      ],
+      "verified": false,
+      "credits": "unknown",
+      "credits_note": "待补 key 后核实",
+      "last_checked": "2026-10-03 13:21:07"
     }
   },
   "models": {
     "workbuddy/hy4-preview": {
       "free": "free-window",
       "window": "限免两周：2026-09-10 00:00 → 2026-09-23 23:59:59（国内版；海外版 2026-08-28 起）— 已结束",
+      "window_start": "2026-09-10T00:00:00+08:00",
+      "window_end": "2026-09-23T23:59:59+08:00",
       "source": "https://www.codebuddy.cn/pricing",
       "verified": true,
       "credits": "client",
@@ -235,6 +291,8 @@
     "workbuddy-gpt/hy4-preview": {
       "free": "free-window",
       "window": "限免两周：2026-08-28 00:00 → 2026-09-23 23:59:59（海外版）— 已结束",
+      "window_start": "2026-08-28T00:00:00+08:00",
+      "window_end": "2026-09-23T23:59:59+08:00",
       "source": "https://www.workbuddy.ai/pricing",
       "verified": true,
       "credits": "client",
@@ -243,8 +301,19 @@
     "workbuddy-gpt/deepseek-v4.1-flash": {
       "free": "paid",
       "window": "官方合作限时折扣：2026-09-10 → 2026-09-23 — 已结束",
+      "window_start": "2026-09-10T00:00:00+08:00",
+      "window_end": "2026-09-23T23:59:59+08:00",
+      "window_why": "首发折扣与 Hy4 同一个两周窗口",
       "source": "https://www.workbuddy.ai/pricing",
       "verified": true
+    },
+    "spacebunny/space-bunny-alpha": {
+      "free": "trial",
+      "window": "注册赠 $10 一次性额度；之后 $5 起按量计费；OpenRouter 隐身预览 2026-10-05 到期",
+      "source": "https://spacebunnymodel.com/docs",
+      "verified": true,
+      "credits": "own",
+      "credits_note": "不走客户端积分：spacebunnymodel.com 独立 sb_live_ Key 余额（注册赠 $10）"
     },
     "tokendance/step-5-preview": {
       "free": "paid",
@@ -291,80 +360,82 @@
       "verified": true
     },
     "antigravity/claude-opus-4-8@default": {
-      "free": "quota",
-      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI，与 gemini 同源同账号）；浏览器完成验证后约 2 分钟恢复；2026-10-02 19:45 复测：桥在 loadCodeAssist 阶段即被代理隧道挡下（503），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
       "source": "https://antigravity.google/",
       "verified": true
     },
     "antigravity/claude-opus-4-6@default": {
-      "free": "quota",
-      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI，与 gemini 同源同账号）；浏览器完成验证后约 2 分钟恢复；2026-10-02 19:45 复测：桥在 loadCodeAssist 阶段即被代理隧道挡下（503），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
       "source": "https://antigravity.google/",
       "verified": true
     },
     "antigravity/claude-opus-4-5@20251101": {
-      "free": "quota",
-      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI，与 gemini 同源同账号）；浏览器完成验证后约 2 分钟恢复；2026-10-02 19:45 复测：桥在 loadCodeAssist 阶段即被代理隧道挡下（503），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
       "source": "https://antigravity.google/",
       "verified": true
     },
     "antigravity/claude-sonnet-4-5@20250929": {
-      "free": "quota",
-      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI，与 gemini 同源同账号）；浏览器完成验证后约 2 分钟恢复；2026-10-02 19:45 复测：桥在 loadCodeAssist 阶段即被代理隧道挡下（503），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
       "source": "https://antigravity.google/",
       "verified": true
     },
     "antigravity/claude-haiku-4-5@20251001": {
-      "free": "quota",
-      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI，与 gemini 同源同账号）；浏览器完成验证后约 2 分钟恢复；2026-10-02 19:45 复测：桥在 loadCodeAssist 阶段即被代理隧道挡下（503），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
       "source": "https://antigravity.google/",
       "verified": true
     },
     "antigravity/gemini-3.1-pro-preview": {
-      "free": "quota",
-      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI，与 gemini 同源同账号）；浏览器完成验证后约 2 分钟恢复；2026-10-02 19:45 复测：桥在 loadCodeAssist 阶段即被代理隧道挡下（503），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
       "source": "https://antigravity.google/",
       "verified": true
     },
     "antigravity/gemini-3-pro-preview": {
-      "free": "quota",
-      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI，与 gemini 同源同账号）；浏览器完成验证后约 2 分钟恢复；2026-10-02 19:45 复测：桥在 loadCodeAssist 阶段即被代理隧道挡下（503），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
       "source": "https://antigravity.google/",
       "verified": true
     },
     "antigravity/gemini-3-flash-preview": {
-      "free": "quota",
-      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI，与 gemini 同源同账号）；浏览器完成验证后约 2 分钟恢复；2026-10-02 19:45 复测：桥在 loadCodeAssist 阶段即被代理隧道挡下（503），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
       "source": "https://antigravity.google/",
       "verified": true
     },
     "antigravity/gemini-2.5-pro": {
-      "free": "quota",
-      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI，与 gemini 同源同账号）；浏览器完成验证后约 2 分钟恢复；2026-10-02 19:45 复测：桥在 loadCodeAssist 阶段即被代理隧道挡下（503），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
       "source": "https://antigravity.google/",
       "verified": true
     },
     "antigravity/gemini-2.5-flash": {
-      "free": "quota",
-      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI，与 gemini 同源同账号）；浏览器完成验证后约 2 分钟恢复；2026-10-02 19:45 复测：桥在 loadCodeAssist 阶段即被代理隧道挡下（503），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
       "source": "https://antigravity.google/",
       "verified": true
     },
     "antigravity/gpt-oss-120b-maas": {
-      "free": "quota",
-      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI，与 gemini 同源同账号）；浏览器完成验证后约 2 分钟恢复；2026-10-02 19:45 复测：桥在 loadCodeAssist 阶段即被代理隧道挡下（503），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
       "source": "https://antigravity.google/",
       "verified": true
     },
     "antigravity/gpt-oss-20b-maas": {
-      "free": "quota",
-      "window": "Google 账号登录即用，带速率限制（官方未公示具体数值）；2026-06-18 起个人版 Code Assist 已关停，Antigravity 是 Google 保留的免费入口",
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI，与 gemini 同源同账号）；浏览器完成验证后约 2 分钟恢复；2026-10-02 19:45 复测：桥在 loadCodeAssist 阶段即被代理隧道挡下（503），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
       "source": "https://antigravity.google/",
       "verified": true
     },
     "zcode/GLM-5.3-Flash": {
       "free": "free",
       "window": "Weekend Build 300M tokens 一次性（2026-09-27 到期）；Start Plan 日常 5M/天",
+      "window_end": "2026-09-27T23:59:59+08:00",
+      "window_why": "一次性 300M Weekend Build grant 2026-09-27 到期；Start Plan 每日额度无公布截止，留在 window 文本里",
       "verified": true,
       "credits": "client",
       "credits_note": "Weekend Build 300,000,000 tokens 一次性（2026-09-27 到期）+ Start Plan 5,000,000/天"
@@ -375,31 +446,6 @@
       "verified": true,
       "credits": "client",
       "credits_note": "Start Plan 3,000,000 tokens/天，entitlement quota 扣减"
-    },
-    "trae/trae-step-5-preview": {
-      "free": "unknown",
-      "credits": "limit",
-      "credits_note": "免费档不计点（官网「限量使用」）；Pro 订阅内此模型按 credits 计量"
-    },
-    "trae/trae-glm-5.3": {
-      "free": "unknown",
-      "credits": "limit",
-      "credits_note": "免费档不计点（官网「限量使用」）"
-    },
-    "trae/trae-kimi-k3": {
-      "free": "unknown",
-      "credits": "limit",
-      "credits_note": "免费档不计点（官网「限量使用」）"
-    },
-    "trae/trae-DeepSeek-V4-Pro": {
-      "free": "unknown",
-      "credits": "limit",
-      "credits_note": "免费档不计点（官网「限量使用」）"
-    },
-    "trae/trae-minimax-m3": {
-      "free": "unknown",
-      "credits": "limit",
-      "credits_note": "免费档不计点（官网「限量使用」）"
     },
     "workbuddy/auto": {
       "free": "unknown",
@@ -425,6 +471,162 @@
       "free": "unknown",
       "credits": "own",
       "credits_note": "ChatGPT 原生订阅，非反代理客户端"
+    },
+    "trae/Doubao-Seed-Evolving": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/Doubao-Seed-2.1-Pro": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/seed-code-pro-0430": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/Doubao-Seed-2.1-Turbo": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/Doubao-Seed-2.0-Code": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/step-5-preview": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/glm-5.3": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/glm-5.2": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/glm-5-turbo": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/glm-5": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/deepseek-v4.1-flash": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/DeepSeek-V4-Flash-Official": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/DeepSeek-V4-Flash": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/DeepSeek-V4-Pro-Official": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/DeepSeek-V4-Pro": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/kimi-k3": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/kimi-k2.7-code": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/kimi-k2.6": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/minimax-m3": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/qwen3.8-max": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/qwen-3.7-plus": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "trae/computer_use_subagent": {
+      "free": "blocked",
+      "window": "2026-10-02 实测账号级额度用尽：桥在线、token 未过期，22 个模型统报 quota 502（账号侧，非代码/参数；网关别名已修为 trae/seed-code-pro-0430，param invalid 不再出现）。恢复：等额度重置或换 ~/.trae2codex/creds.json 后 launchctl kickstart -k gui/501/com.local.trae2codex。免费档不计点，官网免费计划为限量使用；本机第二个账号 Q Micheal（国际版 Trae，region=ai）额度独立，但其网关 coresg-normal.trae.ai 同被本机代理隧道挡下",
+      "source": "https://www.trae.cn/pricing",
+      "verified": true
+    },
+    "gemini/gemini-3-pro-preview": {
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI；OAuth 刷新正常，桥已透传 validation_url 验证链接）。与 antigravity 共用同一 Google 账号，验证一次 两个桥一起恢复。个人账号免费档不计点，官方限额 60 次/分、1000 次/天；2026-10-02 19:45 复测：桥上双通道均在代理隧道失败（503 Tunnel connection failed），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
+      "source": "https://codeassist.google.com/",
+      "verified": true
+    },
+    "gemini/gemini-2.5-pro": {
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI；OAuth 刷新正常，桥已透传 validation_url 验证链接）。与 antigravity 共用同一 Google 账号，验证一次 两个桥一起恢复。个人账号免费档不计点，官方限额 60 次/分、1000 次/天；2026-10-02 19:45 复测：桥上双通道均在代理隧道失败（503 Tunnel connection failed），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
+      "source": "https://codeassist.google.com/",
+      "verified": true
+    },
+    "gemini/gemini-2.5-flash": {
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI；OAuth 刷新正常，桥已透传 validation_url 验证链接）。与 antigravity 共用同一 Google 账号，验证一次 两个桥一起恢复。个人账号免费档不计点，官方限额 60 次/分、1000 次/天；2026-10-02 19:45 复测：桥上双通道均在代理隧道失败（503 Tunnel connection failed），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
+      "source": "https://codeassist.google.com/",
+      "verified": true
+    },
+    "gemini/gemini-3-flash-preview": {
+      "free": "blocked",
+      "window": "2026-10-02 实测 Google 账号级验证未过（403 VALI；OAuth 刷新正常，桥已透传 validation_url 验证链接）。与 antigravity 共用同一 Google 账号，验证一次 两个桥一起恢复。个人账号免费档不计点，官方限额 60 次/分、1000 次/天；2026-10-02 19:45 复测：桥上双通道均在代理隧道失败（503 Tunnel connection failed），本机国际出口问题，恢复后如仍 403 VALI 再走浏览器验证",
+      "source": "https://codeassist.google.com/",
+      "verified": true
     }
   },
   "gaps": [
@@ -445,8 +647,20 @@
       "reason": "2026-09-26 已修复：此前 qoder 桥（8789）有 15 个模型但从未注册进 ocx（live=0）；现已 ocx provider add qoder --adapter openai-chat --base-url http://127.0.0.1:8789/v1 --allow-private-network，14 个模型已进入 catalog"
     },
     {
+      "provider": "trae",
+      "reason": "2026-10-02 实测：桥在线、session_alive，CN 账号（用户6781982309）22 个模型统报 quota；桥已改为账号池（池内第二账号 Q Micheal / region=ai），配额耗尽冷却 600s 后自动顺延，502 消息逐一点名死因。恢复：等 CN 额度重置，或换 ~/.trae2codex/creds.json；国际账号还要本机有国际出口（coresg-normal.trae.ai）。"
+    },
+    {
       "provider": "gemini",
-      "reason": "Gemini 桥在跑但 token 刷新失败（502），模型能列出但不能聊天；需重新登录 Google 账号"
+      "reason": "2026-10-02 实测 Google 账号级门禁 403 VALI 「Verify your account to continue.」（OAuth 刷新正常、loadCodeAssist 通过，纯账号验证）；浏览器登录该 Google 账号完成验证后约 2 分钟恢复；B 通道 cookies.txt 已损坏需重新导出 2026-10-02 19:45 复测：当前失败点在代理隧道（Tunnel connection failed: 503），本机国际出口全断（系统代理 MacPacket :1082 无国际路由，fake-ip 段 198.18.0.0/15 在 ExceptionsList）。出口恢复后如仍 403 VALI 再走浏览器验证；两桥已支持 GEMINI_UPSTREAM_PROXY / ANTIGRAVITY_UPSTREAM_PROXY 显式指定出口。"
+    },
+    {
+      "provider": "antigravity",
+      "reason": "2026-10-02 实测与 gemini 同一 Google 账号门禁：403 VALI（cloudcode-pa.googleapis.com 同源）；一次浏览器验证可同时恢复两桥 2026-10-02 19:45 复测：当前失败点在代理隧道（Tunnel connection failed: 503），本机国际出口全断（系统代理 MacPacket :1082 无国际路由，fake-ip 段 198.18.0.0/15 在 ExceptionsList）。出口恢复后如仍 403 VALI 再走浏览器验证；两桥已支持 GEMINI_UPSTREAM_PROXY / ANTIGRAVITY_UPSTREAM_PROXY 显式指定出口。"
+    },
+    {
+      "provider": "qwen",
+      "reason": "8798 has_api_key:false，缺上游 QWEN_API_KEY；补 key 到 fleet.env 与 plist 后 kickstart com.local.qwen2codex 另：上游 maas.qwencloudapi.com 真实 IP 在新加坡 ap-southeast-1（8.219.175.122 / 47.245.102.28），本机国际出口全断时同样 503；补 key + 配出口两件事都要做。"
     }
   ]
 }

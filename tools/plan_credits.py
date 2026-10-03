@@ -61,6 +61,12 @@ MINIMAX_BASE = "https://api.minimaxi.com"
 # key is called dead; --base pins one host and skips the retry.
 MINIMAX_INTL_BASE = "https://api.minimax.io"
 MINIMAX_MODEL = "MiniMax-M2"
+# MiniMax's Token Plan quota. Documented in their own FAQ
+# (platform.minimaxi.com/docs/token-plan/faq.md, "如何查看 Token Plan 用量",
+# method two) as GET https://www.minimax.cn/v1/token_plan/remains. The key it
+# wants is a subscription Key, which is a different credential from a normal
+# pay-as-you-go API key and cannot be substituted for one.
+MINIMAX_REMAINS_HOSTS = ("https://www.minimax.cn", "https://www.minimaxi.com")
 KIMI_MODEL = "kimi-for-coding"
 
 # The Kimi desktop app keeps the coding key it minted under its own user data.
@@ -195,18 +201,38 @@ def kimi(key, base=KIMI_BASE, spend=True):
     return status, out
 
 
-def minimax(key, base=None, model=MINIMAX_MODEL, bases=None):
-    """One one-token MiniMax chat call: proves the key, spends a sliver.
+def minimax_remains(key, hosts=MINIMAX_REMAINS_HOSTS):
+    """Token Plan quota, straight from GET {base}/v1/token_plan/remains.
 
-    This is all MiniMax will ever answer, and that is not a limitation of
-    this tool. There is no balance route to call. Checked 2026-10-02 from
-    four directions: the open-platform hosts (api.minimaxi.com,
-    api.minimax.io) 404 on /v1/usage, /v1/usages, /v1/credits, /v1/quota
-    and /v1/account; platform.minimaxi.com is a docs site; the marketing
-    site's one live /backend route is /backend/user/biz_info while
-    /backend/user/quota is 404; and the MiniMax Agent extension's whole
-    route table is seventeen routes whose only account entry is a logout.
-    So a key answers "is this key alive" and nothing more.
+    This is the endpoint MiniMax documents for exactly this question, found
+    in their own FAQ on 2026-10-03. Probing the open-platform hosts for
+    /v1/usage and friends finds nothing, which is why it was missed for
+    three days: the route lives on the www host, not the api host.
+
+    It wants a subscription Key. A normal pay-as-you-go API key is a
+    different credential and reads as a login failure here, so the answer
+    is returned as-is rather than retried or reinterpreted.
+    """
+    outcome = (None, {})
+    for host in hosts:
+        url = host.rstrip("/") + "/v1/token_plan/remains"
+        status, text = fetch(url, {"Authorization": "Bearer " + key,
+                                   "Content-Type": "application/json"})
+        out = {"platform": "minimax", "endpoint": url,
+               "token_plan_remains": True, "http": status,
+               "body": _as_json(text)}
+        if status == 200:
+            body = out["body"]
+            if isinstance(body, dict) and body.get("base_resp", {}).get(
+                    "status_code", 0) == 0:
+                out["answered"] = True
+                return status, out
+        outcome = (status, out)
+    return outcome
+
+
+def minimax(key, base=None, model=MINIMAX_MODEL, bases=None):
+    """Token Plan quota first, then a one-token chat call as the fallback.
 
     A 401 is the only answer that means "this key is dead", and it is also
     what the wrong region answers, so the other region is tried before that
@@ -276,9 +302,9 @@ def main(argv=None):
             print("no key for %s (pass --key or set %s)" % (name, env),
                   file=sys.stderr)
             if name == "minimax":
-                print("and a key would not buy a number here: MiniMax"
-                      " publishes no balance route on any host, so a"
-                      " one-token call is the only answer it ever gives",
+                print("and the key it wants is a subscription Key, not a"
+                      " pay-as-you-go API key -- they are separate"
+                      " credentials and one cannot stand in for the other",
                       file=sys.stderr)
             else:
                 print("the Kimi desktop app can supply one: it keeps the"
@@ -291,7 +317,12 @@ def main(argv=None):
         if name == "kimi":
             status, out = kimi(key, base, spend=not args.no_spend)
         else:
-            status, out = minimax(key, base, args.model)
+            status, out = minimax_remains(key)
+            if not out.get("answered"):
+                # a pay-as-you-go key is not a subscription Key, so the
+                # documented route cannot read it; fall back to the
+                # one-token call that at least proves the key is alive
+                status, out = minimax(key, base, args.model)
         worst = worst or report(name, status, out)
     return worst
 

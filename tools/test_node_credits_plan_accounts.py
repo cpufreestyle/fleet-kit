@@ -5,10 +5,36 @@ them directly: is the account alive, which key is behind it, and what does
 the platform say is left. A refused key must read as refused -- a dead key
 rendered as zero credits is how a paid plan gets cancelled unnoticed.
 """
+import http.server
 import json
+import threading
 
 import node_credits as nc
 import plan_credits
+
+
+class _PoolHandler(http.server.BaseHTTPRequestHandler):
+    """The one answer a bridge with an account pool gives on /health."""
+
+    accounts = []
+
+    def do_GET(self):
+        if self.path != "/health":
+            self.send_response(404)
+            self.end_headers()
+            return
+        payload = json.dumps({"ok": True, "version": "0.1.0",
+                              "logged_in": True,
+                              "account_pool": {"count": len(self.accounts),
+                                               "accounts": self.accounts}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args):
+        pass
 
 USAGES = {"usages": [{"window": "5h", "remaining": 128, "limit": 300}]}
 KIMI_OK = (200, {"endpoint": "https://api.kimi.com/coding/v1/usages",
@@ -117,3 +143,26 @@ def test_a_machine_with_no_cc_switch_db_has_no_kimi_key(monkeypatch):
     assert nc.cc_switch_kimi_slot("anything") == ""
     assert nc.cc_switch_key_reuse() == {}
     assert nc.cc_switch_placeholder_note("anything") == ""
+
+def test_a_pool_account_names_its_plan_next_to_its_points(monkeypatch):
+    """A pool row is where the platform name and the points sit together."""
+    _isolate(monkeypatch)
+    handler = type("H", (_PoolHandler,),
+                   {"accounts": [{"name": "kimi-main", "primary": True,
+                                  "points": 6420, "points_unit": "points",
+                                  "points_plan": "Free", "state": "cooling"}]})
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setitem(nc.PLAN_ACCOUNTS["kimi-code"], "port",
+                            server.server_address[1])
+        row = nc.read_node("kimi-code")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert row["credits_value"] == 6420
+    assert row["credits_source"] == "bridge /health account_pool"
+    # A lapsed plan is exactly when the row must still name the plan: a blank
+    # cell would read as "no plan at all" instead of "the plan ran out".
+    assert row["plan"] == "Free"

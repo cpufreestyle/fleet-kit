@@ -73,6 +73,50 @@ ST = {'at': None, 'exp': 0.0, 'project': None, 'tier': None, 'client_ok': None,
 class UpstreamError(Exception):
     pass
 
+
+def google_validation_url(body):
+    """The verification link inside a Google 403, when the gate asks for one.
+
+    Measured 2026-10-02: cloudcode-pa answers the VALI gate with 403 plus
+    ErrorInfo{reason: VALI, metadata.validation_url}. That link is the whole
+    fix -- the login itself is fine and only the account has to pass a browser
+    check -- and it sits deep in a JSON body the 502 envelope clips to 300
+    chars, so a truncated body reads as a bare "verify your account" dead end.
+    """
+    try:
+        j = json.loads(body)
+    except Exception:
+        return None
+    try:
+        for d in j["error"]["details"]:
+            u = (d.get("metadata") or {}).get("validation_url")
+            if u:
+                return u
+    except Exception:
+        pass
+    return None
+
+
+class AccountVerification(UpstreamError):
+    """Google wants the account verified in a browser before more calls.
+
+    Raised instead of a raw UpstreamError so the link survives the 300-char
+    clip in do_POST: a truncated accounts.google.com/signin/continue/... URL
+    is worthless to the operator reading the 502.
+    """
+
+    def __init__(self, url):
+        super().__init__("HTTP 403 VALIDATION_REQUIRED; account verification "
+                         "required, open: " + url)
+        self.validation_url = url
+
+
+def _clip(exc):
+    """Message for the 502 envelope -- long enough to keep a verify link."""
+    if getattr(exc, "validation_url", None):
+        return str(exc)
+    return str(exc)[:300]
+
 # 单次 chat 的总时限。call_model 会依次试 model_variants × IDE_TYPES，每次都带
 # timeout=180，加上 get_access() 里的多客户端 refresh，最坏能挂好几分钟；客户端
 # 远早于此就断开，只剩 BrokenPipeError，健康检查于是误判 BRIDGE_DOWN。
@@ -147,6 +191,35 @@ def _budgeted_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
 socket.create_connection = _budgeted_create_connection
 
 
+# 上游代理开关：与 gemini 桥同一用意。urllib 默认吃 macOS 系统代理，而本机
+# 2026-10-02 的系统代理（MacPacket）没有国际路由，cloudcode-pa.googleapis.com
+# 一律 000 / ProxyError 503。ANTIGRAVITY_UPSTREAM_PROXY 可显式指定出口。
+UPSTREAM_PROXY = 'ANTIGRAVITY_UPSTREAM_PROXY'
+
+
+def proxy_info() -> dict:
+    """当前上游出口：{'proxy': url|None, 'source': 'env'|'system'|'direct'}。"""
+    explicit = (os.environ.get(UPSTREAM_PROXY) or '').strip()
+    if explicit:
+        return {'proxy': explicit, 'source': 'env'}
+    try:
+        env_proxies = urllib.request.getproxies() or {}
+    except Exception:
+        env_proxies = {}
+    system = env_proxies.get('https') or env_proxies.get('http') or ''
+    return {'proxy': system or None, 'source': 'system' if system else 'direct'}
+
+
+def _urlopen(req, timeout):
+    """按 UPSTREAM_PROXY 走出口；未设置时与 urllib.request.urlopen 等价。"""
+    info = proxy_info()
+    if info['source'] == 'env':
+        handler = urllib.request.ProxyHandler({'http': info['proxy'],
+                                               'https': info['proxy']})
+        return urllib.request.build_opener(handler).open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def http_json(url, payload, headers=None, method='POST', timeout=90):
     hdrs = {'User-Agent': UA, 'Content-Type': 'application/json;charset=UTF-8', 'Accept-Encoding': 'identity'}
     if headers:
@@ -156,11 +229,14 @@ def http_json(url, payload, headers=None, method='POST', timeout=90):
         data = None
     req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     try:
-        r = urllib.request.urlopen(req, timeout=timeout)
+        r = _urlopen(req, timeout)
         return r.read(), dict(r.headers)
     except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', 'ignore')[:400]
-        raise UpstreamError('HTTP %s %s: %s' % (e.code, url, body))
+        raw = e.read().decode('utf-8', 'ignore')
+        vurl = google_validation_url(raw)
+        if vurl:
+            raise AccountVerification(vurl)
+        raise UpstreamError('HTTP %s %s: %s' % (e.code, url, raw[:400]))
     except Exception as e:
         raise UpstreamError('%s: %s' % (type(e).__name__, str(e)[:200]))
 
@@ -441,7 +517,8 @@ class H(BaseHTTPRequestHandler):
                     'tier': ST['tier'], 'project': bool(ST['project']), 'ide': ST['ide'],
                     'client_ok': bool(ST['client_ok']), 'models': len(MODELS),
                     'oauth': len(CLIENT_CANDIDATES),
-                    'calls': ST['calls'], 'last_model': ST['last_model'], 'last_ok': ST['last_ok']}
+                    'calls': ST['calls'], 'last_model': ST['last_model'], 'last_ok': ST['last_ok'],
+                    'upstream_proxy': proxy_info()}
             self._send(200, json.dumps(info))
         else:
             self._send(404, json.dumps({'error': 'not found'}))
@@ -463,7 +540,7 @@ class H(BaseHTTPRequestHandler):
         try:
             text = call_model(model, msgs, stream)
         except Exception as e:
-            self._send(502, json.dumps({'error': {'message': str(e)[:300], 'type': 'upstream_error'}}))
+            self._send(502, json.dumps({'error': {'message': _clip(e), 'type': 'upstream_error'}}))
             return
         if not text:
             text = '[EMPTY-UPSTREAM]'

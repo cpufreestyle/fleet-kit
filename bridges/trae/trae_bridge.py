@@ -15,6 +15,9 @@
 链路：Codex → 本桥(:8791) → https://trae-api-cn.mchost.guru（CN）或 coresg-normal.trae.ai（国际）
 登录态：直接读官方 IDE 落盘的 storage.json；过期时用 refresh token 换新 token，
         换到的凭据缓存到 ~/.trae2codex/creds.json（不覆盖 IDE 文件）。
+账号池：本机每套 Trae edition 是一个独立账号，额度互不影响。单个账号配额
+        耗尽（Your requests have exceeded the quota）后自动冷却并顺延到下
+        一个账号；流式请求在流头窥探阶段完成换号，不把半截响写给客户端。
 
 依赖：fastapi + uvicorn + httpx + cryptography。用法：python3 trae_bridge.py [--port 8791]
 """
@@ -360,11 +363,128 @@ def _parse_ms(v) -> float:
     return 0.0
 
 
+# ---------------- 凭证池与配额冷却 ----------------
+# 2026-10-02 实测：这台 Mac 装了三套 Trae（Trae CN / TRAE SOLO CN / 国际版
+# Trae）。CN 账号（用户6781982309）22 个模型全部配额耗尽，国际版账号
+# （Q Micheal）额度独立但 coresg-normal.trae.ai 被 TLS 墙挡死。修复前
+# resolve_credential 缓存优先、钉死单账号：CN 配额耗尽后所有模型统一报
+# quota，池里其他账号永远不会被轮到。现在按活的优先排全部账号，quota
+# 错误触发冷却 + 顺延，网络异常也不再 500 而是换号。
+QUOTA_COOLDOWN = float(os.environ.get("TRAE_QUOTA_COOLDOWN") or "600")
+_quota_dead: dict = {}
+
+
+def cred_ident(cred: dict) -> str:
+    return f"{cred.get('region') or 'cn'}:{cred.get('account') or cred.get('user_id') or ''}"
+
+
+def is_quota_error(text: str) -> bool:
+    low = (text or "").lower()
+    return ("quota" in low or "exceeded" in low or "rate limit" in low
+            or "too many requests" in low)
+
+
+def mark_quota_dead(cred: dict) -> None:
+    _quota_dead[cred_ident(cred)] = time.time() + QUOTA_COOLDOWN
+
+
+def is_quota_dead(cred: dict) -> bool:
+    return _quota_dead.get(cred_ident(cred), 0.0) > time.time()
+
+
+def region_first(pool: list, want_region: str) -> list:
+    """同区凭证排前：国际模型打国际网关，别拿 CN 模型 id 去挨 param invalid。"""
+    if not want_region:
+        return pool
+    same = [c for c in pool if (c.get("region") or "cn") == want_region]
+    rest = [c for c in pool if (c.get("region") or "cn") != want_region]
+    return same + rest
+
+
+async def credential_pool(allow_refresh: bool = True) -> list:
+    """全部可用凭证：缓存 + 各桌面 edition，按 (账号, 区域) 去重。
+
+    活的排前、冷却中的垫底，冷却账号只在家底死绝时兜底。
+    """
+    creds: list = []
+    seen: set = set()
+
+    async def offer(cred):
+        if cred and cred.get("access_token") and cred_ident(cred) not in seen:
+            seen.add(cred_ident(cred))
+            creds.append(cred)
+
+    cached = load_store().get("credential")
+    if cached and cached.get("access_token"):
+        if cached.get("expires_at_ms", 0) - 300_000 > time.time() * 1000:
+            await offer(cached)
+        elif allow_refresh and cached.get("refresh_token"):
+            try:
+                await offer(await refresh_credential(cached))
+            except Exception as e:
+                print(f"[trae2codex] store refresh failed: {e}", flush=True)
+    for cand in storage_candidates():
+        c = read_desktop_auth(cand)
+        if not c:
+            continue
+        if c["access_token"] and (not c["expires_at_ms"] or c["expires_at_ms"] - 300_000 > time.time() * 1000):
+            await offer(c)
+        elif allow_refresh and c.get("refresh_token"):
+            try:
+                await offer(await refresh_credential(c))
+            except Exception as e:
+                print(f"[trae2codex] refresh from {cand['edition']} failed: {e}", flush=True)
+    alive = [c for c in creds if not is_quota_dead(c)]
+    return alive + [c for c in creds if is_quota_dead(c)]
+
+
+async def _peek_quota(ait) -> tuple:
+    """窥探 SSE 流头：quota error 返回 (b"", msg)，否则返回 (已读字节, None)。
+
+    Trae 的配额错误是 HTTP 200 流里的 error 事件，等非流式聚合完才换号未免
+    太晚，流式请求那时已经开始向客户端写字节，换不了号。窥探阶段只缓冲不产
+    出，决策点必然落在首个 delta / error / done 事件上。
+    """
+    buf = b""
+    try:
+        async for chunk in ait:
+            buf += chunk
+            for name, data in sse_events(buf.decode("utf-8", "replace")):
+                kind, val = decode_trae_event(name, data)
+                if kind == "error":
+                    msg = str(val)
+                    return (b"", msg) if is_quota_error(msg) else (buf, None)
+                if kind in ("delta", "done"):
+                    return buf, None
+        return buf, None
+    except Exception:
+        return buf, None
+
+
+class _ReplayResponse:
+    """把窥探阶段读走的字节接回流里，对 _sse_pump 伪装成 httpx.Response。"""
+
+    def __init__(self, resp, prefix: bytes, ait):
+        self._resp, self._prefix, self._ait = resp, prefix, ait
+
+    async def aiter_bytes(self):
+        if self._prefix:
+            yield self._prefix
+        async for chunk in self._ait:
+            yield chunk
+
+    async def aclose(self):
+        await self._resp.aclose()
+
+
 # ---------------- Trae 请求构造 ----------------
 
 def trae_headers(cred: dict, ident: dict, accept: str = "text/event-stream") -> dict:
     request_id = str(uuid.uuid4())
     trace_id = request_id.replace("-", "")[:32]
+    # HTTP 头只能走 ASCII：IDE 落盘的 userId 一般是数字，但 account.username 可能是
+    # 中文昵称，混进 x-uid 会让 httpx 抛 UnicodeEncodeError，请求根本发不出去。
+    uid = "".join(ch for ch in str(cred.get("user_id") or "") if " " <= ch <= "~")
     vc = cred.get("build_version") or ""
     version_code = vc if vc.isdigit() else VERSION_CODE_FALLBACK
     h = {
@@ -384,7 +504,7 @@ def trae_headers(cred: dict, ident: dict, accept: str = "text/event-stream") -> 
         "x-custom-trace-id": trace_id,
         "x-flow-traceparent": f"04-{trace_id}-{trace_id[:16]}-01",
         "request-traffic-type": "prod",
-        "x-uid": cred.get("user_id", ""),
+        "x-uid": uid,
         "x-request-id": request_id,
         "x-trae-request-id": request_id,
         "Content-Type": "application/json",
@@ -436,9 +556,26 @@ async def get_catalog(force: bool = False) -> dict:
     async with _state_lock:
         if not force and _catalog["models"] and time.time() - _catalog["ts"] < 300:
             return _catalog["models"]
+    # 逐凭证合并目录：本机 Trae CN 与国际版各暴露自己的模型集，过去只用
+    # resolve_credential() 的单一缓存凭证（CN），国际版模型即使可达也进不了
+    # 目录，聊天时拿 CN 模型 id 打国际网关只会得到 param invalid。合并后每个
+    # model 带 region 标签，chat_completions 按标签优先路由到同区凭证。
     try:
-        cred = await resolve_credential()
-        by_id = await fetch_directory(cred)
+        pool = await credential_pool()
+        by_id: dict = {}
+        for cred in pool:
+            region = cred.get("region") or "cn"
+            try:
+                part = await fetch_directory(cred)
+            except Exception as e:
+                print(f"[trae2codex] directory {cred_ident(cred)} failed: {e}", flush=True)
+                continue
+            for mid, entry in (part or {}).items():
+                if mid in by_id:
+                    continue
+                tagged = dict(entry)
+                tagged["region"] = region
+                by_id[mid] = tagged
         if by_id:
             async with _state_lock:
                 _catalog["models"] = by_id
@@ -621,6 +758,13 @@ async def health():
     info["session_alive"] = alive
     if not alive:
         info["session_detail"] = detail
+    try:
+        pool = await credential_pool(allow_refresh=False)
+    except Exception:
+        pool = []
+    info["accounts"] = [{"account": c.get("account") or c.get("user_id"),
+                         "region": c.get("region"), "edition": c.get("edition"),
+                         "quota_dead": is_quota_dead(c)} for c in pool]
     info["cached_models"] = sorted((await get_catalog()).keys())
     return info
 
@@ -656,31 +800,88 @@ async def chat_completions(request: Request):
     fn = entry.get("function") or DEFAULT_FUNCTION
     body = build_chat_body(payload, model, fn)
     stream = bool(payload.get("stream"))
-    cred = await resolve_credential()
-    ident = identity_of(cred)
-    url = f"{gateway(cred)}{CHAT_PATH}"
+    pool = await credential_pool()
+    if not pool:
+        raise HTTPException(status_code=401,
+                            detail="Trae login state not found; 请在 Trae CN IDE 中登录")
+    want_region = entry.get("region")
+    if want_region:
+        pool = region_first(pool, want_region)
+    last_err = ""
+    notes: list = []
+    for cred in pool:
+        ident = identity_of(cred)
+        url = f"{gateway(cred)}{CHAT_PATH}"
 
-    async def attempt(c: dict):
-        return await client().send(
-            client().build_request("POST", url, json=body, headers=trae_headers(c, ident)),
-            stream=True)
+        async def attempt(c=cred, u=url):
+            return await client().send(
+                client().build_request("POST", u, json=body, headers=trae_headers(c, ident)),
+                stream=True)
 
-    resp = await attempt(cred)
-    if resp.status_code in (401, 403):
-        await resp.aclose()
         try:
-            cred = await refresh_credential(cred)
-            save_store({"credential": cred, "source": "store-refresh", "updated": int(time.time())})
+            resp = await attempt()
         except Exception as e:
-            print(f"[trae2codex] refresh before retry failed: {e}", flush=True)
-        resp = await attempt(cred)
+            last_err = f"trae upstream unreachable: {type(e).__name__}: {e}"
+            reason = ("凭证非法" if isinstance(e, UnicodeEncodeError) else "网络不可达")
+            notes.append(f"{cred_ident(cred)} {reason}({type(e).__name__})")
+            print(f"[trae2codex] {cred_ident(cred)} unreachable: {last_err}", flush=True)
+            continue
+        if resp.status_code in (401, 403):
+            await resp.aclose()
+            try:
+                cred = await refresh_credential(cred)
+                save_store({"credential": cred, "source": "store-refresh", "updated": int(time.time())})
+            except Exception as e:
+                print(f"[trae2codex] refresh before retry failed: {e}", flush=True)
+            try:
+                resp = await attempt(c=cred)
+            except Exception as e:
+                last_err = f"trae upstream unreachable: {type(e).__name__}: {e}"
+                reason = ("凭证非法" if isinstance(e, UnicodeEncodeError)
+                          else "网络不可达")
+                notes.append(f"{cred_ident(cred)} {reason}({type(e).__name__})")
+                continue
 
-    if resp.status_code != 200:
-        text = (await resp.aread()).decode("utf-8", "replace")[:400]
-        await resp.aclose()
-        return JSONResponse({"error": {"message": f"trae upstream {resp.status_code}: {text}",
+        if resp.status_code != 200:
+            text = (await resp.aread()).decode("utf-8", "replace")[:400]
+            await resp.aclose()
+            last_err = f"trae upstream {resp.status_code}: {text}"
+            if is_quota_error(text):
+                mark_quota_dead(cred)
+                notes.append(f"{cred_ident(cred)} 配额耗尽(冷却 {QUOTA_COOLDOWN:.0f}s)")
+                print(f"[trae2codex] quota dead on {cred_ident(cred)}; "
+                      f"cooling {QUOTA_COOLDOWN:.0f}s, {len(pool) - 1} credential(s) left", flush=True)
+                continue
+            if resp.status_code in (400, 422):
+                # 请求体本身的问题：换号没有意义，原样带上游状态码返回。
+                return JSONResponse({"error": {"message": last_err,
+                                               "type": "trae_upstream_error"}},
+                                    status_code=resp.status_code)
+            notes.append(f"{cred_ident(cred)} 上游 {resp.status_code}")
+            return JSONResponse({"error": {"message": last_err,
+                                           "type": "trae_upstream_error"}},
+                                status_code=resp.status_code)
+
+        # Trae 用 HTTP 200 + SSE error 事件报配额耗尽，非流式聚合后才看得到。
+        # 先窥探流头：quota 就冷却换号，否则把已读字节接回去继续走原链路。
+        ait = resp.aiter_bytes()
+        prefix, quota_msg = await _peek_quota(ait)
+        if quota_msg:
+            await resp.aclose()
+            mark_quota_dead(cred)
+            last_err = f"trae quota: {quota_msg}"
+            notes.append(f"{cred_ident(cred)} 配额耗尽(冷却 {QUOTA_COOLDOWN:.0f}s)")
+            print(f"[trae2codex] quota dead on {cred_ident(cred)} (stream head); "
+                  f"cooling {QUOTA_COOLDOWN:.0f}s", flush=True)
+            continue
+        resp = _ReplayResponse(resp, prefix, ait)
+        break
+    else:
+        detail = "；".join(notes) if notes else ""
+        suffix = f"：{detail}" if detail else ""
+        return JSONResponse({"error": {"message": (last_err or "trae: no usable credential") + suffix,
                                        "type": "trae_upstream_error"}},
-                            status_code=resp.status_code)
+                            status_code=502)
 
     if stream:
         return StreamingResponse(_sse_pump(resp, model), media_type="text/event-stream")

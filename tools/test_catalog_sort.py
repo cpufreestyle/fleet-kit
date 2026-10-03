@@ -214,7 +214,7 @@ def _rank_ordered(models):
     """Sort slugs the way main() does before it interleaves.
 
     interleave_reps() takes its input already sorted by (tier, provider
-    position, hy4, important rank); it does not sort on its own.
+    position, lead rank, important rank); it does not sort on its own.
     """
     order = catalog_sort.DEFAULT_ORDER.split(",")
 
@@ -283,3 +283,23 @@ def test_zcode_flash_ranks_before_the_bare_id():
 def test_rep_band_is_a_positive_int():
     assert isinstance(catalog_sort.REP_BAND, int)
     assert catalog_sort.REP_BAND >= 1
+
+
+def test_the_bench_winning_trio_leads_the_picker():
+    """LEAD_SLUGS are pinned in listed order, ahead of every other row.
+
+    Measured 2026-10-03: the full-fleet code bench crowned a trio, not a
+    single winner -- three workbuddy deepseek bodies passed both coding
+    tasks with full marks -- so all three are pinned above hy4-preview and
+    the other bridges' rows, in the exact order LEAD_SLUGS lists them.
+    """
+    extras = ["workbuddy/hy4-preview", "trae/trae-seed-code-pro-0430",
+              "qwen/qwen3.8-max"]
+    trio = list(catalog_sort.LEAD_SLUGS)
+    models = [{"slug": s} for s in trio + extras]
+    good = {s.split("/", 1)[0] for s in trio + extras}
+    slugs = [m["slug"] for m in catalog_sort.interleave_reps(
+        _rank_ordered(models), catalog_sort.DEFAULT_ORDER.split(","),
+        good=good)]
+    assert slugs[:len(trio)] == trio
+    assert "workbuddy/hy4-preview" in slugs[len(trio):]

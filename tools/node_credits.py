@@ -171,6 +171,21 @@ def _pretty(value):
     return "{:,}".format(value) if isinstance(value, int) else str(value)
 
 
+def _date_text(epoch_seconds):
+    """The UTC+8 date of an epoch value, for a plan that carries an expiry.
+
+    Trae answers expires_at_ms on /health; a timestamp the user cannot read
+    is not an answer, so the plan row shows the date along with the name.
+    """
+    import datetime
+    try:
+        moment = datetime.datetime.fromtimestamp(
+            float(epoch_seconds), datetime.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return str(epoch_seconds)
+    return (moment + datetime.timedelta(hours=8)).strftime("%Y-%m-%d")
+
+
 def _pick(payload, keys):
     for key in keys:
         if isinstance(payload, dict) and payload.get(key) not in (None, ""):
@@ -414,9 +429,11 @@ def credits_kind(name):
 # plan gets cancelled without anyone noticing.
 PLAN_ACCOUNTS = {
     "kimi-code": {"vendor": "月之暗面 Kimi Code（coding 套餐）",
-                  "env": "KIMI_CODING_API_KEY", "plan": "kimi"},
+                  "env": "KIMI_CODING_API_KEY", "plan": "kimi",
+                  "port": 8802},
     "minimax": {"vendor": "MiniMax（编程套餐 / Agent）",
-                "env": "MINIMAX_API_KEY", "plan": "minimax"},
+                "env": "MINIMAX_API_KEY", "plan": "minimax",
+                "port": 8803},
 }
 
 
@@ -588,11 +605,97 @@ def _refusal_text(out):
     return str(body)[:80]
 
 
+def _pool_accounts_row(name, row):
+    """(row, True) filled from the bridge's own account pool, else (row, False).
+
+    Kimi and MiniMax are subscription-keyed, not login-keyed, so a second
+    account is added to the bridge's pool rather than to a profile. The pool
+    is what the bridge actually burns, which makes /health the one place
+    that names every usable account and what each has left; the single key
+    plan_key() finds in the environment cannot say any of that.
+
+    A key minted for pay-as-you-go billing has no Token Plan behind it, so
+    its balance simply is not published -- the row says that instead of
+    showing a zero the platform never reported.
+    """
+    port = PLAN_ACCOUNTS[name].get("port")
+    if not port:
+        return row, False
+    status, health = _get("http://127.0.0.1:%d/health" % port)
+    if status != 200 or not isinstance(health, dict):
+        return row, False
+    accounts = [item for item in ((health.get("account_pool") or {}).get("accounts") or [])
+                if isinstance(item, dict)]
+    if not accounts:
+        return row, False
+    primary = next((item for item in accounts if item.get("primary")), accounts[0])
+    priced = [item for item in accounts if item.get("points") is not None]
+    total = sum(_num(item.get("points")) or 0 for item in priced)
+
+    def label(item):
+        value = _num(item.get("points"))
+        return "%s %s%s" % (item.get("name") or "account",
+                            _pretty(value) if value is not None else "?",
+                            " (cooling)" if item.get("state") == "cooling" else "")
+
+    if len(accounts) > 1:
+        # One line the panel can put under the account name: a pool burns
+        # accounts one by one, so "which ones, how much each" is the question
+        # a multi-account row has to answer.
+        row["credits_accounts"] = " / ".join(
+            "%s %s" % (item.get("name") or "account",
+                       _pretty(_num(item.get("points")))
+                       if _num(item.get("points")) is not None else "?")
+            for item in accounts)
+    row["up"] = True
+    row["logged_in"] = True
+    row["account"] = primary.get("name") or ""
+    row["credits_value"] = _num(primary.get("points"))
+    row["credits_unit"] = (primary.get("points_unit")
+                           or ("points" if priced else ""))
+    row["credits_source"] = "bridge /health account_pool"
+    # The pool row carries the plan name the platform reported next to the
+    # points (measured 2026-10-03: kimi-code answers points_plan Free on a
+    # lapsed plan), and a lapsed plan is exactly when the row must still
+    # say which plan it is instead of going blank.
+    row["plan"] = str(primary.get("points_plan") or "")[:60]
+    plan = PLAN_ACCOUNTS[name]["plan"]
+    detail = " / ".join(label(item) for item in accounts)
+    if plan == "kimi":
+        row["credits_note"] = (
+            "Kimi Code coding plan remaining points (GET /coding/v1/usages); "
+            "%d account(s), %s points total: %s"
+            % (len(accounts), _pretty(total), detail)
+            if priced else
+            "%d account(s) (%s); /coding/v1/usages returned no points number, "
+            "only a subscription key has a balance to read, a pay-as-you-go key "
+            "only shows up when it starts answering 403"
+            % (len(accounts), detail))
+    else:
+        row["credits_note"] = (
+            "MiniMax Token Plan remaining (GET /v1/token_plan/remains, needs a "
+            "subscription Key); %d account(s), %s total: %s"
+            % (len(accounts), _pretty(total), detail)
+            if priced else
+            "%d account(s) (%s); the balance route only accepts a subscription "
+            "Key, a pay-as-you-go key has no balance to read, so the only signal "
+            "left is a one-token chat call"
+            % (len(accounts), detail))
+    row["checkin"] = "upstream has no daily check-in endpoint (quota is read-only, see plan_credits.py)"
+    row["detail"] += "; account_pool %d account(s)" % len(accounts)
+    if health.get("key_source"):
+        row["detail"] += "; key from %s" % health["key_source"]
+    return row, True
+
+
 def read_plan_account(name):
     row = _row(name)
     row["vendor"] = PLAN_ACCOUNTS[name]["vendor"]
     row["credits_kind"] = "subscription"
     row["checkin"] = "上游无每日签到端点（额度只读，见 plan_credits.py）"
+    row, from_pool = _pool_accounts_row(name, row)
+    if from_pool:
+        return row
     key, source, why = plan_key(name)
     row["credits_source"] = "plan_credits（%s）" % (source or "无凭据")
     if not key:
@@ -643,10 +746,11 @@ def read_plan_account(name):
 def _row(name):
     return {"node": name, "vendor": VENDORS.get(name, name), "up": False,
             "account": "", "plan": "", "logged_in": None,
-            "credits_kind": credits_kind(name), "credits_value": None,
-            "credits_unit": "", "credits_source": "", "credits_note": "",
-            "checked_in": None, "checkin": "", "streak_days": None,
-            "detail": ""}
+           "credits_kind": credits_kind(name), "credits_value": None,
+           "credits_unit": "", "credits_source": "", "credits_note": "",
+           "credits_accounts": None,
+           "checked_in": None, "checkin": "", "streak_days": None,
+           "detail": ""}
 
 
 def read_node(name):
@@ -739,6 +843,10 @@ def read_node(name):
         account_from = "credential file" if row["account"] else "health"
     row["plan"] = _plan_of(health)[:60]
     row["logged_in"] = _login_of(health)
+    # A plan name is only half an answer when it expires: trae publishes
+    # expires_at_ms on /health, and the row used to show the edition while
+    # the expiry stayed invisible until the token died mid-session.
+    expiry = _num(health.get("expires_at_ms") or health.get("expires_at"))
     row["detail"] = "health %s v%s" % (health.get("__path"),
                                        health.get("version") or "?")
     if account_from == "credential file":
@@ -758,6 +866,9 @@ def read_node(name):
             row["credits_unit"] = "tokens"
             row["credits_source"] = "bridge /entitlements"
             row["credits_note"] = "，".join(plans) or "ZCode plan"
+            # /health has no plan field, so the entitlement plan name is the
+            # only one this node has (measured: ZCode Trust Build).
+            row["plan"] = ("，".join(plans))[:60]
             row["logged_in"] = bool(health.get("logged_in", True)) and active
             row["detail"] += "；plan %s" % "，".join(plans)
         else:
@@ -767,14 +878,47 @@ def read_node(name):
         return row
 
     if name == "xhx":
+        row["detail"] += "；models %d" % len(health.get("models") or [])
+        # The bridge owns an account pool (bridges/xhx/account_pool.py). Its
+        # /health carries per-account points, which beats the single official
+        # auth.json read: the pool keeps answering after the desktop app
+        # rotates or clears its own login.
+        pool = health.get("account_pool") or {}
+        accounts = [item for item in (pool.get("accounts") or [])
+                    if isinstance(item, dict)]
+        priced = [item for item in accounts if item.get("points") is not None]
+        if priced:
+            primary = next((item for item in accounts if item.get("primary")),
+                           accounts[0])
+            total = sum(_num(item.get("points")) or 0 for item in priced)
+            per = " / ".join(
+                "%s %s%s" % (item.get("name") or "账号",
+                             _pretty(_num(item.get("points"))) or "?",
+                             "（冷却中）" if item.get("state") == "cooling" else "")
+                for item in accounts)
+            if len(accounts) > 1:
+                # one line the panel can show under the account name: a pool
+                # burns accounts one by one, so "which ones, how much each"
+                # is the question a multi-account row has to answer.
+                row["credits_accounts"] = " / ".join(
+                    "%s %s" % (item.get("name") or "账号",
+                               _pretty(_num(item.get("points"))) or "?")
+                    for item in accounts)
+            row["credits_value"] = _num(primary.get("points"))
+            row["credits_unit"] = "points"
+            row["credits_source"] = "bridge /health account_pool"
+            row["credits_note"] = ("每日签到发放；llm/v2 调用不结算积分；"
+                                   "账号 %d 个共 %s points：%s"
+                                   % (len(accounts), _pretty(total), per))
+            row["checkin"] = "见签到面板（每日登录积分）"
+            return row
         points = xhx_points()
         if points.get("ok"):
             data = points.get("data") or {}
             row["credits_value"] = _num(data.get("available_points"))
             row["credits_unit"] = "points"
             row["credits_source"] = "xiaohuanxiong /api/web/points/v1/balance"
-            row["credits_note"] = "每日签到发放；llm/v2 调用不结算积分"
-            row["detail"] += "；models %d" % len(health.get("models") or [])
+            row["credits_note"] = "每日签到发放；llm/v2 调用不结算积分（账号池余额暂不可读，回落官方登录态）"
         else:
             row["credits_note"] = "%s（%s）" % (NO_BALANCE_NOTE,
                                               points.get("detail") or "未知")
@@ -783,6 +927,12 @@ def read_node(name):
 
     row["credits_note"] = NO_BALANCE_NOTE
     row["checkin"] = NO_CHECKIN_NOTE
+    # The plan name may be the only half the bridge published: trae's login
+    # token expires on a date, and the row must say when before the token
+    # dies mid-session.
+    if expiry:
+        seconds = expiry / 1000.0 if expiry > 1e11 else expiry
+        row["credits_note"] += "；套餐登录 %s 到期" % _date_text(seconds)
     return row
 
 
@@ -792,15 +942,16 @@ def read_all(names=None):
 
 
 def render(rows):
-    head = "%-13s %-4s %-22s %-6s %-11s %-14s %s" % (
-        "节点", "状态", "账号", "登录", "积分口径", "积分/额度", "来源")
+    head = "%-13s %-4s %-22s %-16s %-6s %-11s %-14s %s" % (
+        "节点", "状态", "账号", "套餐 plan", "登录", "积分口径", "积分/额度", "来源")
     lines = [head, "-" * len(head)]
     for row in rows:
         credits = ("%s %s" % (_pretty(row["credits_value"]), row["credits_unit"])
                    if row["credits_value"] is not None else "-")
-        lines.append("%-13s %-4s %-22s %-6s %-11s %-14s %s" % (
+        lines.append("%-13s %-4s %-22s %-16s %-6s %-11s %-14s %s" % (
             row["node"], "up" if row["up"] else "down",
             (row["account"] or "-")[:22],
+            (row["plan"] or "-")[:16],
             {True: "是", False: "否", None: "?"}[row["logged_in"]],
             row["credits_kind"], credits.strip()[:14],
             row["credits_source"] or "-"))

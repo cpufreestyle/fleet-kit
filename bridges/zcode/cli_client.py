@@ -360,7 +360,9 @@ def _mint_ticket():
     # back to --once with an interpreter that has playwright installed.
     py = CAPTCHA_MINT_PY
     if not py:
-        for cand in ("/usr/bin/python3", "python3"):
+        # sys.executable first: the bridge already runs in the venv that
+        # has playwright, so the probe cannot land on a random system one.
+        for cand in (sys.executable, "/usr/bin/python3", "python3"):
             try:
                 import subprocess as _sp
                 chk = _sp.run([cand, "-c", "import playwright"],
@@ -375,8 +377,13 @@ def _mint_ticket():
         return ""
     try:
         import sys as _sys
+        # --headless: a headed mint opens a real Chrome window in the middle
+        # of a turn, which is the verification jumping at the operator
+        # that the pool and the relay page exist to avoid. Headless it may
+        # still fail, but it fails invisibly -- and with the minter watching
+        # the pool, a ticket the operator banks meanwhile is picked up here.
         proc = subprocess.run(
-            [py, CAPTCHA_MINTER, "--once", "--pool"],
+            [py, CAPTCHA_MINTER, "--once", "--pool", "--headless"],
             capture_output=True, text=True, timeout=CAPTCHA_MINT_TIMEOUT)
     except Exception as exc:  # noqa: BLE001 - a mint must never kill a turn
         _trace("captcha mint failed: %r" % (exc,))

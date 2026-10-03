@@ -69,6 +69,8 @@ BRIDGES = (
     ("qwen", "qwen2codex", 11, "QWEN2CODEX_KEY"),
     ("cline", "cline2codex", 12, "CLINE2CODEX_KEY"),
     ("zcode", "zcode2codex", 13, "ZCODE2CODEX_KEY"),
+    ("kimi-code", "kimi2codex", 15, "KIMI2CODEX_KEY"),
+    ("minimax", "minimax2codex", 16, "MINIMAX2CODEX_KEY"),
 )
 BRIDGE_BY_NAME = dict((item[0], item) for item in BRIDGES)
 
@@ -85,11 +87,13 @@ _OCX_LOCK = threading.Lock()
 
 VERDICT_RANK = {"REAL": 0, "STREAM_BROKEN": 1, "ECHO/MIRROR": 1, "CANNED/MOCK": 2,
                 "CHANNEL_BLOCKED": 3, "UNCLEAR": 3, "PLAN_BLOCKED": 4, "AUTH_EXPIRED": 5,
+                "VERIFY_ACCOUNT": 5, "NO_KEY": 5,
                 "UPSTREAM_DOWN": 6, "BRIDGE_DOWN": 7, "GATE": 8}
 VERDICT_KIND = {"REAL": "ok", "ECHO/MIRROR": "warn", "CANNED/MOCK": "warn",
                 "UNCLEAR": "warn", "AUTH_EXPIRED": "bad", "UPSTREAM_DOWN": "bad",
                 "BRIDGE_DOWN": "bad", "GATE": "bad", "PLAN_BLOCKED": "warn",
-                "STREAM_BROKEN": "bad", "CHANNEL_BLOCKED": "bad"}
+                "STREAM_BROKEN": "bad", "CHANNEL_BLOCKED": "bad",
+                "VERIFY_ACCOUNT": "warn", "NO_KEY": "warn"}
 
 
 # --------------------------------------------------------------------------- #
@@ -490,6 +494,11 @@ FREE_TTL_SECONDS = 30.0
 _FREE_LOCK = threading.Lock()
 _FREE_CACHE = {"at": 0.0, "value": None}
 
+# The collector walks every provider site and, when the international links
+# are down, used to stall past 60s -- long enough to pin /api/status on
+# "loading". Cap it instead and degrade to the last good annotation.
+FREE_SUBPROCESS_TIMEOUT = 25.0
+
 
 def free_models():
     """Free-model annotations from tools/free_models.py (cached, never raises)."""
@@ -504,11 +513,19 @@ def free_models():
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "free_models.py")
     try:
         out = subprocess.run([sys.executable, script, "--json"],
-                             capture_output=True, timeout=60)
+                             capture_output=True, timeout=FREE_SUBPROCESS_TIMEOUT)
         value = json.loads(out.stdout.decode("utf-8", "ignore"))
         value["available"] = True
     except Exception as exc:
         value["error"] = str(exc)[:160]
+        with _FREE_LOCK:
+            previous = _FREE_CACHE["value"]
+        if previous is not None and previous.get("available"):
+            # Timeout must not poison the cache: keep serving the last good
+            # annotation with the error attached.
+            degraded = dict(previous)
+            degraded["error"] = value["error"]
+            value = degraded
     with _FREE_LOCK:
         _FREE_CACHE["at"] = time.time()
         _FREE_CACHE["value"] = value
@@ -518,6 +535,12 @@ def free_models():
 NODE_CREDITS_TTL_SECONDS = 30.0
 _NC_LOCK = threading.Lock()
 _NC_CACHE = {"at": 0.0, "value": None}
+
+# node_credits.py polls every node serially (6s health / 30s checkin timeout
+# each); with dead international links a full pass ran past two minutes.
+# Cap the subprocess and degrade to the previous pass on timeout, same as
+# free_models above.
+NODE_CREDITS_SUBPROCESS_TIMEOUT = 25.0
 
 
 def node_credits(cfg):
@@ -537,11 +560,17 @@ def node_credits(cfg):
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "node_credits.py")
     try:
         out = subprocess.run([cfg["python"] or sys.executable, script, "--json"],
-                             capture_output=True, timeout=120)
+                             capture_output=True, timeout=NODE_CREDITS_SUBPROCESS_TIMEOUT)
         value = json.loads(out.stdout.decode("utf-8", "ignore"))
         value["available"] = True
     except Exception as exc:
         value["error"] = str(exc)[:160]
+        with _NC_LOCK:
+            previous = _NC_CACHE["value"]
+        if previous is not None and previous.get("available"):
+            degraded = dict(previous)
+            degraded["error"] = value["error"]
+            value = degraded
     with _NC_LOCK:
         _NC_CACHE["at"] = time.time()
         _NC_CACHE["value"] = value
@@ -601,7 +630,13 @@ def snapshot_actions():
 
 COLLECT_TTL_SECONDS = 1.5
 _COLLECT_LOCK = threading.Lock()
-_COLLECT_CACHE = {"at": 0.0, "value": None}
+_COLLECT_CACHE = {"at": 0.0, "value": None, "refreshing": False, "worker": None}
+
+# The cold round (no cached value at all) still blocks the triggering
+# request -- the page would render with no data otherwise. Everything after
+# it is stale-while-revalidate. Must exceed one full collect() round: the
+# two subprocess collectors below are capped at 25s each.
+COLLECT_COLD_TIMEOUT = 75.0
 
 
 def refresh_keys(cfg):
@@ -625,16 +660,69 @@ def refresh_keys(cfg):
 
 
 def collect_cached(cfg):
-    """Coalesce concurrent /api/status polls into a single probe round."""
+    """Serve /api/status from cache; refresh never blocks the page.
+
+    Stale-while-revalidate: an expired cache is returned immediately while a
+    single daemon worker re-collects, so one slow round -- the free-model and
+    node-credit collectors talk to every bridge and stall for minutes when
+    the international links are down -- can no longer pin every later poll
+    behind _COLLECT_LOCK and park the dashboard on "loading". Only a cold
+    start (no cached value yet) waits for one full round, because the page
+    would otherwise render with no data at all.
+    """
     with _COLLECT_LOCK:
         cached = _COLLECT_CACHE["value"]
-        if cached is not None and (time.time() - _COLLECT_CACHE["at"]) < COLLECT_TTL_SECONDS:
+        if (cached is not None
+                and (time.time() - _COLLECT_CACHE["at"]) < COLLECT_TTL_SECONDS):
             return cached
+        if not _COLLECT_CACHE["refreshing"]:
+            _COLLECT_CACHE["refreshing"] = True
+            worker = threading.Thread(target=_collect_worker, args=(cfg,),
+                                      daemon=True)
+            _COLLECT_CACHE["worker"] = worker
+            worker.start()
+        else:
+            worker = _COLLECT_CACHE["worker"]
+    if cached is not None:
+        # Expired data beats no data; the in-flight worker replaces it and
+        # the next poll picks the fresh value up.
+        stale = dict(cached)
+        stale["stale"] = True
+        return stale
+    if worker is not None:
+        worker.join(COLLECT_COLD_TIMEOUT)
+    with _COLLECT_LOCK:
+        value = _COLLECT_CACHE["value"]
+    if value is None:
+        # Cold round still running (or failed) past the wait: degrade with an
+        # empty shell so the page keeps polling instead of hanging.
+        return {"generated_at": now_str(), "stale": True, "config": {},
+                "error": "状态采集中,请稍候", "summary": {}, "warnings": [],
+                "bridges": [], "checkin": {"tasks": []}, "free": {"models": []},
+                "verify": {}, "credits": {"nodes": []}, "xhx_usage": {},
+                "ocx": {}, "actions": []}
+    return value
+
+
+def _collect_worker(cfg):
+    """Run one collect() round off the request path; never raises."""
+    try:
         refresh_keys(cfg)
         result = collect(cfg)
-        _COLLECT_CACHE["at"] = time.time()
-        _COLLECT_CACHE["value"] = result
-        return result
+        result["stale"] = False
+    except Exception as exc:              # a broken round must not wedge the panel
+        result = {"generated_at": now_str(), "stale": False,
+                  "error": str(exc)[:200], "summary": {},
+                  "warnings": ["采集失败:%s" % str(exc)[:120]],
+                  "bridges": [], "checkin": {"tasks": []}, "free": {"models": []},
+                  "verify": {}, "credits": {"nodes": []}, "xhx_usage": {},
+                  "ocx": {}, "actions": []}
+    finally:
+        with _COLLECT_LOCK:
+            _COLLECT_CACHE["at"] = time.time()
+            _COLLECT_CACHE["value"] = result
+            _COLLECT_CACHE["refreshing"] = False
+            _COLLECT_CACHE["worker"] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -886,6 +974,9 @@ class Handler(BaseHTTPRequestHandler):
         route = parsed.path
         if route in ("/", "/index.html"):
             self._send(render_page(self.server.cfg), "text/html; charset=utf-8")
+        elif route == "/api/page-version":
+            self._send({"version": PAGE_VERSION},
+                       "application/json; charset=utf-8")
         elif route == "/api/status":
             self._send(collect_cached(self.server.cfg), "application/json; charset=utf-8")
         elif route.startswith("/api/logs/"):
@@ -969,19 +1060,19 @@ PAGE = r"""<!doctype html>
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
 font:14px/1.5 -apple-system,BlinkMacSystemFont,"SF Mono",Menlo,Consolas,monospace}
-header{padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel);
+header{padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel);
 position:sticky;top:0;z-index:5}
 h1{margin:0;font-size:16px;font-weight:600}
 .meta{color:var(--dim);font-size:12px;word-break:break-all}
-main{padding:16px 20px;max-width:1500px;margin:0 auto}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:14px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+main{padding:10px 14px;max-width:none}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-bottom:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
 .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
 .card .v{font-size:22px;font-weight:600;margin-top:2px}
 .card .s{color:var(--dim);font-size:11px}
 table{width:100%;border-collapse:collapse;background:var(--panel);
 border:1px solid var(--line);border-radius:8px;overflow:hidden}
-th,td{padding:7px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th,td{padding:5px 8px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em;background:#14171d}
 tr:last-child td{border-bottom:none}
 .pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;font-weight:600}
@@ -992,11 +1083,14 @@ tr:last-child td{border-bottom:none}
 .chips{display:flex;flex-wrap:wrap;gap:4px;max-width:330px}
 .chip{background:var(--chip);border:1px solid var(--line);border-radius:4px;
 padding:0 5px;font-size:11px;color:#c8cfdb}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
 @media(max-width:980px){.grid2{grid-template-columns:1fr}}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:12px}
-.panel h2{margin:0 0 8px;font-size:13px;color:var(--dim);
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px}
+.panel h2{margin:0 0 6px;font-size:13px;color:var(--dim);
 text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+details summary{cursor:pointer;color:var(--dim);font-size:12px;font-weight:600;
+list-style-position:inside;margin-bottom:4px}
+details summary::-webkit-details-marker{color:var(--dim)}
 pre{margin:0;white-space:pre-wrap;word-break:break-all;font-size:12px;color:#c8cfdb;
 max-height:280px;overflow:auto}
 button{background:#22262f;color:var(--fg);border:1px solid var(--line);
@@ -1007,8 +1101,14 @@ button.primary{background:rgba(88,166,255,.14);border-color:rgba(88,166,255,.4);
 select{background:#14171d;color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:5px 8px;font:inherit;font-size:12px}
 .warnbox{background:rgba(210,153,34,.12);border:1px solid rgba(210,153,34,.35);
-color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12px}
+color:#e3b341;border-radius:6px;padding:6px 9px;margin-bottom:10px;font-size:12px}
 .dim{color:var(--dim)}
+.num{font-size:15px;font-weight:700;color:var(--fg);white-space:nowrap}
+.num .u{font-weight:500;color:var(--dim);font-size:11px;margin-left:3px}
+.p-client{background:rgba(63,185,80,.15);color:var(--ok)}
+.p-limit{background:rgba(88,166,255,.15);color:var(--accent)}
+.p-own{background:rgba(210,153,34,.18);color:var(--warn)}
+.p-sub{background:rgba(188,140,255,.15);color:#bc8cff}
 </style>
 </head>
 <body>
@@ -1026,12 +1126,24 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
+  <div class="panel">
+    <div class="row">
+      <h2 style="margin:0">节点积分 / 套餐余额</h2>
+      <label class="meta" style="cursor:pointer"><input type="checkbox" id="nc-only-values" onchange="renderNc()"> 只看有剩余数值</label>
+      <span class="meta" id="nc-note"></span>
+    </div>
+    <table><thead><tr><th>节点</th><th>剩余积分</th><th>口径</th><th>套餐 plan</th>
+    <th>账号</th><th>状态</th><th>登录</th><th>签到</th><th>来源 / 备注</th></tr></thead>
+    <tbody id="nc-rows"></tbody></table>
+    <pre id="nc-out" style="margin-top:8px"></pre>
+  </div>
   <div class="grid2">
     <div class="panel">
       <h2>opencodex</h2>
       <div class="row"><span id="ocx-pill" class="pill p-idle">...</span>
       <span class="meta" id="ocx-health"></span></div>
-      <pre id="ocx-text"></pre>
+      <details open><summary>status 原文</summary>
+      <pre id="ocx-text" style="max-height:200px"></pre></details>
     </div>
     <div class="panel">
       <h2>签到</h2>
@@ -1044,15 +1156,6 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
       <tbody id="ck-rows"></tbody></table>
       <pre id="ck-out" style="margin-top:8px"></pre>
     </div>
-    <div class="panel">
-      <h2>节点积分 / 账号（15 个节点）</h2>
-      <div class="row"><span class="meta" id="nc-note"></span></div>
-      <table><thead><tr><th>节点</th><th>状态</th><th>账号</th><th>登录</th>
-        <th>积分口径</th><th>积分 / 额度</th><th>来源</th><th>签到</th></tr></thead>
-      <tbody id="nc-rows"></tbody></table>
-      <pre id="nc-out" style="margin-top:8px"></pre>
-    </div>
-
     <div class="panel">
       <h2>小浣熊用量（本地计数，llm/v2 不结算积分）</h2>
       <div class="row"><span class="meta" id="xhx-path"></span></div>
@@ -1076,10 +1179,12 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
     <h2>模型标注：免费状态 + 是否走客户端积分（官网信息，更新于 <span id="free-updated">?</span>）</h2>
     <label class="meta" style="font-weight:400;margin-left:10px"><input type="checkbox" id="free-hide" checked onchange="renderFree()"> 隐藏不可用</label>
     <label class="meta" style="font-weight:400;margin-left:10px"><input type="checkbox" id="free-credits-only" onchange="renderFree()"> 只看走客户端积分</label>
+    <label class="meta" style="font-weight:400;margin-left:10px" title="展开 credits=仅限额 的全部模型（含未单独实测的）"><input type="checkbox" id="free-include-limit" onchange="renderFree()"> 含限额免费</label>
     <span class="meta" id="free-hidden"></span>
     <div class="row"><span class="meta" id="free-meta"></span></div>
     <div class="row"><span class="meta" id="free-credits-legend"></span></div>
-    <table><thead><tr><th>模型（选择器名）</th><th>免费</th><th>客户端积分</th><th>时段 / 说明</th><th>在选择器</th></tr></thead>
+    <div class="row"><span class="meta" id="free-code-legend"></span></div>
+    <table><thead><tr><th>模型（选择器名）</th><th>免费</th><th>客户端积分</th><th>写代码</th><th>时段 / 说明</th><th>在选择器</th></tr></thead>
     <tbody id="free-rows"></tbody></table>
     <div class="row" style="margin-top:8px"><span class="meta" id="free-gaps"></span></div>
   </div>
@@ -1099,6 +1204,7 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
 </main>
 <script>
 var REFRESH = __REFRESH__;
+var PAGE_VERSION = "__PAGE_VERSION__";
 var SNAP = null;
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
@@ -1165,22 +1271,57 @@ function render(){
   var nc=s.credits||{};
   document.getElementById('nc-out').textContent = nc.available
     ? '' : ('读取失败：'+(nc.error||'node_credits.py 不可用'));
-  var ncrows=(nc.nodes||[]).map(function(n){
-    var cred = n.credits_value==null ? '-'
-      : esc(n.credits_value)+' '+(n.credits_unit||'');
-    var login = n.logged_in===true ? pill('ok','是')
-      : (n.logged_in===false ? pill('bad','否') : pill('warn','?'));
-    var vendor = n.vendor ? '<div class=dim>'+esc(n.vendor)+'</div>' : '';
-    return '<tr><td><b>'+esc(n.node)+'</b>'+vendor+'</td>'
-      +(n.up?pill('ok','up'):pill('bad','down'))
-      +'<td>'+esc(n.account||'-')+'</td><td>'+login
-      +'<td>'+esc(n.credits_kind)+'</td><td>'+cred.trim()
-      +'<td class=dim>'+esc(n.credits_source||'-')+'</td>'
-      +'<td class=dim>'+esc(n.checkin||'-')+'</td></tr>';}).join('');
-  document.getElementById('nc-rows').innerHTML = ncrows
-    || '<tr><td colspan=8 class=dim>暂无数据</td></tr>';
-  document.getElementById('nc-note').textContent =
-    '来源：各桥 /health · /ui/checkin（Buddy 加油站）· /entitlements（ZCode 额度）· 官方余额；口径见 free-windows.json';
+  // 口径覆盖：与免费模型表同一套口径（free.models 逐模型标注），徽章旁标
+  // N/M——全平台=该平台所有模型同一口径；本模型=只覆盖部分模型。
+  var NC_FK={};((SNAP&&SNAP.free&&SNAP.free.models)||[]).forEach(function(m){
+    if(!NC_FK[m.provider]){NC_FK[m.provider]={};}
+    NC_FK[m.provider][m.credits]=(NC_FK[m.provider][m.credits]||0)+1;});
+  function ncCover(n){
+    var key=n.node,d=NC_FK[key];
+    if(!d&&key.slice(-5)==='-code'){d=NC_FK[key.slice(0,-5)];}
+    if(!d){return '';}
+    var tot=0;for(var k in d){tot+=d[k];}
+    var v=d[n.credits_kind]||0;
+    if(!v){return '';}
+    return ' <span style="font-size:11px">'+(v===tot?'全平台 ':'本模型 ')+v+'/'+tot+'</span>';}
+  var NC_KIND={client:['走客户端积分','p-client'],limit:['限额免费','p-limit'],
+    own:['平台自有','p-own'],subscription:['订阅','p-sub'],unknown:['未知','p-idle']};
+  var ncAll=(nc.nodes||[]).slice().sort(function(a,b){
+    var av=a.credits_value==null?0:1, bv=b.credits_value==null?0:1;
+    if(av!==bv) return bv-av;
+    return (b.up?1:0)-(a.up?1:0);
+  });
+  var ncHasValue=ncAll.filter(function(n){return n.credits_value!=null}).length;
+  function fmtNum(v){return typeof v==='number'?v.toLocaleString('en-US'):esc(v);}
+  function renderNc(){
+    var only=document.getElementById('nc-only-values').checked;
+    var list=only?ncAll.filter(function(n){return n.credits_value!=null}):ncAll;
+    document.getElementById('nc-rows').innerHTML=list.map(function(n){
+      var cred=n.credits_value==null?'<span class=dim>-</span>'
+        :'<span class=num>'+fmtNum(n.credits_value)
+        +'<span class=u>'+esc(n.credits_unit||'')+'</span></span>';
+      var kd=NC_KIND[n.credits_kind]||[esc(n.credits_kind||'-'),'p-idle'];
+      var login=n.logged_in===true?pill('ok','是')
+        :(n.logged_in===false?pill('bad','否'):pill('warn','?'));
+      var vendor=n.vendor?'<div class=dim style="font-size:11px">'+esc(n.vendor)+'</div>':'';
+      return '<tr><td><b>'+esc(n.node)+'</b>'+vendor+'</td>'
+        +'<td>'+cred+'</td>'
+        +'<td><span class="pill '+kd[1]+'">'+kd[0]+'</span>'+ncCover(n)+'</td>'
+        +'<td>'+(n.plan?esc(n.plan):'<span class=dim>-</span>')+'</td>'
+        +'<td>'+esc(n.account||'-')
+        +(n.credits_accounts?'<div class=dim style="font-size:11px">'+esc(n.credits_accounts)+'</div>':'')
+        +'</td>'+(n.up?pill('ok','up'):pill('bad','down'))
+        +'<td>'+login+'</td>'
+        +'<td class=dim>'+esc(n.checkin||'-')+'</td>'
+        +'<td class=dim>'+esc(n.credits_source||'-')
+        +(n.credits_note?'<div class=dim style="font-size:11px">'+esc(n.credits_note)+'</div>':'')
+        +'</td></tr>';
+    }).join('')||'<tr><td colspan=9 class=dim>没有符合条件的数据</td></tr>';
+  }
+  window.renderNc = renderNc;
+  renderNc();
+  document.getElementById('nc-note').textContent=
+    '共 '+ncAll.length+' 节点 · '+ncHasValue+' 家有剩余数值 · 其余未从上游取到数值｜口径徽章旁 N/M = 该平台走此口径的模型数（全平台=整平台一致，本模型=部分覆盖）｜来源：各桥 /health · account_pool · /ui/checkin · /entitlements · 官方余额；口径见 free-windows.json';
   var xu=s.xhx_usage||{};
   document.getElementById('xhx-path').textContent = xu.path||'';
   document.getElementById('xhx-note').textContent = xu.note||'';
@@ -1222,6 +1363,15 @@ function creditsKind(c){
   if(c==='own'){return 'idle';}
   return 'warn';
 }
+var CODE_BADGE_UI={FULL:'全过',PARTIAL:'部分',NORUN:'NO_RUN',DEAD:'断桥',none:'?'};
+var CODE_KIND={FULL:'ok',PARTIAL:'warn',NORUN:'warn',DEAD:'bad',none:'idle'};
+function codeKind(v){return CODE_KIND[(v==null?'none':v)]||'idle';}
+function codeTip(m){
+  if(!m.code_verdict){return '无实测记录：code_model_bench.py snapshot 未覆盖该模型';}
+  var s=(m.code_at||'?')+' · '+Math.round(m.code_seconds||0)+'s';
+  if(m.code_stale){s+=' · 测量已过期 stale';}
+  return m.code_verdict+' — '+s;
+}
 function unavailProvider(name){
   var b=null,i;
   for(i=0;i<(SNAP.bridges||[]).length;i++){if(SNAP.bridges[i].name===name){b=SNAP.bridges[i];break;}}
@@ -1241,16 +1391,34 @@ function renderFree(){
   var live=0;for(var k in (f.live_by_provider||{})){live+=f.live_by_provider[k];}
   var pick=0;for(var k2 in (f.picker_by_provider||{})){pick+=f.picker_by_provider[k2];}
   var cnt=[];for(var c in (f.counts||{})){cnt.push(f.counts[c]+' '+c);}
-  var ccnt=[];for(var c in (f.credits_counts||{})){ccnt.push(f.credits_counts[c]+' '+(CREDITS_BADGE[c]||c));}
-  var clg=document.getElementById('free-credits-legend');
+ var ccnt=[];for(var c in (f.credits_counts||{})){ccnt.push(f.credits_counts[c]+' '+(CREDITS_BADGE[c]||c));}
+  var ccode=[];for(var c2 in (f.code_counts||{})){ccode.push(f.code_counts[c2]+' '+(CODE_BADGE_UI[c2]||c2));}
+ var clg=document.getElementById('free-credits-legend');
   if(clg){clg.textContent='客户端积分口径：'+(f.legend&&f.legend.credits?Object.keys(f.legend.credits).map(function(k){
-    return (CREDITS_BADGE[k]||k)+'='+f.legend.credits[k];}).join('  ·  '):'');}
-  var co=document.getElementById('free-credits-only');
+  return (CREDITS_BADGE[k]||k)+'='+f.legend.credits[k];}).join('  ·  '):'');}
+  if(clg){clg.textContent+='；口径为逐模型标注：徽章旁 N/M = 该平台走此口径的模型数，「全平台」即整平台一致（如限额免费），「本模型」即只覆盖部分';}
+  if(clg){clg.textContent+='｜「仅限额」徽章即平台限额免费口径（全平台 N/N）；勾选「含限额免费」可逐个看到这类平台的模型';}
+  var klg=document.getElementById('free-code-legend');
+  if(klg){klg.textContent='写代码口径：两个真实编码任务的实测判定（code_model_bench snapshot）：全过=全分 · 部分=未全过 · NO_RUN=只出文本 · 断桥=不可达 · ?=无实测；超过 '+(f.code_stale_after_days||7)+' 天标 stale';}
+ var co=document.getElementById('free-credits-only');
   var creditsOnly=!!(co&&co.checked);
   var hide=document.getElementById('free-hide');
   var hiding=!!(hide&&hide.checked);
+  var ilEl=document.getElementById('free-include-limit');
+  var incLimit=!!(ilEl&&ilEl.checked);
+  // 基线可见：进过选择器或实测免费；仅限额模型默认不展开，勾选后才列出
+  function passBase(m){return m.in_picker||m.free==='free'||m.free==='free-window'||m.free==='quota'||m.free==='trial';}
+  // 口径覆盖范围：积分四档是逐模型标注的，徽章旁 N/M 表示该平台有多少模型走
+  // 同一口径——N=M 即整平台一致（如限额免费），N<M 即只覆盖部分模型。
+  var pkind={};(f.models||[]).forEach(function(m){
+    if(!pkind[m.provider]){pkind[m.provider]={};}
+    pkind[m.provider][m.credits]=(pkind[m.provider][m.credits]||0)+1;});
+  function credCover(m){
+    var d=pkind[m.provider]||{};var tot=0;for(var k in d){tot+=d[k];}
+    var n=d[m.credits]||0;
+    return '<span style="font-size:11px">'+(n===tot?'全平台 ':'本模型 ')+n+'/'+tot+'</span>';}
   var all=(f.models||[]).filter(function(m){
-    return m.in_picker||m.free==='free'||m.free==='free-window'||m.free==='quota'||m.free==='trial';});
+    return passBase(m)||(incLimit&&m.credits==='limit');});
   var list=[],hidden={},hiddenN=0;
   all.forEach(function(m){
     if(creditsOnly&&m.credits!=='client'){return;}
@@ -1260,19 +1428,21 @@ function renderFree(){
   var hk=Object.keys(hidden).map(function(k){return k+'('+hidden[k]+')';}).join(', ');
   var hh=document.getElementById('free-hidden');
   if(hh){hh.textContent=hiddenN?('已隐藏 '+hiddenN+' 个不可用模型 '+hk):'';}
-  meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+ccnt.join(' · ')+' · 显示 '+list.length+'/'+(creditsOnly?all.filter(function(m){return m.credits==='client';}).length:all.length);
+  meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+ccnt.join(' · ')+' · '+ccode.join(' · ')+' · 显示 '+list.length+'/'+(creditsOnly?all.filter(function(m){return m.credits==='client';}).length:all.length);
   rows.innerHTML=list.length?list.map(function(m){
-    return '<tr><td>'+esc(m.picker_name||m.picker_slug||m.model)+'</td>'+
-      '<td>'+pill(freeKind(m.free),m.badge)+'</td>'+
-      '<td title="'+esc(m.credits_note||'')+'">'+pill(creditsKind(m.credits),m.credits_badge||m.credits)+'</td>'+
-      '<td class="dim">'+esc(m.window)+'</td>'+
-      '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('')
-    : '<tr><td colspan="5" class="dim">当前无可用模型'+(hiding?'（可取消勾选「隐藏不可用」）':'')+'</td></tr>';
+   return '<tr><td>'+esc(m.picker_name||m.picker_slug||m.model)+'</td>'+
+     '<td>'+(passBase(m)?pill(freeKind(m.free),m.badge):pill('warn','限额免费'))+'</td>'+
+    '<td title="'+esc(m.credits_note||'')+'">'+pill(creditsKind(m.credits),m.credits_badge||m.credits)+' '+credCover(m)+'</td>'+
+      '<td title="'+esc(codeTip(m))+'">'+pill(codeKind(m.code_verdict),m.code_badge||'?')+'</td>'+
+     '<td class="dim">'+esc(m.window)+'</td>'+
+     '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('')
+    : '<tr><td colspan="6" class="dim">当前无可用模型'+(hiding?'（可取消勾选「隐藏不可用」）':'')+'</td></tr>';
   document.getElementById('free-gaps').textContent=(f.gaps||[]).map(function(g){
     return '['+g.provider+'] '+g.reason;}).join('   |   ');
 }
 var VF_KIND={REAL:'ok',STREAM_BROKEN:'bad','ECHO/MIRROR':'warn','CANNED/MOCK':'warn',UNCLEAR:'warn',
-  CHANNEL_BLOCKED:'bad',PLAN_BLOCKED:'warn',AUTH_EXPIRED:'bad',UPSTREAM_DOWN:'bad',BRIDGE_DOWN:'bad',GATE:'bad'};
+  CHANNEL_BLOCKED:'bad',PLAN_BLOCKED:'warn',AUTH_EXPIRED:'bad',UPSTREAM_DOWN:'bad',BRIDGE_DOWN:'bad',GATE:'bad',
+  VERIFY_ACCOUNT:'warn',NO_KEY:'warn'};
 function vfKind(v){return VF_KIND[v]||'idle';}
 function verifyCell(name){
   var v=(SNAP&&SNAP.verify&&SNAP.verify.by_bridge)||{};
@@ -1328,6 +1498,13 @@ function restart(name){
   if(!window.confirm('重启桥 '+name+' ?')){return;}
   post('/api/action/restart/'+encodeURIComponent(name)).then(function(){load();});}
 if(REFRESH>0){setInterval(load,REFRESH*1000);}
+// A restart changes the served page version; tabs left open on an older build
+// reload themselves instead of rendering stale markup forever.
+setInterval(function(){
+  fetch('/api/page-version').then(function(r){return r.json();}).then(function(j){
+    if(j.version && j.version !== PAGE_VERSION){ location.reload(); }
+  }).catch(function(){});
+}, 30000);
 load();
 </script>
 </body>
@@ -1335,8 +1512,14 @@ load();
 """
 
 
+# Bumped on every restart: stale tabs compare this and reload themselves.
+PAGE_VERSION = str(int(time.time()))
+
+
 def render_page(cfg):
-    return PAGE.replace("__REFRESH__", str(int(cfg["refresh"])))
+    return (PAGE
+            .replace("__REFRESH__", str(int(cfg["refresh"])))
+            .replace("__PAGE_VERSION__", PAGE_VERSION))
 
 
 # --------------------------------------------------------------------------- #

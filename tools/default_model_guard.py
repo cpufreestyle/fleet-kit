@@ -57,6 +57,7 @@ BRIDGE_PORTS = {
     "codely": 8790, "trae": 8791, "lingxi": 8792, "xhx": 8793,
     "gemini": 8794, "catpaw": 8795, "antigravity": 8797,
     "qwen": 8798, "cline": 8799, "zcode": 8800,
+    "kimi-code": 8802, "minimax": 8803,
 }
 KEY_ENV = {
     "workbuddy": "CODEBUDDY2OPENAI_KEY", "workbuddy-gpt": "CODEBUDDY2OPENAI_KEY",
@@ -66,6 +67,7 @@ KEY_ENV = {
     "catpaw": "CATPAW2CODEX_KEY", "antigravity": "ANTIGRAVITY2CODEX_KEY",
     "qwen": "QWEN2CODEX_KEY", "cline": "CLINE2CODEX_KEY",
     "zcode": "ZCODE2CODEX_KEY",
+    "kimi-code": "KIMI2CODEX_KEY", "minimax": "MINIMAX2CODEX_KEY",
 }
 
 NONCE = "E2E_OK"

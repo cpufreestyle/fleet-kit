@@ -45,7 +45,7 @@
 | Claude Code 的模型名 | 落到 |
 | --- | --- |
 | claude-opus-5 / claude-opus-4-8 | workbuddy-gpt/hy4-preview |
-| claude-sonnet-5 / claude-sonnet-4-5 / claude-3-5-sonnet-latest | trae/trae-seed-code-pro-0430（**上游故障，见故障排查**） |
+| claude-sonnet-5 / claude-sonnet-4-5 / claude-3-5-sonnet-latest | trae/seed-code-pro-0430（200k 上下文的代码专用池） |
 | claude-haiku-4-5 / claude-3-5-haiku-latest | workbuddy/glm-5.2 |
 | claude-fable-5 | workbuddy-gpt/gpt-5.6-luna |
 | 其它 claude-* 名字 | HARBOR = stepfun/step-5-preview（picker 不能答不如给默认） |
@@ -59,6 +59,25 @@
    重建目录，缓存 60 秒；
 2. 目录里没有某一行、但模型名的 provider 前缀确实能路由且端口活着，就直接放行，
    不再 404（`no-such-model-42` 这种没有 provider 认领的仍然拒绝）。
+
+### 看得懂的名字（display_name，2026-10-02）
+
+picker 里给人看的那一列是 `display_name`，模型 id 保持路由原样不动（配置、别名、
+路由表全不受影响），改名的两层规则：
+
+1. 桥自己报了人类名字就用它的：xhx 桥从上游目录带回了 `name` 字段
+   （`Raccoon-Work-260817-A`、`GLM-5-3-Flash` 这种），网关优先展示；
+2. 上游名字本身也是构建哈希的，用网关顶部的 `DISPLAY_NAMES` 表：xhx 的三个
+   Raccoon 构建号显示成看得懂的名字——
+
+| id（路由用，不变） | display_name（picker 显示） |
+| --- | --- |
+| `xhx/raccoon-19b265` | `xhx/小浣熊Work-A` |
+| `xhx/raccoon-405a1c` | `xhx/小浣熊Work-B` |
+| `xhx/raccoon-8c4485` | `xhx/小浣熊Work` |
+
+上游哪天换新构建号，`test_every_raccoon_hash_in_the_pool_has_a_readable_name`
+会先失败，提醒往表里补一行——新哈希不会裸奔进 picker。
 
 ## Claude Code 接入：两种形态
 
@@ -134,10 +153,50 @@ macOS 即 `~/Library/Application Support/Claude-3p`，Linux 即 `~/.config/Claud
                              || id 含 claude/opus/sonnet/haiku/fable/mythos/anthropic)
            || 该行带 anthropic_family_tier
 
-也就是说：id 长得不像 Anthropic 的行会被整行丢掉。`stepfun/step-5-preview`、
-`workbuddy/glm-5.2` 全部命中 `jye`，所以 121 行只剩 4 个 claude-*。
-解法是网关给每一行打 `anthropic_family_tier` + 首行 `is_family_default`
+也就是说：id 长得不像 Anthropic 的行会在**发现阶段**被整行丢掉。
 （`anthropic_gateway.py` 的 `models_payload()`）：
+
+**但那只解决了一半。** 2026-10-03 修正：app 1.46388.4 的日志写得很清楚——
+
+    [custom-3p] Model discovery: 134 found in 3149ms; picker = 5 (discovery)
+
+发现阶段拿到 134 行，picker 只剩 5 行。因为 `resolvedModels()` 之后还有**第二道
+同样的 id 形状过滤**，而它不看 tier 标签：
+
+    h_e(id) = Va(id) ? {ok:!0} : {ok:!1, reason:"...expected a gateway model
+              route referencing an Anthropic model (e.g. claude-sonnet-4-5,
+              anthropic/claude-*)"}
+
+`Va` 就是上面那个黑名单+白名单判断。于是任何带厂商名的 id（glm、kimi、stepfun、
+qwen、deepseek、minimax…）在 picker 里照样被丢掉，tier 标签只买通了发现那一关。
+
+**解法**：网关把 `CLAUDE_ALIASES` 也作为模型行列出来。这些 id 天生就是
+Anthropic 形状（`claude-opus-5`、`haiku`…），`resolve()` 本来就认它们，而且
+它们排在目录行前面，所以每个 tier 的 `is_family_default` 由别名拿下，裸 tier 名
+解析到的是机队的路由而不是 antigravity 那一行。
+
+**第二步：给每条约由都起一个 Anthropic 形状的名字。** 上一步只把 picker 从 5 行
+变成 17 行，另外 129 行（纯厂商名 id）仍然进不去。所以网关现在给每个过不了
+`Va()` 的 slug 再发一行，id 用 `claude-<tier>-<6位摘要>`：
+
+    workbuddy/glm-5.2   ->  claude-opus-c49d7d
+    xhx/raccoon-19b265  ->  claude-opus-d8e67e
+
+摘要取自 slug 本身（sha1，字母表只用 0-9cdef），不是序号——目录会被
+catalog_sort 重排、被 CC Switch 压成 1 行，序号会让用户已经选中的模型悄悄换靶。
+字母表特意去掉 a 和 b：app 黑名单里 `abab` 是唯一一个纯十六进制字母就能拼出来的
+厂商名，去掉 a/b 就让摘要不可能被误杀。
+
+slug 行照样保留（给说 fleet id 的客户端用），mint 行是给桌面 app 的，
+`resolve()` 两条都认。显示名带上 provider，所以两个平台都有 glm-5.2 时能区分。
+
+实测（app 的过滤逻辑原样复刻）：
+
+    网关 275 行  ->  桌面 picker 保留 146 行（原来是 5 行）
+    opus 41 / mythos 32 / sonnet 27 / fable 25 / haiku 21
+
+真实调用：`claude-opus-c49d7d` 200 返回 `workbuddy/glm-5.2`，
+`claude-opus-d8e67e` 200 返回 `xhx/raccoon-19b265`。
 
     curl -s 'http://127.0.0.1:8801/v1/models?limit=1000' | python3 -c \
       "import sys,json;d=json.load(sys.stdin);r=d['data'][0];print(r)"

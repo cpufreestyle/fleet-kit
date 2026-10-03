@@ -30,8 +30,11 @@ import time
 from pathlib import Path
 
 RELAY = os.environ.get("ZCODE_CAPTCHA_RELAY", "http://127.0.0.1:8910/")
+# Persistent on purpose: /tmp is cleaned (reboot, macOS periodic runs), and a
+# profile that keeps resetting is a device fingerprint that never matures --
+# which is what makes traceless fail and the slider pop up every time.
 PROFILE = os.environ.get(
-    "ZCAP_PROFILE", os.path.join(tempfile.gettempdir(), "fleetkit-captcha-profile"))
+    "ZCAP_PROFILE", str(Path(__file__).resolve().parent / "captcha_profile"))
 PAGE = os.environ.get("ZCAP_PAGE", RELAY.rstrip("/") + "/")
 POOL = Path(os.environ.get(
     "ZCODE_CAPTCHA_POOL",
@@ -106,51 +109,85 @@ def _stealth(ctx, page) -> None:
         "'en-US','en']});")
 
 
-def drag_slider(page) -> bool:
-    """无感失败时尽力拖一次滑块（真·拼图仍建议人工）。"""
-    btn = None
-    for sel in ("#aliyunCaptcha-sliding-slider", ".nc_scale .btn_slide",
-                "div[id*='slider']"):
+def _claim_pool_ticket(seen: set) -> str:
+    """Claim a pool ticket minted after this run started, or the empty string.
+    The relay page banks the ticket itself on success, and the SDK leaves
+    the opener page in a state where window.__capParam is not reliably
+    readable afterwards (measured 2026-10-02: a human solve banked the
+    ticket and the minter still timed out reading the global), so the pool
+    is the signal. Claim by delete, so two mints watching at once cannot
+    both spend one param.
+    """
+    try:
+        names = set(os.listdir(POOL))
+    except OSError:
+        return ""
+    for name in sorted(names - seen):
+        path = POOL / name
         try:
-            cand = page.query_selector(sel)
-            if cand and cand.is_visible():
-                btn = cand
-                break
+            param = path.read_text(encoding="utf-8").strip()
+            path.unlink()          # claim-by-delete, like the bridge
+        except OSError:
+            continue                # another mint claimed it first
+        if param.startswith("ey"):
+            return param
+    return ""
+
+
+def _press_verify(page, wait: float = 15.0) -> None:
+    """Press the page's verify button once the SDK is ready.
+
+    The page deliberately never auto-starts for a human operator -- that
+    auto-start was the verification jumping at people. The minter is the
+    automation that is expected to press it: traceless then either issues
+    a ticket on its own (a profile Aliyun trusts) or pops the slider, and
+    in a headed run that popup is where the operator takes over.
+    """
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        try:
+            status = page.text_content("#out") or ""
         except Exception:  # noqa: BLE001
-            continue
-    if not btn:
-        return False
-    box = btn.bounding_box()
-    if not box:
-        return False
-    x0, y0 = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
-    page.mouse.move(x0, y0)
-    page.mouse.down()
-    for i in range(1, 26):
-        page.mouse.move(x0 + i * 11, y0 + (2 if i % 3 == 0 else -2), steps=2)
-        page.wait_for_timeout(random.randint(12, 34))
-    page.mouse.up()
-    return True
+            status = ""
+        if "ready" in status:
+            break
+        page.wait_for_timeout(300)
+    try:
+        page.click("#verify", timeout=5000)
+        log("verify pressed")
+    except Exception as exc:  # noqa: BLE001
+        log("verify-click-failed:", exc)
 
 
 def mint_once(page, timeout: float = 40.0) -> str:
-    """打开 relay 页，等无感验证出票（失败则拖一次滑块），返回 param。"""
+    """Open the relay page and wait for one ticket to land in the pool.
+
+    A human solve on that page is what produces a ticket. Every automatic
+    path is refused by Aliyun (F001/F015): the scripted slider drag was
+    removed after it never once landed, and traceless from an automation
+    browser only passes once the persistent profile has matured. Waiting
+    on the pool also means a ticket banked in any browser during the
+    window is picked up here -- including the operator's own.
+    """
     page.goto(PAGE, wait_until="domcontentloaded", timeout=45000)
-    deadline, dragged = time.time() + timeout, False
+    _press_verify(page)
+    seen = set(os.listdir(POOL)) if POOL.is_dir() else set()
+    deadline = time.time() + timeout
     while time.time() < deadline:
         page.wait_for_timeout(500)
-        try:
-            param = page.evaluate("() => window.__capParam || null")
-        except Exception:  # noqa: BLE001
-            continue
+        param = _claim_pool_ticket(seen)
         if param:
             return param
-        if not dragged and time.time() < deadline - 12:
-            dragged = True
-            try:
-                drag_slider(page)
-            except Exception as exc:  # noqa: BLE001
-                log("slider-drag-failed:", exc)
+        # A refused verification is terminal for this attempt -- the SDK
+        # says so (verifyCode F001 and friends). Bailing now costs a retry
+        # seconds instead of the whole timeout, which is what a keeper
+        # spinning on an intermittent verdict needs.
+        try:
+            status = page.text_content("#out") or ""
+        except Exception:  # noqa: BLE001
+            status = ""
+        if status.startswith("status: fail") or status.startswith("status: error"):
+            raise RuntimeError("aliyun refused this attempt: %s" % status)
     try:
         page.screenshot(path=FAIL_SHOT)
     except Exception:  # noqa: BLE001
@@ -160,11 +197,21 @@ def mint_once(page, timeout: float = 40.0) -> str:
 
 
 def open_browser(pw, headless: bool, profile: str):
+    # Real Chrome keeps "HeadlessChrome" in its UA under --headless, which is
+    # a tell the traceless verdict reads (headed passes, headless failed 2/2
+    # with the default UA). ZCAP_UA overrides for experiments; the default is
+    # empty, which means "leave whatever the browser reports".
+    ua = os.environ.get("ZCAP_UA", "").strip()
     kwargs = dict(
         headless=headless,
         viewport={"width": 1280, "height": 900},
         args=["--disable-blink-features=AutomationControlled",
               "--no-first-run", "--no-default-browser-check"])
+    if ua:
+        kwargs["user_agent"] = ua
+    extra = [a for a in os.environ.get("ZCAP_ARGS", "").split() if a]
+    if extra:
+        kwargs["args"] = kwargs["args"] + extra
     try:
         return pw.chromium.launch_persistent_context(
             profile, channel="chrome", **kwargs)
