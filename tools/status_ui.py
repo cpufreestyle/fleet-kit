@@ -1246,6 +1246,19 @@ function render(){
   var nc=s.credits||{};
   document.getElementById('nc-out').textContent = nc.available
     ? '' : ('读取失败：'+(nc.error||'node_credits.py 不可用'));
+  // 口径覆盖：与免费模型表同一套口径（free.models 逐模型标注），徽章旁标
+  // N/M——全平台=该平台所有模型同一口径；本模型=只覆盖部分模型。
+  var NC_FK={};((SNAP&&SNAP.free&&SNAP.free.models)||[]).forEach(function(m){
+    if(!NC_FK[m.provider]){NC_FK[m.provider]={};}
+    NC_FK[m.provider][m.credits]=(NC_FK[m.provider][m.credits]||0)+1;});
+  function ncCover(n){
+    var key=n.node,d=NC_FK[key];
+    if(!d&&key.slice(-5)==='-code'){d=NC_FK[key.slice(0,-5)];}
+    if(!d){return '';}
+    var tot=0;for(var k in d){tot+=d[k];}
+    var v=d[n.credits_kind]||0;
+    if(!v){return '';}
+    return ' <span style="font-size:11px">'+(v===tot?'全平台 ':'本模型 ')+v+'/'+tot+'</span>';}
   var NC_KIND={client:['走客户端积分','p-client'],limit:['限额免费','p-limit'],
     own:['平台自有','p-own'],subscription:['订阅','p-sub'],unknown:['未知','p-idle']};
   var ncAll=(nc.nodes||[]).slice().sort(function(a,b){
@@ -1268,7 +1281,7 @@ function render(){
       var vendor=n.vendor?'<div class=dim style="font-size:11px">'+esc(n.vendor)+'</div>':'';
       return '<tr><td><b>'+esc(n.node)+'</b>'+vendor+'</td>'
         +'<td>'+cred+'</td>'
-        +'<td><span class="pill '+kd[1]+'">'+kd[0]+'</span></td>'
+        +'<td><span class="pill '+kd[1]+'">'+kd[0]+'</span>'+ncCover(n)+'</td>'
         +'<td>'+(n.plan?esc(n.plan):'<span class=dim>-</span>')+'</td>'
         +'<td>'+esc(n.account||'-')
         +(n.credits_accounts?'<div class=dim style="font-size:11px">'+esc(n.credits_accounts)+'</div>':'')
@@ -1283,7 +1296,7 @@ function render(){
   window.renderNc = renderNc;
   renderNc();
   document.getElementById('nc-note').textContent=
-    '共 '+ncAll.length+' 节点 · '+ncHasValue+' 家有剩余数值 · 其余未从上游取到数值｜来源：各桥 /health · account_pool · /ui/checkin · /entitlements · 官方余额；口径见 free-windows.json';
+    '共 '+ncAll.length+' 节点 · '+ncHasValue+' 家有剩余数值 · 其余未从上游取到数值｜口径徽章旁 N/M = 该平台走此口径的模型数（全平台=整平台一致，本模型=部分覆盖）｜来源：各桥 /health · account_pool · /ui/checkin · /entitlements · 官方余额；口径见 free-windows.json';
   var xu=s.xhx_usage||{};
   document.getElementById('xhx-path').textContent = xu.path||'';
   document.getElementById('xhx-note').textContent = xu.note||'';
@@ -1373,7 +1386,7 @@ function renderFree(){
   function credCover(m){
     var d=pkind[m.provider]||{};var tot=0;for(var k in d){tot+=d[k];}
     var n=d[m.credits]||0;
-    return '<span class=dim style="font-size:11px">'+(n===tot?'全平台 ':'本模型 ')+n+'/'+tot+'</span>';}
+    return '<span style="font-size:11px">'+(n===tot?'全平台 ':'本模型 ')+n+'/'+tot+'</span>';}
   var all=(f.models||[]).filter(function(m){
     return m.in_picker||m.free==='free'||m.free==='free-window'||m.free==='quota'||m.free==='trial';});
   var list=[],hidden={},hiddenN=0;
