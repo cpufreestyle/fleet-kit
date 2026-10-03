@@ -1151,7 +1151,8 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
     <span class="meta" id="free-hidden"></span>
     <div class="row"><span class="meta" id="free-meta"></span></div>
     <div class="row"><span class="meta" id="free-credits-legend"></span></div>
-    <table><thead><tr><th>模型（选择器名）</th><th>免费</th><th>客户端积分</th><th>时段 / 说明</th><th>在选择器</th></tr></thead>
+    <div class="row"><span class="meta" id="free-code-legend"></span></div>
+    <table><thead><tr><th>模型（选择器名）</th><th>免费</th><th>客户端积分</th><th>写代码</th><th>时段 / 说明</th><th>在选择器</th></tr></thead>
     <tbody id="free-rows"></tbody></table>
     <div class="row" style="margin-top:8px"><span class="meta" id="free-gaps"></span></div>
   </div>
@@ -1297,6 +1298,15 @@ function creditsKind(c){
   if(c==='own'){return 'idle';}
   return 'warn';
 }
+var CODE_BADGE_UI={FULL:'全过',PARTIAL:'部分',NORUN:'NO_RUN',DEAD:'断桥',none:'?'};
+var CODE_KIND={FULL:'ok',PARTIAL:'warn',NORUN:'warn',DEAD:'bad',none:'idle'};
+function codeKind(v){return CODE_KIND[(v==null?'none':v)]||'idle';}
+function codeTip(m){
+  if(!m.code_verdict){return '无实测记录：code_model_bench.py snapshot 未覆盖该模型';}
+  var s=(m.code_at||'?')+' · '+Math.round(m.code_seconds||0)+'s';
+  if(m.code_stale){s+=' · 测量已过期 stale';}
+  return m.code_verdict+' — '+s;
+}
 function unavailProvider(name){
   var b=null,i;
   for(i=0;i<(SNAP.bridges||[]).length;i++){if(SNAP.bridges[i].name===name){b=SNAP.bridges[i];break;}}
@@ -1316,11 +1326,14 @@ function renderFree(){
   var live=0;for(var k in (f.live_by_provider||{})){live+=f.live_by_provider[k];}
   var pick=0;for(var k2 in (f.picker_by_provider||{})){pick+=f.picker_by_provider[k2];}
   var cnt=[];for(var c in (f.counts||{})){cnt.push(f.counts[c]+' '+c);}
-  var ccnt=[];for(var c in (f.credits_counts||{})){ccnt.push(f.credits_counts[c]+' '+(CREDITS_BADGE[c]||c));}
-  var clg=document.getElementById('free-credits-legend');
+ var ccnt=[];for(var c in (f.credits_counts||{})){ccnt.push(f.credits_counts[c]+' '+(CREDITS_BADGE[c]||c));}
+  var ccode=[];for(var c2 in (f.code_counts||{})){ccode.push(f.code_counts[c2]+' '+(CODE_BADGE_UI[c2]||c2));}
+ var clg=document.getElementById('free-credits-legend');
   if(clg){clg.textContent='客户端积分口径：'+(f.legend&&f.legend.credits?Object.keys(f.legend.credits).map(function(k){
-    return (CREDITS_BADGE[k]||k)+'='+f.legend.credits[k];}).join('  ·  '):'');}
-  var co=document.getElementById('free-credits-only');
+   return (CREDITS_BADGE[k]||k)+'='+f.legend.credits[k];}).join('  ·  '):'');}
+  var klg=document.getElementById('free-code-legend');
+  if(klg){klg.textContent='写代码口径：两个真实编码任务的实测判定（code_model_bench snapshot）：全过=全分 · 部分=未全过 · NO_RUN=只出文本 · 断桥=不可达 · ?=无实测；超过 '+(f.code_stale_after_days||7)+' 天标 stale';}
+ var co=document.getElementById('free-credits-only');
   var creditsOnly=!!(co&&co.checked);
   var hide=document.getElementById('free-hide');
   var hiding=!!(hide&&hide.checked);
@@ -1335,14 +1348,15 @@ function renderFree(){
   var hk=Object.keys(hidden).map(function(k){return k+'('+hidden[k]+')';}).join(', ');
   var hh=document.getElementById('free-hidden');
   if(hh){hh.textContent=hiddenN?('已隐藏 '+hiddenN+' 个不可用模型 '+hk):'';}
-  meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+ccnt.join(' · ')+' · 显示 '+list.length+'/'+(creditsOnly?all.filter(function(m){return m.credits==='client';}).length:all.length);
+  meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+ccnt.join(' · ')+' · '+ccode.join(' · ')+' · 显示 '+list.length+'/'+(creditsOnly?all.filter(function(m){return m.credits==='client';}).length:all.length);
   rows.innerHTML=list.length?list.map(function(m){
-    return '<tr><td>'+esc(m.picker_name||m.picker_slug||m.model)+'</td>'+
-      '<td>'+pill(freeKind(m.free),m.badge)+'</td>'+
-      '<td title="'+esc(m.credits_note||'')+'">'+pill(creditsKind(m.credits),m.credits_badge||m.credits)+'</td>'+
-      '<td class="dim">'+esc(m.window)+'</td>'+
-      '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('')
-    : '<tr><td colspan="5" class="dim">当前无可用模型'+(hiding?'（可取消勾选「隐藏不可用」）':'')+'</td></tr>';
+   return '<tr><td>'+esc(m.picker_name||m.picker_slug||m.model)+'</td>'+
+     '<td>'+pill(freeKind(m.free),m.badge)+'</td>'+
+     '<td title="'+esc(m.credits_note||'')+'">'+pill(creditsKind(m.credits),m.credits_badge||m.credits)+'</td>'+
+      '<td title="'+esc(codeTip(m))+'">'+pill(codeKind(m.code_verdict),m.code_badge||'?')+'</td>'+
+     '<td class="dim">'+esc(m.window)+'</td>'+
+     '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('')
+    : '<tr><td colspan="6" class="dim">当前无可用模型'+(hiding?'（可取消勾选「隐藏不可用」）':'')+'</td></tr>';
   document.getElementById('free-gaps').textContent=(f.gaps||[]).map(function(g){
     return '['+g.provider+'] '+g.reason;}).join('   |   ');
 }

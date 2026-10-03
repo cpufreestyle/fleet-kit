@@ -304,10 +304,16 @@ ocx live、Codex catalog 合并输出。改标注只改 JSON，不用动代码�
     python3 tools/free_models.py --json                   # 机器可读（状态面板同源）
     python3 tools/free_models.py --check-sources          # 官网来源可达性
 
-状态面板（8796）的「模型标注」区块：免费徽标 + **客户端积分徽标** + 时段 + 是否在选择器，
+状态面板（8796）的「模型标注」区块：免费徽标 + **客户端积分徽标** + **写代码徽标** + 时段 + 是否在选择器，
 与 CLI 同源；积分单元格 hover 显示该行积分口径来源（如「codely 月度免费点数优先扣」）。
 两个开关：「隐藏不可用」（探测即停或 verdict≠REAL 的 provider）、
 「只看走客户端积分」（只列 `client` 行，方便排查额度耗尽）。
+
+「写代码」列（2026-10-03 新增）：徽标来自 `code_model_bench.py snapshot` 的实测判定
+（全过 / 部分 / NO_RUN / 断桥 / `?` = 无实测），hover 显示判定、实测日期与耗时；
+快照落盘 `kit/code-capability.json`，单桥 snapshot 不清空其他模型的旧记录，超过
+7 天（`stale_after_days`）标 stale 但不丢弃。实测方法与命令见
+`docs/code-model-selection.md`。
 
 ### 哪些走客户端积分（2026-09-29 按官网/桥代码核实）
 
@@ -800,6 +806,11 @@ timer；`status` 报 watchdog 安装态和当前 strikes，health 的 `watchdog`
 Codex 选择器按 catalog 里的文件顺序渲染，所以一个死桥会把可用模型挤出首屏。
 `catalog_sort.py` 按实测可达性重排：**可达 provider 在最前**（顺序取 `--order`），
 其后是未测量过的，最后才是实测不可达的。
+
+但置顶优先于可达性：LEAD_SLUGS（可用 FLEET_FIRST_MODEL 覆盖）固定排在全部行最前，
+默认即 2026-10-03 双题实测满分的 workbuddy 三兄弟 deepseek-v4-flash、
+deepseek-v4.1-flash、deepseek-v4-pro（依据见 docs/code-model-selection.md）；
+DEFAULT_ORDER 也从同一天起把 workbuddy 调到 provider 顺序最前。
 
     python3 tools/catalog_sort.py --dry-run      # 只看新顺序
     python3 tools/catalog_sort.py                # 写入

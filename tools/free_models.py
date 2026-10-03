@@ -12,6 +12,11 @@ credits kinds (legend.credits):
   own     不走客户端积分：独立 API Key 余额、官方按量付费或原生订阅
   unknown 官网未公示或当前不可达
 
+code capability (code-capability.json, written by code_model_bench.py snapshot):
+  FULL / PARTIAL / NORUN / DEAD = the verdict of running the two real coding
+  tasks through the bridge; missing or older than stale_after_days days is
+  stamped stale instead of dropped, so a dated run always beats a vibe.
+
 Usage:
   free_models.py                  human table
   free_models.py --json           machine-readable snapshot
@@ -33,6 +38,7 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(ROOT, "free-windows.json")
+CODE_CAP_PATH = os.path.join(ROOT, "code-capability.json")
 CATALOG = os.path.expanduser("~/.codex/cc-switch-model-catalog.json")
 FREE_KINDS = ("free", "free-window", "quota", "trial")
 BADGE = {"free": "FREE", "free-window": "LIMITED", "quota": "QUOTA",
@@ -59,6 +65,12 @@ WINDOW_STATES = ("active", "upcoming", "expired", "standing", "unknown")
 WINDOW_BADGE = {"active": "LIVE", "upcoming": "SOON", "expired": "EXPIRED",
                 "standing": "STANDING", "unknown": "?"}
 
+# Can-write-code verdicts from kit/code-capability.json. Mirrors
+# code_model_bench.STALE_AFTER_DAYS so the panel and the bench agree on when a
+# measurement is too old to read as current.
+CODE_BADGE = {"FULL": "全过", "PARTIAL": "部分", "NORUN": "NO_RUN",
+              "DEAD": "断桥", None: "?"}
+STALE_AFTER_DAYS = 7.0
 
 def _parse_ts(value):
     """ISO 8601 -> epoch seconds, or None. A bare date is that day at midnight."""
@@ -175,7 +187,55 @@ def match_slug(index, provider, model):
     return None
 
 
-def annotate(db, provider, model):
+def load_code_cap():
+    """kit/code-capability.json -> {"provider/model": row}; {} when unusable.
+
+    A missing or half-written snapshot must never crash the panel, so every
+    failure path (absent file, bad JSON, wrong shape) degrades to "no data"
+    and the rows simply lose their code badge.
+    """
+    try:
+        with open(CODE_CAP_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return {}
+    models = data.get("models") if isinstance(data, dict) else None
+    return models if isinstance(models, dict) else {}
+
+
+def code_cap_lookup(cap, provider, model_id):
+    """The one capability row for provider/model_id, or None.
+
+    Exact provider/model wins, then same-provider suffix matches; a bare
+    model id is accepted only when exactly one row fleet-wide ends with it,
+    because several bridges expose deepseek-v4-pro under their own names and
+    guessing would staple the wrong verdict onto a row.
+    """
+    if not cap:
+        return None
+    exact = cap.get("%s/%s" % (provider, model_id))
+    if exact:
+        return exact
+    prefix = provider + "/"
+    for key, entry in cap.items():
+        if key.startswith(prefix) and key[len(prefix):].endswith(model_id):
+            return entry
+    if "/" in model_id:
+        return None
+    hits = [entry for key, entry in cap.items() if key.endswith("/" + model_id)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def code_age_days(measured_at):
+    """Days since a snapshot row was measured; None when unparseable."""
+    stamp = _parse_ts(measured_at)
+    return None if stamp is None else (time.time() - stamp) / 86400.0
+def annotate(db, provider, model, cap=None):
+    if cap is None:
+        cap = load_code_cap()
+    entry = code_cap_lookup(cap, provider, model) or {}
+    age = code_age_days(entry.get("measured_at"))
+    verdict = entry.get("verdict")
     key = "%s/%s" % (provider, model)
     override = db.get("models", {}).get(key)
     pdef = db.get("providers", {}).get(provider, {})
@@ -192,6 +252,7 @@ def annotate(db, provider, model):
     # vendor says no end" from "nobody has looked yet".
     standing = bool((override or {}).get("window_standing",
                                         pdef.get("window_standing", False)))
+    stale = age is not None and age > STALE_AFTER_DAYS
     state = "standing" if (standing and not start and not end) \
         else window_state(start, end)
     return {"model": key, "provider": provider, "model_id": model,
@@ -201,11 +262,17 @@ def annotate(db, provider, model):
             "window": window, "window_start": start, "window_end": end,
             "window_standing": standing,
             "window_state": state, "state_badge": WINDOW_BADGE[state],
-            "source": source, "verified": bool(verified)}
+             "source": source, "verified": bool(verified),
+             "code_verdict": verdict,
+             "code_badge": CODE_BADGE.get(verdict, "?"),
+            "code_seconds": entry.get("total_seconds"),
+            "code_at": entry.get("measured_at"),
+            "code_stale": bool(stale)}
 
 
 def build():
     db = load_db()
+    cap = load_code_cap()
     index = catalog_index()
     slugs = set(index)
     live = ocx_live()
@@ -217,7 +284,7 @@ def build():
         if (provider, model) in seen:
             return
         seen.add((provider, model))
-        row = annotate(db, provider, model)
+        row = annotate(db, provider, model, cap)
         row["picker_slug"] = match_slug(index, provider, model)
         row["in_picker"] = bool(row["picker_slug"])
         # short picker label from ocx aliases (tools/short_aliases.py)
@@ -260,6 +327,10 @@ def build():
     credits_counts = {}
     for row in models:
         credits_counts[row["credits"]] = credits_counts.get(row["credits"], 0) + 1
+    code_counts = {}
+    for row in models:
+        code_counts[row["code_verdict"] or "none"] = \
+            code_counts.get(row["code_verdict"] or "none", 0) + 1
     state_counts = {}
     for row in models:
         state_counts[row["window_state"]] = \
@@ -270,6 +341,8 @@ def build():
             "catalog_total": len(slugs),
             "counts": counts,
             "credits_counts": credits_counts,
+            "code_counts": code_counts,
+            "code_stale_after_days": STALE_AFTER_DAYS,
             "window_states": state_counts,
             "live_by_provider": live_by_provider,
             "picker_by_provider": picker_by_provider,
@@ -302,18 +375,21 @@ def print_table(snap, free_only=False, provider=None, credits=None):
           % (snap["live_source"], snap["db_updated"], snap["catalog_total"]))
     print("credits: %s" % " | ".join(
         "%s=%s" % (CREDITS_BADGE.get(k, k), db_legend_text(snap, k))
-        for k in sorted(snap.get("credits_counts", {}))))
-    print("-" * 132)
+       for k in sorted(snap.get("credits_counts", {}))))
+    print("-" * 142)
     for row in rows:
         name = row["picker_name"] if row["in_picker"] else ("%s   [NOT in picker]" % row["model"])
-        print("%-30s %-9s %-11s %-9s %s"
-              % (name, row["badge"], row["credits_badge"],
-                 row["state_badge"], row["window"]))
-    print("-" * 132)
+        code = row["code_badge"] + ("!" if row["code_stale"] else "")
+        print("%-30s %-9s %-11s %-9s %-8s %s"
+             % (name, row["badge"], row["credits_badge"],
+                 row["state_badge"], code, row["window"]))
+    print("-" * 142)
     print("free   counts: " + "  ".join("%s=%d" % (BADGE.get(k, k), v)
                                        for k, v in sorted(snap["counts"].items())))
     print("credit counts: " + "  ".join("%s=%d" % (CREDITS_BADGE.get(k, k), v)
-                                        for k, v in sorted(snap.get("credits_counts", {}).items())))
+                                       for k, v in sorted(snap.get("credits_counts", {}).items())))
+    print("code   counts: " + "  ".join("%s=%d" % (CODE_BADGE.get(k, k), v)
+                                        for k, v in sorted(snap.get("code_counts", {}).items())))
     print("window states: " + "  ".join(
         "%s=%d" % (WINDOW_BADGE.get(k, k), v)
         for k, v in sorted(snap.get("window_states", {}).items())))

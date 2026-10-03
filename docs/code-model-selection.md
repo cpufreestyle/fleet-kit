@@ -9,6 +9,11 @@ prose.
 also the boot default as of 2026-10-03 (`FLEET_DEFAULT_MODEL`), so Codex
 opens on a model measured to write this repo, not on the harbor.
 
+The 2026-10-03 pass crowned a trio, not a lone winner: flash,
+`deepseek-v4.1-flash` and `deepseek-v4-pro` all passed both tasks with full
+marks, so `catalog_sort.py` pins all three as `LEAD_SLUGS` at the top of the
+Codex picker in that order, and workbuddy now leads `DEFAULT_ORDER` as well.
+
 ## Method (why this is ground truth)
 
 - Two coding tasks, both drawn from FleetKit real code paths:
@@ -160,6 +165,49 @@ FLEET_GATEWAY_URL=http://127.0.0.1:8801 FLEET_ANTHROPIC_TOKEN=... \
 After account recovery (Gemini VALI, Trae quota, Qwen key), re-run `live` to
 fold those bridges back into the tables above.
 
+## The can-write-code column (`code-capability.json`)
+
+`live` prints a verdict and forgets it; the picker and the panel need the
+verdict to persist. `snapshot` merges verdicts into `kit/code-capability.json`,
+the one file every consumer reads:
+
+    cd kit/tools
+    ../../runtime/.venv/bin/python code_model_bench.py snapshot \
+      workbuddy/deepseek-v4-flash --bridge workbuddy
+
+Verdicts, strongest first:
+
+| verdict | meaning |
+| --- | --- |
+| FULL | every check of every task passed |
+| PARTIAL | it ran code but missed checks, or a task never finished -- the 2026-10-03 trae run timed out on task2 after task1 scored 8/8, and half the suite with no evidence behind it is a partial, not a pass |
+| NORUN | the reply was prose with no runnable code fence |
+| DEAD | smoke never passed, so no code claim exists at all |
+
+A single-bridge snapshot keeps every unmeasured row: only the slugs in the run
+are rewritten and the file is replaced atomically, so one bench cannot blank
+the rest of the fleet. A row older than `stale_after_days` (default 7) is
+stamped stale, never dropped -- a dated run beats a fresh vibe.
+
+Consumers:
+
+- `tools/free_models.py` prints a code column in the CLI table and ships the
+  same fields in `--json` (`code_verdict`, `code_badge`, `code_seconds`,
+  `code_at`, `code_stale`); a bare model id maps to a row only when exactly
+  one row fleet-wide ends with it, because several bridges expose
+  deepseek-v4-pro under their own names and guessing would staple the wrong
+  verdict onto a row.
+- the 8796 panel model-annotation block shows the same column with a hover
+  tip (verdict, measured-at, seconds, stale), a legend line, and a
+  `code_counts` tally in the meta row.
+
+The 2026-10-03 snapshot itself: FULL for the workbuddy trio and
+`qoder/DeepSeek-V4-Pro` (excluded by user preference anyway), PARTIAL for
+`trae/trae-seed-code-pro-0430` (task1 8/8, task2 timeout), NORUN for the xhx
+trio and `codely/codely-core`, and DEAD for every bridge whose smoke call
+failed -- hy4-preview included, which is why hy4 keeps dropping out of the
+picker rows the panel shows by default.
+
 ## Related settings (do not change silently)
 
 - `FLEET_DEFAULT_MODEL` is `workbuddy/deepseek-v4-flash` since the 2026-10-03
@@ -177,4 +225,7 @@ fold those bridges back into the tables above.
 
 - `kit/tools/code_model_bench.py`
 - `kit/tools/test_code_model_bench.py`
+`kit/code-capability.json` -- the snapshot the panel and `free_models.py` read
+`kit/tools/free_models.py` -- CLI table and `--json` code fields
+`kit/tools/status_ui.py` -- the 8796 panel column
 - `kit/docs/code-model-selection.md` (this file)
