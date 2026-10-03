@@ -108,17 +108,23 @@ timer 的 ProgramArguments 记的是绝对路径，从 kit 装会上来就跑 ki
 
 ## 桌面快捷方式（2026-10-03）
 
-`tools/make_zcode_captcha_app.sh` 生成 `~/Desktop/zcode验证.app`：双击即
-唤醒 launchd 上的 relay（`launchctl kickstart`，服务未加载时回落直启 python）、
-打开 http://127.0.0.1:8910/ ，并按票池新鲜张数发一条中文通知。图标由 PIL 
-现画（盾牌+对勾）转 icns，applet 由 osacompile 产出并 ad-hoc 签名。
+`tools/make_desktop_apps.sh` 生成桌面 `.app` 启动器，内置两个目标：
 
-    bash tools/make_zcode_captcha_app.sh                    # 重建 ~/Desktop/zcode验证.app
-    bash tools/make_zcode_captcha_app.sh --name 自定义      # 换个名字
+    bash tools/make_desktop_apps.sh                       # all：两个都（重）建
+    bash tools/make_desktop_apps.sh zcode                 # 重建 ~/Desktop/zcode验证.app
+    bash tools/make_desktop_apps.sh panel                 # 重建 ~/Desktop/FleetKit面板.app
+    bash tools/make_desktop_apps.sh panel --name 自定义   # 换个名字
 
-生成的 payload（`Contents/Resources/launch.sh`）里烘焙的是 **runtime 树**的 relay 路径
-（部署的那份才接桥），端口可用 `ZCODE_CAPTCHA_RELAY_PORT` 覆盖。风格上 keeper 负责
-无感补票，这个快捷方式是人工备票的入口。
+- `zcode`：双击唤醒 launchd 上的 relay（`launchctl kickstart`，服务未加载时回落直启
+  python），打开 http://127.0.0.1:8910/ ，并按票池新鲜张数发一条中文通知。
+- `panel`：双击唤醒 `com.local.fleet-ui`，打开 http://127.0.0.1:8796/ ，按在册桥数发
+  通知（探活走 `/api/status`）。
+
+图标由 PIL 现画（zcode 盾牌+对勾 / panel 仪表盘）转 icns，applet 由 osacompile 产出并
+ad-hoc 签名。生成的 payload（`Contents/Resources/launch.sh`）里烘焙的是 **runtime 树**的
+路径（部署的那份才接桥），端口可用 `ZCODE_CAPTCHA_RELAY_PORT` / `FLEET_UI_PORT` 覆盖。
+风格上 keeper 负责无感补票，zcode 快捷方式是人工备票的入口；panel 快捷方式比旧的
+`FleetKit面板.webloc` 多了一层「先把服务拉起来」的能力。
 
 ## 凭证
 
