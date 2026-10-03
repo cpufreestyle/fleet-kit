@@ -106,6 +106,20 @@ timer 的 ProgramArguments 记的是绝对路径，从 kit 装会上来就跑 ki
 池里补票，而桥读的是 runtime 的池。控制脚本因此向上查找 platform.sh 定位自己的树。
  keeper 探测带 playwright 的解释器（venv 优先），裸 `python3` 没有 playwright。
 
+## 桌面快捷方式（2026-10-03）
+
+`tools/make_zcode_captcha_app.sh` 生成 `~/Desktop/zcode验证.app`：双击即
+唤醒 launchd 上的 relay（`launchctl kickstart`，服务未加载时回落直启 python）、
+打开 http://127.0.0.1:8910/ ，并按票池新鲜张数发一条中文通知。图标由 PIL 
+现画（盾牌+对勾）转 icns，applet 由 osacompile 产出并 ad-hoc 签名。
+
+    bash tools/make_zcode_captcha_app.sh                    # 重建 ~/Desktop/zcode验证.app
+    bash tools/make_zcode_captcha_app.sh --name 自定义      # 换个名字
+
+生成的 payload（`Contents/Resources/launch.sh`）里烘焙的是 **runtime 树**的 relay 路径
+（部署的那份才接桥），端口可用 `ZCODE_CAPTCHA_RELAY_PORT` 覆盖。风格上 keeper 负责
+无感补票，这个快捷方式是人工备票的入口。
+
 ## 凭证
 
 全部从 `~/.zcode/v2/credentials.json` 自动解密（safeStorage AES-256-GCM，
