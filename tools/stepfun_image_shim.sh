@@ -296,9 +296,17 @@ watchdog_cycle() {
 
 install_watchdog_plist() {
   mkdir -p "$LAUNCH_DIR" "$LOG_DIR"
-  fleet_timer_install "$SHIM_WATCHDOG_LABEL" "$SHIM_WATCHDOG_INTERVAL" \
+  # Task Scheduler rejects a repetition interval under one minute (platform.sh
+  # floors it); report the cadence that actually gets registered, not the
+  # configured one. The in-process watchdog keeps IMAGE_CAP_WATCHDOG_INTERVAL.
+  local timer_interval="$SHIM_WATCHDOG_INTERVAL"
+  if [ "$(fleet_os 2>/dev/null)" = "windows" ] && [ -n "$timer_interval" ] \
+     && [ "$timer_interval" -lt 60 ] 2>/dev/null; then
+    timer_interval=60
+  fi
+  fleet_timer_install "$SHIM_WATCHDOG_LABEL" "$timer_interval" \
     "$(command -v bash || echo /bin/bash)" "$SELF" "watchdog"
-  echo "installed $SHIM_WATCHDOG_LABEL: probes $SHIM_HEALTH_URL every ${SHIM_WATCHDOG_INTERVAL}s, restarts after $SHIM_WATCHDOG_STRIKES failures  log $SHIM_WATCHDOG_LOG"
+  echo "installed $SHIM_WATCHDOG_LABEL: probes $SHIM_HEALTH_URL every ${timer_interval}s, restarts after $SHIM_WATCHDOG_STRIKES failures  log $SHIM_WATCHDOG_LOG"
 }
 
 remove_watchdog_plist() {

@@ -47,8 +47,17 @@ set -euo pipefail
 # Resolve without dirname: a Task Scheduler action inherits the bare machine
 # PATH, which has no Git for Windows coreutils, so $(dirname) would abort the
 # script under set -e before it can log anything.
+# Task Scheduler hands $0 a backslashed Windows path ("D:\ai share\...\guard.sh"),
+# which matches neither */* nor the forward-slash logic below -- SCRIPT_DIR then
+# falls back to pwd and ${SCRIPT_DIR}/pin_fleet_route.py silently stops
+# existing, so route_pin bailed on every scheduled run while the same command
+# worked from an interactive shell. Fold the separators first.
 case "$0" in
-  */*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
+  *\\*) zero="${0//\\//}" ;;
+  *) zero="$0" ;;
+esac
+case "$zero" in
+  */*) SCRIPT_DIR="$(cd "${zero%/*}" && pwd)" ;;
   *) SCRIPT_DIR="$(pwd)" ;;
 esac
 

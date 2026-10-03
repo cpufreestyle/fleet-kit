@@ -178,7 +178,7 @@ def catalog_slugs(path):
     return slugs
 
 
-def missing_markers(lines, catalog_path, gateway):
+def missing_markers(lines, catalog_path, gateway, provider=FLEET_PROVIDER):
     """FleetKit keys the file no longer carries, or carries pointed elsewhere.
 
     Empty means "the fleet route is still declared here", which is the one
@@ -197,6 +197,14 @@ def missing_markers(lines, catalog_path, gateway):
                       ("experimental_realtime_ws_base_url", gateway)):
         if root_value(lines, key) != want:
             missing.append(key)
+    # An absent model_provider is a silent killer: ocx sync's own rewrite can
+    # drop the root key while keeping everything else (measured 2026-10-03
+    # 07:18, Codex's send button died on a config with no route to resolve),
+    # and with the markers above all satisfied this pin would refuse to act.
+    # A foreign value is already rewritten by repair(); catching absence here
+    # just gives it a trigger.
+    if root_value(lines, "model_provider") != provider:
+        missing.append("model_provider")
     return missing
 
 

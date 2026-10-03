@@ -24,3 +24,7 @@ tools/fleet-reach.json
 
 # runtime state: the xhx bridge writes its local usage ledger here
 xhx-usage.jsonl
+
+# deployed runtime root and scratch dirs -- never commit
+runtime/
+.review-tmp/

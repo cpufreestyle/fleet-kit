@@ -352,6 +352,37 @@ def _service_pids(pattern):
     return pids
 
 
+def _win_pid_alive(pid):
+    """Is a Windows pid still running.
+
+    tasklist rather than PowerShell: this runs once per bridge on every UI
+    refresh, and a powershell.exe spawn per bridge would dominate the refresh.
+    """
+    code, out = _run(["tasklist", "/FI", "PID eq %s" % pid], timeout=6.0)
+    if code != 0:
+        return False
+    return re.search(r"\b%s\b" % re.escape(str(pid)), out) is not None
+
+
+def _win_supervisor_alive(label):
+    """True when the supervisor for a Windows service still runs.
+
+    fleet_service_install() on Windows spawns <label>-super.ps1 and registers no
+    scheduled task, so schtasks has nothing to say about it. Liveness lives in
+    the pid files the supervisor drops in the service directory.
+    """
+    sdir = service_dir()
+    for suffix in (".super.pid", ".child.pid"):
+        try:
+            with open(os.path.join(sdir, label + suffix), "r") as handle:
+                digits = re.sub(r"\D", "", handle.read())
+        except OSError:
+            continue
+        if digits and _win_pid_alive(digits):
+            return True
+    return False
+
+
 def service_status(label):
     """running / ready / missing"""
     os_hint = backend()
@@ -372,7 +403,10 @@ def service_status(label):
                 st = candidate
                 break
         else:
-            return "missing"
+            # Nothing registered: the Windows backend runs services as spawned
+            # supervisor processes. Answering "missing" here would paint a fleet
+            # whose ports are all listening as 0/N online.
+            return "running" if _win_supervisor_alive(label) else "missing"
         return "running" if re.search(r"(?im)^\s*Status:\s*Running", out) else "ready"
     sdir = service_dir()
     wrapper = os.path.join(sdir, label + ".sh")

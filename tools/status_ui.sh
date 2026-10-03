@@ -106,7 +106,7 @@ ui_pid() {
 install_ui_plist() {
   mkdir -p "$LAUNCH_DIR" "$LOG_DIR"
   fleet_service_install "$UI_LABEL" "$FLEET_HOME" "" "$PY" "$UI_PY" \
-    "--port $UI_PORT --home $FLEET_HOME --no-browser"
+    "--port $UI_PORT --home \"$FLEET_HOME\" --no-browser"
   echo "installed $UI_LABEL: $UI_URL  log $LOG_DIR/status-ui.log"
 }
 

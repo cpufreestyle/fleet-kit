@@ -193,7 +193,12 @@ run ocx sync
 STEPFUN_REGISTERED=0
 
 if [ -n "${STEPFUN_PLAN_API_KEY:-}" ]; then
-  run ocx provider add stepfun --adapter openai-chat --base-url https://api.stepfun.com/step_plan/v1 --api-key "${STEPFUN_PLAN_API_KEY}" --allow-private-network --force
+  # Through the image-cap shim (127.0.0.1:15722 -> api.stepfun.com/step_plan/v1),
+  # not straight at StepFun: Codex re-sends its whole history every turn and the
+  # Plan API refuses the 71st image (README "stepfun 系走 image-cap shim 15722").
+  # The shim forwards the key byte for byte, so this registration answers
+  # exactly like the CC Switch route does.
+  run ocx provider add stepfun --adapter openai-chat --base-url http://127.0.0.1:15722/v1 --api-key "${STEPFUN_PLAN_API_KEY}" --allow-private-network --force
   # bare `ocx models` refreshes the discovery cache; without it
   # `ocx models provider stepfun on` reports "no models are available".
   run ocx models >/dev/null

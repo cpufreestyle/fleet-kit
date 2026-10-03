@@ -430,7 +430,26 @@ else
     info "[dry-run] ${SYS_PYTHON} -m venv ${FLEET_HOME}/.venv ; pip install -r requirements.txt"
   else
     ${SYS_PYTHON} -m venv "${FLEET_HOME}/.venv"
-    "$VENV_PIP" install --quiet --upgrade pip
+    # FLEET_PYTHON/VENV_PIP above were resolved BEFORE the venv existed, so a
+    # fresh install always fell through to the posix layout (bin/) even on
+    # Windows. Now that the layout is real, re-resolve it: a Windows venv keeps
+    # pip/python under Scripts/, and bin/pip does not exist there.
+    if [ -x "${FLEET_HOME}/.venv/Scripts/pip.exe" ]; then
+      VENV_PIP="${FLEET_HOME}/.venv/Scripts/pip.exe"
+      FLEET_PYTHON="${FLEET_HOME}/.venv/Scripts/python.exe"
+    elif [ -x "${FLEET_HOME}/.venv/bin/pip" ]; then
+      VENV_PIP="${FLEET_HOME}/.venv/bin/pip"
+      FLEET_PYTHON="${FLEET_HOME}/.venv/bin/python"
+    fi
+    # pip.exe cannot overwrite itself on Windows ("ERROR: To modify pip, please
+    # run: python.exe -m pip install --upgrade pip"); under `set -e` that aborts
+    # the whole install. Drive it through the interpreter, and never fail here:
+    # upgrading pip is hygiene, the real dependency install is the next line.
+    if [ -x "${FLEET_HOME}/.venv/Scripts/python.exe" ]; then
+      "${FLEET_HOME}/.venv/Scripts/python.exe" -m pip install --quiet --upgrade pip || true
+    else
+      "$VENV_PIP" install --quiet --upgrade pip || true
+    fi
     "$VENV_PIP" install --quiet -r "${KIT_DIR}/requirements.txt"
     touch "${FLEET_HOME}/.venv/.fleet-deps-ok"
   fi

@@ -259,9 +259,12 @@ def cc_failover_state(db_path):
                          " needs an app restart)")
         else:
             lines.append("cc-switch: auto failover on for codex")
+        # LIKE, not '=': the provider row is "StepFun Step Plan" today and has
+        # been plain "StepFun" before; a rename must not read as a deleted
+        # failover target.
         row = conn.execute(
             "select in_failover_queue from providers"
-            " where app_type='codex' and name='StepFun'").fetchone()
+            " where app_type='codex' and name like 'StepFun%'").fetchone()
         if row is None:
             ok = False
             lines.append("cc-switch DRIFT: no StepFun provider for codex;"
@@ -271,7 +274,7 @@ def cc_failover_state(db_path):
             lines.append("cc-switch DRIFT: StepFun in_failover_queue=%s"
                          % row[0])
             lines.append("  repair: update providers set in_failover_queue=1"
-                         " where app_type='codex' and name='StepFun';"
+                         " where app_type='codex' and name like 'StepFun%';"
                          " (this CC Switch reads the db live; an older build"
                          " needs an app restart)")
         else:

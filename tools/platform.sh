@@ -260,9 +260,19 @@ _fleet_win_path() {
 # converts every absolute-path token of a string (arg lists) to Windows form
 _fleet_win_tokens() {
   local s="$1" out="" tok
-  for tok in $s; do
+  # Plain word splitting tears "d:/ai share/runtime" into two tokens, and cmd.exe
+  # then hands status_ui.py an extra positional argument ("unrecognized
+  # arguments: share/repo/..."). eval keeps the caller's own quoting intact
+  # through the split; any token that still holds a space is re-quoted so
+  # cmd.exe passes it on as a single argument.
+  local toks=()
+  eval "toks=($s)"
+  for tok in "${toks[@]}"; do
     case "$tok" in
       /*) tok="$(_fleet_win_path "$tok")" ;;
+    esac
+    case "$tok" in
+      *" "*) tok="\"$tok\"" ;;
     esac
     out="${out}${out:+ }${tok}"
   done
@@ -398,6 +408,11 @@ _fleet_write_ps_supervisor() {
 \$childPid  = '$childpid'
 \$wrapper   = '$wrapper'
 \$restartIn = $wait
+# The LogonTrigger boot task can fire while a supervisor from the session
+# that ran the install is still alive; the recorded super pid decides who
+# stays, so a logon never doubles a running service onto its own port.
+\$running = Get-Content -Path \$superPid -ErrorAction SilentlyContinue
+if (\$running -and \$running -ne "\$PID" -and (Get-Process -Id \$running -ErrorAction SilentlyContinue)) { exit 0 }
 Set-Content -Path \$superPid -Value \$PID -Force
 while (\$true) {
   \$child = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', \$wrapper -PassThru -WindowStyle Hidden
@@ -408,6 +423,36 @@ while (\$true) {
   Start-Sleep -Seconds \$restartIn
 }
 PS
+}
+
+# Boot persistence for a Windows service: launchd's RunAtLoad has no automatic
+# counterpart on this backend -- the supervisor spawned at install time dies
+# with its session, and a reboot used to leave every service down until a
+# manual reinstall (measured 2026-10-02: a reboot took down 15 services while
+# every timer survived, because only timers got real scheduled tasks). A
+# LogonTrigger task under "<label>-boot" re-spawns the supervisor at logon;
+# the supervisor's own pid check keeps a live copy from being doubled.
+# Deliberately stopping a service keeps the boot task -- "stop" means stop
+# now, not disable forever -- so only fleet_service_remove deletes it.
+_fleet_install_boot_task() {
+  local label="$1" supervisor="$2" logdir="$3"
+  local dir bootlabel bootcmd bootlog bootlauncher
+  dir="$(fleet_service_dir)"
+  bootlabel="${label}-boot"
+  bootlog="${logdir}/${bootlabel}.log"
+  bootcmd="$(_fleet_win_path "${dir}/${bootlabel}.cmd")"
+  {
+    echo '@echo off'
+    echo 'setlocal'
+    printf '"%s" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%s" >> "%s" 2>&1\n' \
+      "$(_fleet_win_path "$(_fleet_win_powershell)")" \
+      "$(_fleet_win_path "$supervisor")" \
+      "$(_fleet_win_path "$bootlog")"
+    printf 'endlocal\n'
+  } | sed 's/$/\r/' > "$bootcmd"
+  bootlauncher="$(fleet_write_hidden_launcher "$bootlabel" "${dir}/${bootlabel}.cmd")"
+  fleet_task_install "$bootlabel" "true" "" "" \
+    "wscript.exe" "/B /NOLOGO \"${bootlauncher}\"" "$(_fleet_win_path "$(pwd)")"
 }
 
 # writes <service-dir>/<label>.cmd that sets the env then runs the bridge
@@ -744,6 +789,7 @@ fleet_service_install() {
     supervisor="${dir}/${label}-super.ps1"
     _fleet_write_ps_supervisor "$supervisor" "$label" "$wrapper"
     _fleet_win_spawn "$(_fleet_win_powershell)" "$(_fleet_win_path "$supervisor")" || return 1
+    _fleet_install_boot_task "$label" "$supervisor" "$logdir"
   else
     local wrapper="${dir}/${label}.sh"
     _fleet_write_sh_wrapper "$wrapper" "$workdir" "$interpreter" "$script" "$extra" "$envpairs" "$logfile"
@@ -938,12 +984,15 @@ fleet_service_remove() {
     _fleet_win_stop_service "$label"
     local tdir
     tdir="$(_fleet_timer_dir)"
+    fleet_task_delete "${label}-boot" >/dev/null 2>&1 || true
     rm -f "$(fleet_service_dir)/${label}.cmd" "$(fleet_service_dir)/${label}.vbs" \
           "${tdir}/${label}.cmd" "${tdir}/${label}.launcher.vbs" \
           "$(_fleet_platform_dir)/${label}.launcher.vbs" \
           "$(fleet_service_dir)/${label}.task.xml" \
           "$(fleet_service_dir)/${label}-super.ps1" \
-          "$(fleet_service_dir)/${label}.super.pid" "$(fleet_service_dir)/${label}.child.pid"
+          "$(fleet_service_dir)/${label}.super.pid" "$(fleet_service_dir)/${label}.child.pid" \
+          "$(fleet_service_dir)/${label}-boot.cmd" "$(fleet_service_dir)/${label}-boot.task.xml" \
+          "${tdir}/${label}-boot.launcher.vbs" "$(_fleet_platform_dir)/${label}-boot.launcher.vbs"
     return 0
   else
     _fleet_service_kill "$(fleet_service_dir)/${label}.sh"
@@ -1033,6 +1082,13 @@ PLIST
     launchctl bootstrap "gui/$(id -u)" "${dir}/${label}.plist" >/dev/null 2>&1 || true
   elif fleet_is_windows; then
     local wrapper launcher tdir
+    # Task Scheduler rejects a repetition interval under one minute
+    # ((11,27):Interval:PT30S, swallowed by fleet_task_install), and the shim
+    # watchdog's 30s macOS-flavoured default never registered. Floor it here;
+    # the shim's in-process watchdog keeps the sub-minute reaction time.
+    if [ -n "$interval" ] && [ "$interval" -lt 60 ] 2>/dev/null; then
+      interval=60
+    fi
     tdir="$(_fleet_timer_dir)"
     wrapper="$(_fleet_win_path "${tdir}/${label}.cmd")"
     _fleet_write_cmd_wrapper "$wrapper" "$(pwd)" "$interpreter" "$script" "$extra" "" "$logfile"

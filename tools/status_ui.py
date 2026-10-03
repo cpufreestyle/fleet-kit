@@ -1021,7 +1021,7 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
   <div class="cards" id="cards"></div>
   <table>
     <thead><tr>
-      <th>桥</th><th>端口</th><th>key md5</th><th>launchd</th><th>监听</th>
+      <th>桥</th><th>端口</th><th>key md5</th><th>服务</th><th>监听</th>
       <th>/v1/models</th><th>模型</th><th>真实调用</th><th></th>
     </tr></thead>
     <tbody id="rows"></tbody>
@@ -1125,7 +1125,7 @@ function render(){
   document.getElementById('warn').innerHTML = s.warnings.length
     ? '<div class="warnbox">'+s.warnings.map(esc).join('<br>')+'</div>' : '';
   var sum=s.summary;
-  var cards=[['桥在线',sum.agent_up+' / '+sum.bridges,'launchd loaded 且在跑'],
+  var cards=[['桥在线',sum.agent_up+' / '+sum.bridges,'服务已加载且在跑'],
              ['端口监听',sum.listening+' / '+sum.bridges,'127.0.0.1 LISTEN'],
              ['模型总数',sum.models,'/v1/models 汇总'],
              ['今日签到',sum.checkin_ok_today+' / '+sum.checkin_total,'tasks ok today'],

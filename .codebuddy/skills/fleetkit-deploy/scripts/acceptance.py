@@ -188,8 +188,11 @@ def main():
             row["detail"] = "port closed"
             rows.append(row)
             continue
+        # Every bridge rejects an unauthenticated /v1/models with 401. Probing
+        # without the fleet.env key used to paint a healthy fleet as dead, so
+        # send the same key the --chat probe below uses.
         status, payload = http_json("http://127.0.0.1:%d/v1/models" % port,
-                                    timeout=args.timeout)
+                                    key=env.get(key_env), timeout=args.timeout)
         if status != 200:
             row["detail"] = "models HTTP %s" % (status or "err")
             rows.append(row)
