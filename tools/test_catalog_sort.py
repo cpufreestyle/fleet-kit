@@ -214,7 +214,7 @@ def _rank_ordered(models):
     """Sort slugs the way main() does before it interleaves.
 
     interleave_reps() takes its input already sorted by (tier, provider
-    position, hy4, important rank); it does not sort on its own.
+    position, lead rank, important rank); it does not sort on its own.
     """
     order = catalog_sort.DEFAULT_ORDER.split(",")
 
