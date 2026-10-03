@@ -62,9 +62,9 @@ OUT, THEME = sys.argv[1], sys.argv[2]
 S = 3072
 
 if THEME == "shield":
-    top, bottom = (79, 70, 229), (14, 165, 233)     # indigo -> sky
+    top, bottom = (251, 146, 60), (234, 88, 12)     # amber -> orange (verify)
 else:
-    top, bottom = (16, 185, 129), (59, 130, 246)    # green -> blue
+    top, bottom = (16, 185, 129), (6, 148, 162)    # emerald -> teal (fleet)
 
 grad = Image.new("RGBA", (S, S))
 gp = grad.load()
@@ -232,6 +232,10 @@ EOS
   cp "$WORK"/status_*.py "$app/Contents/Resources/" 2>/dev/null || true
   cp "$WORK/app.icns" "$app/Contents/Resources/applet.icns"
   chmod +x "$app/Contents/Resources/launch.sh"
+  # On Sequoia/Tahoe the osacompile applet template ships an Assets.car whose
+  # default script icon outranks CFBundleIconFile, so the custom applet.icns
+  # never shows. Drop the catalog and the icns wins.
+  rm -f "$app/Contents/Resources/Assets.car"
   if /usr/libexec/PlistBuddy -c "Print :CFBundleIconFile" "$app/Contents/Info.plist" >/dev/null 2>&1; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile applet" "$app/Contents/Info.plist"
   else

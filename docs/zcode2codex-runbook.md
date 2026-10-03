@@ -120,8 +120,11 @@ timer 的 ProgramArguments 记的是绝对路径，从 kit 装会上来就跑 ki
 - `panel`：双击唤醒 `com.local.fleet-ui`，打开 http://127.0.0.1:8796/ ，按在册桥数发
   通知（探活走 `/api/status`）。
 
-图标由 PIL 现画（zcode 盾牌+对勾 / panel 仪表盘）转 icns，applet 由 osacompile 产出并
-ad-hoc 签名。生成的 payload（`Contents/Resources/launch.sh`）里烘焙的是 **runtime 树**的
+图标由 PIL 现画转 icns：zcode 琥珀-橙渐变+盾牌对勾（验证语义），panel 翠绿-青渐变+仪表盘
+（机队语义），色相拉开，桌面上不会认错。osacompile 产出的 applet 会带一份 Assets.car，
+在 Sequoia/Tahoe 上那张 asset catalog 里的默认脚本图标会盖过 CFBundleIconFile，所以构建
+末尾 rm -f 掉 Assets.car，自定义 applet.icns 才会生效；之后 ad-hoc 签名 + lsregister
+重注册。若图标仍不刷新，`killall Finder` 即可。生成的 payload（`Contents/Resources/launch.sh`）里烘焙的是 **runtime 树**的
 路径（部署的那份才接桥），端口可用 `ZCODE_CAPTCHA_RELAY_PORT` / `FLEET_UI_PORT` 覆盖。
 风格上 keeper 负责无感补票，zcode 快捷方式是人工备票的入口；panel 快捷方式比旧的
 `FleetKit面板.webloc` 多了一层「先把服务拉起来」的能力。
