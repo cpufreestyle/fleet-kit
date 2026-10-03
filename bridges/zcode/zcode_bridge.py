@@ -312,6 +312,9 @@ CAPTCHA_MAX_AGE = float(os.environ.get("ZCODE_CAPTCHA_MAX_AGE") or "600")
 # 分钟级的旧票必 3007，所以发请求前用这个更严的门槛把关。
 CAPTCHA_MAX_FRESH = float(os.environ.get("ZCODE_CAPTCHA_MAX_FRESH") or "75")
 CAPTCHA_RETRIES = int(os.environ.get("ZCODE_CAPTCHA_RETRIES") or "3")
+# 自动验证总闸：0 时桥不再现场 mint（不跑阿里云无感验证），
+# 没票就按缺票路径向人要一张人工票。后台补票 keeper 另见 captcha-keeper.sh。
+CAPTCHA_AUTOMINT = os.environ.get("ZCODE_CAPTCHA_AUTOMINT", "1").strip().lower() not in ("0", "false", "no", "off")
 MINT_TIMEOUT = float(os.environ.get("ZCODE_MINT_TIMEOUT") or "60")
 
 
@@ -359,6 +362,11 @@ def read_captcha() -> str:
 def _mint_now() -> str:
     """Ask captcha-mint.py for one fresh ticket (blocking, seconds)."""
     if not MINTER.exists():
+        return ""
+    if not CAPTCHA_AUTOMINT:
+        # 用户关掉了自动验证：这里不再启动 Chrome 跑无感验证，
+        # 让上层落到「缺票，请人工换一张」的提示上。
+        log("auto-mint disabled (ZCODE_CAPTCHA_AUTOMINT=0)")
         return ""
     import subprocess
     try:
