@@ -13,10 +13,15 @@ contract, so the interesting property is which flags it is *able* to pass.
 """
 import os
 import re
+import shutil
 import subprocess
 
 KIT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 INSTALL = os.path.join(KIT, "install.sh")
+# Windows resolves a bare "bash" to System32ash.exe -- the WSL launcher,
+# which CreateProcess checks before PATH -- so ask PATH for the real bash and
+# decode defensively so stray host chatter cannot kill a stream reader.
+BASH = shutil.which("bash") or "bash"
 
 
 def _source():
@@ -50,4 +55,4 @@ def test_the_qwen_upstream_key_is_optional_and_only_injected_when_set():
 
 
 def test_the_script_still_parses():
-    subprocess.run(["bash", "-n", INSTALL], check=True)
+    subprocess.run([BASH, "-n", INSTALL], check=True)

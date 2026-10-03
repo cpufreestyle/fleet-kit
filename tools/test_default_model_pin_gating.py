@@ -15,12 +15,20 @@ actually exercised.
 """
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
 
 KIT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 SCRIPT = os.path.join(KIT, "opencodex", "setup-providers.sh")
+
+# Windows resolves a bare "bash" to System32\bash.exe -- the WSL launcher,
+# which CreateProcess checks before PATH -- and the script then dies inside
+# WSL while wsl.exe sprays a UTF-16LE proxy warning into stderr. Ask PATH
+# for the real bash and decode defensively so stray host chatter can never
+# kill a stream reader again.
+BASH = shutil.which("bash") or "bash"
 
 
 def _dry_run(env_extra):
@@ -36,8 +44,8 @@ def _dry_run(env_extra):
             for key, value in env_extra.items():
                 fh.write("%s=%s\n" % (key, value))
         proc = subprocess.run(
-            ["bash", SCRIPT, "--dry-run", "--env-file", envfile, "--home", tmp],
-            capture_output=True, text=True, timeout=180,
+            [BASH, SCRIPT, "--dry-run", "--env-file", envfile, "--home", tmp],
+            capture_output=True, text=True, errors="replace", timeout=180,
             env=dict(os.environ, HOME=home))
         return proc.returncode, proc.stdout + proc.stderr
 

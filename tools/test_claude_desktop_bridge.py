@@ -74,7 +74,10 @@ def test_user_data_dir_on_darwin(monkeypatch):
     monkeypatch.delenv("CLAUDE_USER_DATA_DIR", raising=False)
     monkeypatch.setenv("HOME", "/home/tester")
     monkeypatch.setattr(bridge, "platform_name", lambda: "darwin")
-    assert bridge.user_data_dir() == "/home/tester/Library/Application Support/Claude-3p"
+    # os.path.join, not a literal: the bridge joins with the host separator,
+    # so a darwin-mocked run on Windows ends in a backslash.
+    assert bridge.user_data_dir() == os.path.join(
+        "/home/tester", "Library", "Application Support", "Claude-3p")
 
 
 def test_user_data_dir_on_linux(monkeypatch):
@@ -82,7 +85,8 @@ def test_user_data_dir_on_linux(monkeypatch):
     monkeypatch.setenv("HOME", "/home/tester")
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setattr(bridge, "platform_name", lambda: "linux")
-    assert bridge.user_data_dir() == "/home/tester/.config/Claude-3p"
+    assert bridge.user_data_dir() == os.path.join(
+        "/home/tester", ".config", "Claude-3p")
 
 
 def test_user_data_dir_on_windows(monkeypatch):
@@ -90,19 +94,21 @@ def test_user_data_dir_on_windows(monkeypatch):
     local = "C:/Users/tester/AppData/Local"
     monkeypatch.setenv("LOCALAPPDATA", local)
     monkeypatch.setattr(bridge, "platform_name", lambda: "win32")
-    assert bridge.user_data_dir() == local + "/Claude-3p"
+    assert bridge.user_data_dir() == os.path.join(local, "Claude-3p")
 
 
 def test_user_data_dir_honours_the_env_override(monkeypatch):
     monkeypatch.setenv("CLAUDE_USER_DATA_DIR", "/tmp/forced-3p")
     monkeypatch.setattr(bridge, "platform_name", lambda: "darwin")
-    assert bridge.user_data_dir() == "/tmp/forced-3p"
+    # abspath: the bridge returns a native absolute path, which on Windows
+    # turns a POSIX-style forced value into drive-relative form.
+    assert bridge.user_data_dir() == os.path.abspath("/tmp/forced-3p")
 
 
 def test_user_data_dir_prefers_an_explicit_home(monkeypatch):
     monkeypatch.setenv("CLAUDE_USER_DATA_DIR", "/tmp/forced-3p")
     monkeypatch.setattr(bridge, "platform_name", lambda: "linux")
-    assert bridge.user_data_dir("/tmp/given") == "/tmp/given"
+    assert bridge.user_data_dir("/tmp/given") == os.path.abspath("/tmp/given")
 
 
 # ----------------------------------------------------------------------- entry

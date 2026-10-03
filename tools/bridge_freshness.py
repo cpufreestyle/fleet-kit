@@ -255,6 +255,20 @@ def _file_time(mtime):
     return datetime.fromtimestamp(mtime).strftime("%m-%d %H:%M:%S")
 
 
+def _command_has_marker(command, marker):
+    """Marker containment that survives separator and case differences.
+
+    A bridge command line may carry either separator (a bash-launched bridge on
+    Windows passes forward slashes while os.path.join emits backslashes), and
+    Windows paths match case-insensitively.
+    """
+    command = command.replace(os.sep, "/")
+    marker = marker.replace(os.sep, "/")
+    if os.name == "nt":
+        command, marker = command.lower(), marker.lower()
+    return marker in command
+
+
 def assess(home, procs, tolerance=TOLERANCE_SECONDS):
     """Assess every bridge directory under home; returns sorted Rows."""
     bridges = os.path.join(home, "bridges")
@@ -263,7 +277,8 @@ def assess(home, procs, tolerance=TOLERANCE_SECONDS):
     for name in sorted(siblings):
         own_dir = os.path.join(bridges, name)
         marker = os.path.join(bridges, name) + os.sep
-        matched = [proc for proc in procs if marker in proc.command]
+        matched = [proc for proc in procs
+                   if _command_has_marker(proc.command, marker)]
         mtime, rel, origin = newest_loaded(bridges, own_dir, name, siblings)
         refs = referenced_siblings(source_files(own_dir), name, siblings)
         if mtime is not None and origin == "own":

@@ -59,6 +59,43 @@ grep -o "stepfun/[a-z0-9.-]*" ~/.codex/cc-switch-model-catalog.json | sort -u
 2026-09-26 实测：全链路 HTTP 200，返回真实 reasoning summary 与输出。
 （`max_output_tokens` 给小了会返回 `status: incomplete`——推理先把额度吃光了，属正常。）
 
+## 2026-10-01 Windows 复装（第三个坑）
+
+裸名 `step-5-preview` 不属于 ChatGPT 账号池，ocx 会把无前缀模型交给默认 provider
+`openai`，于是 ChatGPT 后端返回：
+
+    {"detail":"The 'step-5-preview' model is not supported when using Codex with a ChatGPT account."}
+
+必须带前缀 `stepfun/step-5-preview`。要让这个前缀存在，本机复装时踩到第三个坑：
+
+3. **`ocx models selected` 不会注入目录行**：只跑 `selected ... --set` + `ocx sync`，
+   sync 照样打印 `+99 models appended`，但 `/v1/models` 里一个 stepfun 都没有，
+   选择器也就没有这一行。必须逐个显式 enable：
+
+```bash
+ocx provider add stepfun --adapter openai-chat \
+  --base-url https://api.stepfun.com/step_plan/v1 \
+  --api-key <KEY> --allow-private-network --force
+ocx restart            # 新 provider 只有重启后才进路由表（不然 ocx models 看不到）
+ocx models             # 刷 discovery 缓存（坑 2）
+ocx models provider stepfun on
+ocx models selected stepfun --set step-5-preview,step-3.7-flash,step-3.5-flash
+ocx models enable "stepfun/step-5-preview"      # ← 坑 3：少了这步目录里没有
+ocx sync
+```
+
+Windows 上 key 的取法（CC Switch 新版把配置放 SQLite，不再有 config.json）：
+
+```python
+import sqlite3, json, pathlib
+con = sqlite3.connect("file:C:/Users/<你>/.cc-switch/cc-switch.db?mode=ro", uri=True)
+cfg, = con.execute("SELECT settings_config FROM providers WHERE app_type='codex' AND id='stepfun-step-plan'").fetchone()
+print(json.loads(cfg)["auth"]["OPENAI_API_KEY"])
+```
+
+取到后写进 `runtime/fleet.env` 的 `STEPFUN_PLAN_API_KEY`，
+`opencodex/setup-providers.sh` 的条件注册块会自动带上（含上面三个坑）。
+
 ## 模型清单（9 个 live，5 个文本已选入选择器）
 
 | 模型 | 上下文 | 输入模态 | 备注 |

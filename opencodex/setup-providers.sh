@@ -196,11 +196,37 @@ STEPFUN_REGISTERED=0
 
 if [ -n "${STEPFUN_PLAN_API_KEY:-}" ]; then
   run ocx provider add stepfun --adapter openai-chat --base-url https://api.stepfun.com/step_plan/v1 --api-key "${STEPFUN_PLAN_API_KEY}" --allow-private-network --force
+  # A freshly added provider only enters the routing table after a restart;
+  # without it `ocx models` shows no stepfun rows at all (Windows, 2026-10-01).
+  run ocx restart
+  # A fixed sleep races a slow restart: under `set -e` a not-yet-up ocx would
+  # abort the whole setup mid-way. Poll instead, and only for real runs (the
+  # dry run never executed the restart). A failed poll warns and carries on --
+  # the remaining registrations matter more than this one provider's picker.
+  if [ "$DRY_RUN" != "1" ]; then
+    ocx_up=0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      if ocx models >/dev/null 2>&1; then ocx_up=1; break; fi
+      sleep 1.5
+    done
+    if [ "$ocx_up" != "1" ]; then
+      echo "  [warn] ocx did not answer within 15s of the restart; stepfun rows may be missing from the picker" >&2
+    fi
+  fi
   # bare `ocx models` refreshes the discovery cache; without it
   # `ocx models provider stepfun on` reports "no models are available".
   run ocx models >/dev/null
   run ocx models provider stepfun on
   run ocx models selected stepfun --set step-5-preview,step-3.7-flash,step-3.5-flash-2603,step-3.5-flash,step-router-v1
+  # `selected` alone does not inject the rows: ocx sync keeps printing
+  # "+N models appended" while /v1/models has no stepfun entry. Without an
+  # explicit enable the picker has no stepfun row, so a bare `step-5-preview`
+  # request falls through to the ChatGPT account pool and comes back as
+  # 400 "The 'step-5-preview' model is not supported when using Codex with a
+  # ChatGPT account."
+  for m in step-5-preview step-3.7-flash step-3.5-flash-2603 step-3.5-flash step-router-v1; do
+    run ocx models enable "stepfun/${m}"
+  done
   STEPFUN_REGISTERED=1
 else
   echo "  (STEPFUN_PLAN_API_KEY not set; skipping stepfun plan api)"

@@ -227,23 +227,34 @@ _fleet_user_sid() {
   esac
 }
 
-# powershell.exe backs the windows service backend: Git Bash has no setsid, so
-# long-running services are hosted by a detached hidden PowerShell supervisor
+# PowerShell backs the windows service backend: Git Bash has no setsid, so
+# long-running services are hosted by a detached hidden PowerShell supervisor.
+# Only PowerShell 7 (pwsh) is supported by default -- the 5.1 fallback produced
+# supervisor scripts that behaved subtly differently -- and FLEET_POWERSHELL
+# overrides the lookup when pwsh lives outside PATH. Empty output means "no
+# usable interpreter"; callers already treat that as their degrade path.
 _fleet_win_powershell() {
-  local cand=""
-  if [ -n "${SYSTEMROOT:-}" ]; then
-    cand="$(cygpath -u "$SYSTEMROOT" 2>/dev/null || echo '')/System32/WindowsPowerShell/v1.0/powershell.exe"
+  local p=""
+  if [ -n "${FLEET_POWERSHELL:-}" ] && [ -x "${FLEET_POWERSHELL}" ]; then
+    printf '%s' "${FLEET_POWERSHELL}"; return 0
   fi
-  if [ -n "$cand" ] && [ -x "$cand" ]; then printf '%s' "$cand"; return 0; fi
-  command -v powershell.exe 2>/dev/null || command -v pwsh.exe 2>/dev/null || printf ''
+  for p in pwsh pwsh.exe; do
+    p="$(command -v "$p" 2>/dev/null || true)"
+    if [ -n "$p" ] && [ -x "$p" ]; then printf '%s' "$p"; return 0; fi
+  done
+  printf ''
 }
 
-# detach $2 so it outlives the shell that spawned it ($1 = powershell.exe).
+# detach $2 so it outlives the shell that spawned it ($1 = pwsh).
 # Start-Process resolves executables the way Windows does, so it needs the
-# native path form, not the /c/... form bash uses to run powershell itself.
+# native path form, not the /c/... form bash uses to run pwsh itself.
 _fleet_win_spawn() {
   local ps="$1" target="$2" pswin
-  [ -n "$ps" ] && [ -n "$target" ] || return 1
+  if [ -z "$ps" ]; then
+    echo "fleet: PowerShell 7 (pwsh) not found; install it or set FLEET_POWERSHELL" >&2
+    return 1
+  fi
+  [ -n "$target" ] || return 1
   pswin="$(_fleet_win_path "$ps")"
   "$ps" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden \
     -Command "Start-Process -FilePath '$pswin' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File','$target' -WindowStyle Hidden" \
@@ -870,7 +881,10 @@ PLIST
     local wrapper launcher tdir
     tdir="$(_fleet_timer_dir)"
     wrapper="$(_fleet_win_path "${tdir}/${label}.cmd")"
-    _fleet_write_cmd_wrapper "$wrapper" "$(pwd)" "$interpreter" "$script" "$extra" "" "$logfile"
+    # HOME must travel with the wrapper: a Task Scheduler action runs without
+    # it, and every script that resolves ~ (config.toml, log dirs) would
+    # silently aim at a nonexistent root while still exiting 0.
+    _fleet_write_cmd_wrapper "$wrapper" "$(pwd)" "$interpreter" "$script" "$extra" "HOME=${HOME}" "$logfile"
     launcher="$(fleet_write_hidden_launcher "$label" "${tdir}/${label}.cmd")"
     fleet_task_install "$label" "false" "$interval" "" "wscript.exe" "/B /NOLOGO \"${launcher}\"" "$(_fleet_win_path "$(pwd)")"
   else

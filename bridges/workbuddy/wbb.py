@@ -40,6 +40,24 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
+def powershell_exe() -> list[str]:
+    """PowerShell 7 (pwsh) invocation, FLEET_POWERSHELL overriding the lookup.
+
+    FleetKit defaults to pwsh only: 5.1's different parameter handling produced
+    supervisor behaviour that diverged from the documented flow. Raises when
+    pwsh is absent so the caller's error path says what is missing.
+    """
+    override = os.environ.get("FLEET_POWERSHELL")
+    if override and Path(override).exists():
+        return [override]
+    for name in ("pwsh", "pwsh.exe"):
+        found = shutil.which(name)
+        if found:
+            return [found]
+    raise RuntimeError(
+        "PowerShell 7 (pwsh) not found; install it or set FLEET_POWERSHELL")
+
+
 def load_config() -> dict:
     if not CONFIG_PATH.is_file():
         # npm-installed scenario: the package dir itself is the bridge.
@@ -108,7 +126,7 @@ def ensure_in_user_path(bin_dir: Path) -> None:
         )
         try:
             subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
+                [*powershell_exe(), "-NoProfile", "-Command", ps],
                 capture_output=True, timeout=30,
             )
         except Exception:
@@ -138,7 +156,7 @@ def remove_from_user_path(bin_dir: Path) -> None:
         )
         try:
             subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
+                [*powershell_exe(), "-NoProfile", "-Command", ps],
                 capture_output=True, timeout=30,
             )
         except Exception:
@@ -239,7 +257,7 @@ def process_commandline(pid: int) -> str:
     try:
         if is_windows():
             out = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
+                [*powershell_exe(), "-NoProfile", "-Command",
                  f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
                 capture_output=True, text=True, timeout=15,
             ).stdout.strip()

@@ -14,10 +14,15 @@ and the script must still parse.
 """
 import os
 import re
+import shutil
 import subprocess
 
 KIT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 SCRIPT = os.path.join(KIT, "opencodex", "setup-providers.sh")
+# Windows resolves a bare "bash" to System32ash.exe -- the WSL launcher,
+# which CreateProcess checks before PATH -- so ask PATH for the real bash and
+# decode defensively so stray host chatter cannot kill a stream reader.
+BASH = shutil.which("bash") or "bash"
 
 
 def _source():
@@ -53,7 +58,7 @@ def test_the_shim_install_is_routed_through_run_for_the_dry_run():
 
 
 def test_the_script_still_parses():
-    subprocess.run(["bash", "-n", SCRIPT], check=True)
+    subprocess.run([BASH, "-n", SCRIPT], check=True)
 
 
 def test_the_dry_run_never_prints_a_literal_api_key(tmp_path):
@@ -77,7 +82,7 @@ def test_the_dry_run_never_prints_a_literal_api_key(tmp_path):
     env = dict(os.environ)
     env["PATH"] = "%s:%s" % (stub_bin, os.environ["PATH"])
     env["HOME"] = str(home)
-    proc = subprocess.run(["bash", SCRIPT, "--home", str(home), "--dry-run"],
+    proc = subprocess.run([BASH, SCRIPT, "--home", str(home), "--dry-run"],
                           capture_output=True, text=True, timeout=180, env=env)
 
     assert proc.returncode == 0, proc.stderr[-2000:]
@@ -106,7 +111,7 @@ def test_the_shim_install_is_skipped_for_an_app_bundle_codex(tmp_path):
     env = dict(os.environ)
     env["PATH"] = "%s:%s:%s" % (bundle, stub_bin, os.environ["PATH"])
     env["HOME"] = str(home)
-    proc = subprocess.run(["bash", SCRIPT, "--home", str(home), "--dry-run"],
+    proc = subprocess.run([BASH, SCRIPT, "--home", str(home), "--dry-run"],
                           capture_output=True, text=True, timeout=180, env=env)
 
     assert proc.returncode == 0, proc.stderr[-2000:]
