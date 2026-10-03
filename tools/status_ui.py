@@ -958,6 +958,9 @@ class Handler(BaseHTTPRequestHandler):
         route = parsed.path
         if route in ("/", "/index.html"):
             self._send(render_page(self.server.cfg), "text/html; charset=utf-8")
+        elif route == "/api/page-version":
+            self._send({"version": PAGE_VERSION},
+                       "application/json; charset=utf-8")
         elif route == "/api/status":
             self._send(collect_cached(self.server.cfg), "application/json; charset=utf-8")
         elif route.startswith("/api/logs/"):
@@ -1180,6 +1183,7 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
 </main>
 <script>
 var REFRESH = __REFRESH__;
+var PAGE_VERSION = "__PAGE_VERSION__";
 var SNAP = null;
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
@@ -1468,6 +1472,13 @@ function restart(name){
   if(!window.confirm('重启桥 '+name+' ?')){return;}
   post('/api/action/restart/'+encodeURIComponent(name)).then(function(){load();});}
 if(REFRESH>0){setInterval(load,REFRESH*1000);}
+// A restart changes the served page version; tabs left open on an older build
+// reload themselves instead of rendering stale markup forever.
+setInterval(function(){
+  fetch('/api/page-version').then(function(r){return r.json();}).then(function(j){
+    if(j.version && j.version !== PAGE_VERSION){ location.reload(); }
+  }).catch(function(){});
+}, 30000);
 load();
 </script>
 </body>
@@ -1475,8 +1486,14 @@ load();
 """
 
 
+# Bumped on every restart: stale tabs compare this and reload themselves.
+PAGE_VERSION = str(int(time.time()))
+
+
 def render_page(cfg):
-    return PAGE.replace("__REFRESH__", str(int(cfg["refresh"])))
+    return (PAGE
+            .replace("__REFRESH__", str(int(cfg["refresh"])))
+            .replace("__PAGE_VERSION__", PAGE_VERSION))
 
 
 # --------------------------------------------------------------------------- #
