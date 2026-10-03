@@ -1072,6 +1072,9 @@ padding:0 5px;font-size:11px;color:#c8cfdb}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px}
 .panel h2{margin:0 0 6px;font-size:13px;color:var(--dim);
 text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+details summary{cursor:pointer;color:var(--dim);font-size:12px;font-weight:600;
+list-style-position:inside;margin-bottom:4px}
+details summary::-webkit-details-marker{color:var(--dim)}
 pre{margin:0;white-space:pre-wrap;word-break:break-all;font-size:12px;color:#c8cfdb;
 max-height:280px;overflow:auto}
 button{background:#22262f;color:var(--fg);border:1px solid var(--line);
@@ -1123,7 +1126,8 @@ color:#e3b341;border-radius:6px;padding:6px 9px;margin-bottom:10px;font-size:12p
       <h2>opencodex</h2>
       <div class="row"><span id="ocx-pill" class="pill p-idle">...</span>
       <span class="meta" id="ocx-health"></span></div>
-      <pre id="ocx-text"></pre>
+      <details open><summary>status 原文</summary>
+      <pre id="ocx-text" style="max-height:200px"></pre></details>
     </div>
     <div class="panel">
       <h2>签到</h2>
