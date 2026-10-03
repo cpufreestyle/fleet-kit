@@ -1044,19 +1044,19 @@ PAGE = r"""<!doctype html>
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
 font:14px/1.5 -apple-system,BlinkMacSystemFont,"SF Mono",Menlo,Consolas,monospace}
-header{padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel);
+header{padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel);
 position:sticky;top:0;z-index:5}
 h1{margin:0;font-size:16px;font-weight:600}
 .meta{color:var(--dim);font-size:12px;word-break:break-all}
-main{padding:16px 20px;max-width:1500px;margin:0 auto}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:14px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+main{padding:10px 14px;max-width:none}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-bottom:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
 .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
 .card .v{font-size:22px;font-weight:600;margin-top:2px}
 .card .s{color:var(--dim);font-size:11px}
 table{width:100%;border-collapse:collapse;background:var(--panel);
 border:1px solid var(--line);border-radius:8px;overflow:hidden}
-th,td{padding:7px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th,td{padding:5px 8px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em;background:#14171d}
 tr:last-child td{border-bottom:none}
 .pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;font-weight:600}
@@ -1067,10 +1067,10 @@ tr:last-child td{border-bottom:none}
 .chips{display:flex;flex-wrap:wrap;gap:4px;max-width:330px}
 .chip{background:var(--chip);border:1px solid var(--line);border-radius:4px;
 padding:0 5px;font-size:11px;color:#c8cfdb}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
 @media(max-width:980px){.grid2{grid-template-columns:1fr}}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:12px}
-.panel h2{margin:0 0 8px;font-size:13px;color:var(--dim);
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px}
+.panel h2{margin:0 0 6px;font-size:13px;color:var(--dim);
 text-transform:uppercase;letter-spacing:.06em;font-weight:600}
 pre{margin:0;white-space:pre-wrap;word-break:break-all;font-size:12px;color:#c8cfdb;
 max-height:280px;overflow:auto}
@@ -1082,7 +1082,7 @@ button.primary{background:rgba(88,166,255,.14);border-color:rgba(88,166,255,.4);
 select{background:#14171d;color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:5px 8px;font:inherit;font-size:12px}
 .warnbox{background:rgba(210,153,34,.12);border:1px solid rgba(210,153,34,.35);
-color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12px}
+color:#e3b341;border-radius:6px;padding:6px 9px;margin-bottom:10px;font-size:12px}
 .dim{color:var(--dim)}
 .num{font-size:15px;font-weight:700;color:var(--fg);white-space:nowrap}
 .num .u{font-weight:500;color:var(--dim);font-size:11px;margin-left:3px}
