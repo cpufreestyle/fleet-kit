@@ -50,7 +50,10 @@ import time
 
 DEFAULT_ORDER = os.environ.get(
     "FLEET_MODEL_ORDER",
-    "tokendance,trae,cline,workbuddy-gpt,workbuddy,stepfun,catpaw,xhx,codely,"
+    # workbuddy leads since 2026-10-03: the only bridge whose models passed
+    # both code tasks full-mark (deepseek trio, docs/code-model-selection.md),
+    # so its block belongs right after the pinned leads, not fifth in line.
+    "workbuddy,workbuddy-gpt,tokendance,trae,cline,stepfun,catpaw,xhx,codely,"
     "gemini,qoder,lingxi,antigravity,zcode,qwen")
 
 # Model families, in the order the user wants them listed. A family is a
@@ -155,7 +158,12 @@ def family_rank(slug, families=FAMILY_ORDER):
 # until 2026-10-03, when the model was added and routed for real).
 LEAD_SLUGS = tuple(
     s.strip() for s in os.environ.get(
-        "FLEET_FIRST_MODEL", "workbuddy/deepseek-v4.1-flash").split(",")
+        # the 2026-10-03 full-fleet code bench: the only three models that
+        # passed both coding tasks with full marks and zero prose. flash
+        # first because it is also FLEET_DEFAULT_MODEL.
+        "FLEET_FIRST_MODEL",
+        "workbuddy/deepseek-v4-flash,workbuddy/deepseek-v4.1-flash,"
+        "workbuddy/deepseek-v4-pro").split(",")
     if s.strip())
 
 
@@ -191,13 +199,17 @@ def interleave_reps(models, order, good=None, families=()):
     taken = set()
     pool = [m for m in models
             if good is None or provider_of(slug_of(m)) in good]
-    # The lead model first — always, even before the other reps, so the user's go-to
-    # model is the first row in the picker.
-    for model in pool:
-        if is_lead(slug_of(model)):
-            reps.append(model)
-            taken.add(slug_of(model))
-            break
+    # The lead models first — always, even before the other reps, so the user's
+    # go-to models are the first rows in the picker. Every LEAD_SLUGS entry is
+    # pinned in listed order: the 2026-10-03 bench produced a winning trio,
+    # not a single winner, and a lone break() would have left two of the three
+    # buried inside the provider band below.
+    for lead_slug in LEAD_SLUGS:
+        for model in pool:
+            if slug_of(model) == lead_slug:
+                reps.append(model)
+                taken.add(lead_slug)
+                break
     # A short band per reachable provider, in --order order, skipping the lead model
     # since it already leads. Picking the "most important" models per
     # provider gives the user a quick scan of the whole fleet on the first
