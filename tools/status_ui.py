@@ -1081,6 +1081,12 @@ border-radius:6px;padding:5px 8px;font:inherit;font-size:12px}
 .warnbox{background:rgba(210,153,34,.12);border:1px solid rgba(210,153,34,.35);
 color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12px}
 .dim{color:var(--dim)}
+.num{font-size:15px;font-weight:700;color:var(--fg);white-space:nowrap}
+.num .u{font-weight:500;color:var(--dim);font-size:11px;margin-left:3px}
+.p-client{background:rgba(63,185,80,.15);color:var(--ok)}
+.p-limit{background:rgba(88,166,255,.15);color:var(--accent)}
+.p-own{background:rgba(210,153,34,.18);color:var(--warn)}
+.p-sub{background:rgba(188,140,255,.15);color:#bc8cff}
 </style>
 </head>
 <body>
@@ -1098,6 +1104,17 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
+  <div class="panel">
+    <div class="row">
+      <h2 style="margin:0">节点积分 / 套餐余额</h2>
+      <label class="meta" style="cursor:pointer"><input type="checkbox" id="nc-only-values" onchange="renderNc()"> 只看有剩余数值</label>
+      <span class="meta" id="nc-note"></span>
+    </div>
+    <table><thead><tr><th>节点</th><th>剩余积分</th><th>口径</th><th>套餐 plan</th>
+    <th>账号</th><th>状态</th><th>登录</th><th>签到</th><th>来源 / 备注</th></tr></thead>
+    <tbody id="nc-rows"></tbody></table>
+    <pre id="nc-out" style="margin-top:8px"></pre>
+  </div>
   <div class="grid2">
     <div class="panel">
       <h2>opencodex</h2>
@@ -1116,15 +1133,6 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
       <tbody id="ck-rows"></tbody></table>
       <pre id="ck-out" style="margin-top:8px"></pre>
     </div>
-    <div class="panel">
-      <h2>节点积分 / 账号（15 个节点）</h2>
-      <div class="row"><span class="meta" id="nc-note"></span></div>
-      <table><thead><tr><th>节点</th><th>状态</th><th>账号</th><th>套餐 plan</th><th>登录</th>
-      <th>积分口径</th><th>积分 / 额度</th><th>来源</th><th>签到</th></tr></thead>
-      <tbody id="nc-rows"></tbody></table>
-      <pre id="nc-out" style="margin-top:8px"></pre>
-    </div>
-
     <div class="panel">
       <h2>小浣熊用量（本地计数，llm/v2 不结算积分）</h2>
       <div class="row"><span class="meta" id="xhx-path"></span></div>
@@ -1238,26 +1246,44 @@ function render(){
   var nc=s.credits||{};
   document.getElementById('nc-out').textContent = nc.available
     ? '' : ('读取失败：'+(nc.error||'node_credits.py 不可用'));
-  var ncrows=(nc.nodes||[]).map(function(n){
-    var cred = n.credits_value==null ? '-'
-      : esc(n.credits_value)+' '+(n.credits_unit||'');
-    var login = n.logged_in===true ? pill('ok','是')
-      : (n.logged_in===false ? pill('bad','否') : pill('warn','?'));
-    var vendor = n.vendor ? '<div class=dim>'+esc(n.vendor)+'</div>' : '';
-    return '<tr><td><b>'+esc(n.node)+'</b>'+vendor+'</td>'
-      +(n.up?pill('ok','up'):pill('bad','down'))
-      +'<td>'+esc(n.account||'-')
-      +(n.credits_accounts
-        ? '<div class=dim style="font-size:11px">'+esc(n.credits_accounts)+'</div>' : '')
-      +'</td><td>'+(n.plan?esc(n.plan):'<span class=dim>-</span>')
-      +'</td><td>'+login
-      +'<td>'+esc(n.credits_kind)+'</td><td>'+cred.trim()
-      +'<td class=dim>'+esc(n.credits_source||'-')+'</td>'
-      +'<td class=dim>'+esc(n.checkin||'-')+'</td></tr>';}).join('');
- document.getElementById('nc-rows').innerHTML = ncrows
-    || '<tr><td colspan=9 class=dim>暂无数据</td></tr>';
- document.getElementById('nc-note').textContent =
-    '来源：各桥 /health（套餐 edition/tier）· /health account_pool（多账号积分+套餐名）· /ui/checkin（Buddy 加油站）· /entitlements（ZCode plan）· 官方余额；口径见 free-windows.json';
+  var NC_KIND={client:['走客户端积分','p-client'],limit:['限额免费','p-limit'],
+    own:['平台自有','p-own'],subscription:['订阅','p-sub'],unknown:['未知','p-idle']};
+  var ncAll=(nc.nodes||[]).slice().sort(function(a,b){
+    var av=a.credits_value==null?0:1, bv=b.credits_value==null?0:1;
+    if(av!==bv) return bv-av;
+    return (b.up?1:0)-(a.up?1:0);
+  });
+  var ncHasValue=ncAll.filter(function(n){return n.credits_value!=null}).length;
+  function fmtNum(v){return typeof v==='number'?v.toLocaleString('en-US'):esc(v);}
+  function renderNc(){
+    var only=document.getElementById('nc-only-values').checked;
+    var list=only?ncAll.filter(function(n){return n.credits_value!=null}):ncAll;
+    document.getElementById('nc-rows').innerHTML=list.map(function(n){
+      var cred=n.credits_value==null?'<span class=dim>-</span>'
+        :'<span class=num>'+fmtNum(n.credits_value)
+        +'<span class=u>'+esc(n.credits_unit||'')+'</span></span>';
+      var kd=NC_KIND[n.credits_kind]||[esc(n.credits_kind||'-'),'p-idle'];
+      var login=n.logged_in===true?pill('ok','是')
+        :(n.logged_in===false?pill('bad','否'):pill('warn','?'));
+      var vendor=n.vendor?'<div class=dim style="font-size:11px">'+esc(n.vendor)+'</div>':'';
+      return '<tr><td><b>'+esc(n.node)+'</b>'+vendor+'</td>'
+        +'<td>'+cred+'</td>'
+        +'<td><span class="pill '+kd[1]+'">'+kd[0]+'</span></td>'
+        +'<td>'+(n.plan?esc(n.plan):'<span class=dim>-</span>')+'</td>'
+        +'<td>'+esc(n.account||'-')
+        +(n.credits_accounts?'<div class=dim style="font-size:11px">'+esc(n.credits_accounts)+'</div>':'')
+        +'</td>'+(n.up?pill('ok','up'):pill('bad','down'))
+        +'<td>'+login+'</td>'
+        +'<td class=dim>'+esc(n.checkin||'-')+'</td>'
+        +'<td class=dim>'+esc(n.credits_source||'-')
+        +(n.credits_note?'<div class=dim style="font-size:11px">'+esc(n.credits_note)+'</div>':'')
+        +'</td></tr>';
+    }).join('')||'<tr><td colspan=9 class=dim>没有符合条件的数据</td></tr>';
+  }
+  window.renderNc = renderNc;
+  renderNc();
+  document.getElementById('nc-note').textContent=
+    '共 '+ncAll.length+' 节点 · '+ncHasValue+' 家有剩余数值 · 其余未从上游取到数值｜来源：各桥 /health · account_pool · /ui/checkin · /entitlements · 官方余额；口径见 free-windows.json';
   var xu=s.xhx_usage||{};
   document.getElementById('xhx-path').textContent = xu.path||'';
   document.getElementById('xhx-note').textContent = xu.note||'';
