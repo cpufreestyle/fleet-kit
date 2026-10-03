@@ -69,7 +69,7 @@ BRIDGES = (
     ("qwen", "qwen2codex", 11, "QWEN2CODEX_KEY"),
     ("cline", "cline2codex", 12, "CLINE2CODEX_KEY"),
     ("zcode", "zcode2codex", 13, "ZCODE2CODEX_KEY"),
-    ("kimi", "kimi2codex", 15, "KIMI2CODEX_KEY"),
+    ("kimi-code", "kimi2codex", 15, "KIMI2CODEX_KEY"),
     ("minimax", "minimax2codex", 16, "MINIMAX2CODEX_KEY"),
 )
 BRIDGE_BY_NAME = dict((item[0], item) for item in BRIDGES)
@@ -478,6 +478,11 @@ FREE_TTL_SECONDS = 30.0
 _FREE_LOCK = threading.Lock()
 _FREE_CACHE = {"at": 0.0, "value": None}
 
+# The collector walks every provider site and, when the international links
+# are down, used to stall past 60s -- long enough to pin /api/status on
+# "loading". Cap it instead and degrade to the last good annotation.
+FREE_SUBPROCESS_TIMEOUT = 25.0
+
 
 def free_models():
     """Free-model annotations from tools/free_models.py (cached, never raises)."""
@@ -492,11 +497,19 @@ def free_models():
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "free_models.py")
     try:
         out = subprocess.run([sys.executable, script, "--json"],
-                             capture_output=True, timeout=60)
+                             capture_output=True, timeout=FREE_SUBPROCESS_TIMEOUT)
         value = json.loads(out.stdout.decode("utf-8", "ignore"))
         value["available"] = True
     except Exception as exc:
         value["error"] = str(exc)[:160]
+        with _FREE_LOCK:
+            previous = _FREE_CACHE["value"]
+        if previous is not None and previous.get("available"):
+            # Timeout must not poison the cache: keep serving the last good
+            # annotation with the error attached.
+            degraded = dict(previous)
+            degraded["error"] = value["error"]
+            value = degraded
     with _FREE_LOCK:
         _FREE_CACHE["at"] = time.time()
         _FREE_CACHE["value"] = value
@@ -506,6 +519,12 @@ def free_models():
 NODE_CREDITS_TTL_SECONDS = 30.0
 _NC_LOCK = threading.Lock()
 _NC_CACHE = {"at": 0.0, "value": None}
+
+# node_credits.py polls every node serially (6s health / 30s checkin timeout
+# each); with dead international links a full pass ran past two minutes.
+# Cap the subprocess and degrade to the previous pass on timeout, same as
+# free_models above.
+NODE_CREDITS_SUBPROCESS_TIMEOUT = 25.0
 
 
 def node_credits(cfg):
@@ -525,11 +544,17 @@ def node_credits(cfg):
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "node_credits.py")
     try:
         out = subprocess.run([cfg["python"] or sys.executable, script, "--json"],
-                             capture_output=True, timeout=120)
+                             capture_output=True, timeout=NODE_CREDITS_SUBPROCESS_TIMEOUT)
         value = json.loads(out.stdout.decode("utf-8", "ignore"))
         value["available"] = True
     except Exception as exc:
         value["error"] = str(exc)[:160]
+        with _NC_LOCK:
+            previous = _NC_CACHE["value"]
+        if previous is not None and previous.get("available"):
+            degraded = dict(previous)
+            degraded["error"] = value["error"]
+            value = degraded
     with _NC_LOCK:
         _NC_CACHE["at"] = time.time()
         _NC_CACHE["value"] = value
@@ -589,7 +614,13 @@ def snapshot_actions():
 
 COLLECT_TTL_SECONDS = 1.5
 _COLLECT_LOCK = threading.Lock()
-_COLLECT_CACHE = {"at": 0.0, "value": None}
+_COLLECT_CACHE = {"at": 0.0, "value": None, "refreshing": False, "worker": None}
+
+# The cold round (no cached value at all) still blocks the triggering
+# request -- the page would render with no data otherwise. Everything after
+# it is stale-while-revalidate. Must exceed one full collect() round: the
+# two subprocess collectors below are capped at 25s each.
+COLLECT_COLD_TIMEOUT = 75.0
 
 
 def refresh_keys(cfg):
@@ -613,16 +644,69 @@ def refresh_keys(cfg):
 
 
 def collect_cached(cfg):
-    """Coalesce concurrent /api/status polls into a single probe round."""
+    """Serve /api/status from cache; refresh never blocks the page.
+
+    Stale-while-revalidate: an expired cache is returned immediately while a
+    single daemon worker re-collects, so one slow round -- the free-model and
+    node-credit collectors talk to every bridge and stall for minutes when
+    the international links are down -- can no longer pin every later poll
+    behind _COLLECT_LOCK and park the dashboard on "loading". Only a cold
+    start (no cached value yet) waits for one full round, because the page
+    would otherwise render with no data at all.
+    """
     with _COLLECT_LOCK:
         cached = _COLLECT_CACHE["value"]
-        if cached is not None and (time.time() - _COLLECT_CACHE["at"]) < COLLECT_TTL_SECONDS:
+        if (cached is not None
+                and (time.time() - _COLLECT_CACHE["at"]) < COLLECT_TTL_SECONDS):
             return cached
+        if not _COLLECT_CACHE["refreshing"]:
+            _COLLECT_CACHE["refreshing"] = True
+            worker = threading.Thread(target=_collect_worker, args=(cfg,),
+                                      daemon=True)
+            _COLLECT_CACHE["worker"] = worker
+            worker.start()
+        else:
+            worker = _COLLECT_CACHE["worker"]
+    if cached is not None:
+        # Expired data beats no data; the in-flight worker replaces it and
+        # the next poll picks the fresh value up.
+        stale = dict(cached)
+        stale["stale"] = True
+        return stale
+    if worker is not None:
+        worker.join(COLLECT_COLD_TIMEOUT)
+    with _COLLECT_LOCK:
+        value = _COLLECT_CACHE["value"]
+    if value is None:
+        # Cold round still running (or failed) past the wait: degrade with an
+        # empty shell so the page keeps polling instead of hanging.
+        return {"generated_at": now_str(), "stale": True, "config": {},
+                "error": "状态采集中,请稍候", "summary": {}, "warnings": [],
+                "bridges": [], "checkin": {"tasks": []}, "free": {"models": []},
+                "verify": {}, "credits": {"nodes": []}, "xhx_usage": {},
+                "ocx": {}, "actions": []}
+    return value
+
+
+def _collect_worker(cfg):
+    """Run one collect() round off the request path; never raises."""
+    try:
         refresh_keys(cfg)
         result = collect(cfg)
-        _COLLECT_CACHE["at"] = time.time()
-        _COLLECT_CACHE["value"] = result
-        return result
+        result["stale"] = False
+    except Exception as exc:              # a broken round must not wedge the panel
+        result = {"generated_at": now_str(), "stale": False,
+                  "error": str(exc)[:200], "summary": {},
+                  "warnings": ["采集失败:%s" % str(exc)[:120]],
+                  "bridges": [], "checkin": {"tasks": []}, "free": {"models": []},
+                  "verify": {}, "credits": {"nodes": []}, "xhx_usage": {},
+                  "ocx": {}, "actions": []}
+    finally:
+        with _COLLECT_LOCK:
+            _COLLECT_CACHE["at"] = time.time()
+            _COLLECT_CACHE["value"] = result
+            _COLLECT_CACHE["refreshing"] = False
+            _COLLECT_CACHE["worker"] = None
 
 
 # --------------------------------------------------------------------------- #
@@ -1069,7 +1153,8 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
     <span class="meta" id="free-hidden"></span>
     <div class="row"><span class="meta" id="free-meta"></span></div>
     <div class="row"><span class="meta" id="free-credits-legend"></span></div>
-    <table><thead><tr><th>模型（选择器名）</th><th>免费</th><th>客户端积分</th><th>时段 / 说明</th><th>在选择器</th></tr></thead>
+    <div class="row"><span class="meta" id="free-code-legend"></span></div>
+    <table><thead><tr><th>模型（选择器名）</th><th>免费</th><th>客户端积分</th><th>写代码</th><th>时段 / 说明</th><th>在选择器</th></tr></thead>
     <tbody id="free-rows"></tbody></table>
     <div class="row" style="margin-top:8px"><span class="meta" id="free-gaps"></span></div>
   </div>
@@ -1163,14 +1248,17 @@ function render(){
     var vendor = n.vendor ? '<div class=dim>'+esc(n.vendor)+'</div>' : '';
     return '<tr><td><b>'+esc(n.node)+'</b>'+vendor+'</td>'
       +(n.up?pill('ok','up'):pill('bad','down'))
-      +'<td>'+esc(n.account||'-')+'</td><td>'+login
+      +'<td>'+esc(n.account||'-')
+      +(n.credits_accounts
+        ? '<div class=dim style="font-size:11px">'+esc(n.credits_accounts)+'</div>' : '')
+      +'</td><td>'+login
       +'<td>'+esc(n.credits_kind)+'</td><td>'+cred.trim()
       +'<td class=dim>'+esc(n.credits_source||'-')+'</td>'
       +'<td class=dim>'+esc(n.checkin||'-')+'</td></tr>';}).join('');
   document.getElementById('nc-rows').innerHTML = ncrows
     || '<tr><td colspan=8 class=dim>暂无数据</td></tr>';
   document.getElementById('nc-note').textContent =
-    '来源：各桥 /health · /ui/checkin（Buddy 加油站）· /entitlements（ZCode 额度）· 官方余额；口径见 free-windows.json';
+    '来源：各桥 /health · /health account_pool（小浣熊多账号积分）· /ui/checkin（Buddy 加油站）· /entitlements（ZCode 额度）· 官方余额；口径见 free-windows.json';
   var xu=s.xhx_usage||{};
   document.getElementById('xhx-path').textContent = xu.path||'';
   document.getElementById('xhx-note').textContent = xu.note||'';
@@ -1212,6 +1300,15 @@ function creditsKind(c){
   if(c==='own'){return 'idle';}
   return 'warn';
 }
+var CODE_BADGE_UI={FULL:'全过',PARTIAL:'部分',NORUN:'NO_RUN',DEAD:'断桥',none:'?'};
+var CODE_KIND={FULL:'ok',PARTIAL:'warn',NORUN:'warn',DEAD:'bad',none:'idle'};
+function codeKind(v){return CODE_KIND[(v==null?'none':v)]||'idle';}
+function codeTip(m){
+  if(!m.code_verdict){return '无实测记录：code_model_bench.py snapshot 未覆盖该模型';}
+  var s=(m.code_at||'?')+' · '+Math.round(m.code_seconds||0)+'s';
+  if(m.code_stale){s+=' · 测量已过期 stale';}
+  return m.code_verdict+' — '+s;
+}
 function unavailProvider(name){
   var b=null,i;
   for(i=0;i<(SNAP.bridges||[]).length;i++){if(SNAP.bridges[i].name===name){b=SNAP.bridges[i];break;}}
@@ -1231,11 +1328,14 @@ function renderFree(){
   var live=0;for(var k in (f.live_by_provider||{})){live+=f.live_by_provider[k];}
   var pick=0;for(var k2 in (f.picker_by_provider||{})){pick+=f.picker_by_provider[k2];}
   var cnt=[];for(var c in (f.counts||{})){cnt.push(f.counts[c]+' '+c);}
-  var ccnt=[];for(var c in (f.credits_counts||{})){ccnt.push(f.credits_counts[c]+' '+(CREDITS_BADGE[c]||c));}
-  var clg=document.getElementById('free-credits-legend');
+ var ccnt=[];for(var c in (f.credits_counts||{})){ccnt.push(f.credits_counts[c]+' '+(CREDITS_BADGE[c]||c));}
+  var ccode=[];for(var c2 in (f.code_counts||{})){ccode.push(f.code_counts[c2]+' '+(CODE_BADGE_UI[c2]||c2));}
+ var clg=document.getElementById('free-credits-legend');
   if(clg){clg.textContent='客户端积分口径：'+(f.legend&&f.legend.credits?Object.keys(f.legend.credits).map(function(k){
-    return (CREDITS_BADGE[k]||k)+'='+f.legend.credits[k];}).join('  ·  '):'');}
-  var co=document.getElementById('free-credits-only');
+   return (CREDITS_BADGE[k]||k)+'='+f.legend.credits[k];}).join('  ·  '):'');}
+  var klg=document.getElementById('free-code-legend');
+  if(klg){klg.textContent='写代码口径：两个真实编码任务的实测判定（code_model_bench snapshot）：全过=全分 · 部分=未全过 · NO_RUN=只出文本 · 断桥=不可达 · ?=无实测；超过 '+(f.code_stale_after_days||7)+' 天标 stale';}
+ var co=document.getElementById('free-credits-only');
   var creditsOnly=!!(co&&co.checked);
   var hide=document.getElementById('free-hide');
   var hiding=!!(hide&&hide.checked);
@@ -1250,14 +1350,15 @@ function renderFree(){
   var hk=Object.keys(hidden).map(function(k){return k+'('+hidden[k]+')';}).join(', ');
   var hh=document.getElementById('free-hidden');
   if(hh){hh.textContent=hiddenN?('已隐藏 '+hiddenN+' 个不可用模型 '+hk):'';}
-  meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+ccnt.join(' · ')+' · 显示 '+list.length+'/'+(creditsOnly?all.filter(function(m){return m.credits==='client';}).length:all.length);
+  meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+ccnt.join(' · ')+' · '+ccode.join(' · ')+' · 显示 '+list.length+'/'+(creditsOnly?all.filter(function(m){return m.credits==='client';}).length:all.length);
   rows.innerHTML=list.length?list.map(function(m){
-    return '<tr><td>'+esc(m.picker_name||m.picker_slug||m.model)+'</td>'+
-      '<td>'+pill(freeKind(m.free),m.badge)+'</td>'+
-      '<td title="'+esc(m.credits_note||'')+'">'+pill(creditsKind(m.credits),m.credits_badge||m.credits)+'</td>'+
-      '<td class="dim">'+esc(m.window)+'</td>'+
-      '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('')
-    : '<tr><td colspan="5" class="dim">当前无可用模型'+(hiding?'（可取消勾选「隐藏不可用」）':'')+'</td></tr>';
+   return '<tr><td>'+esc(m.picker_name||m.picker_slug||m.model)+'</td>'+
+     '<td>'+pill(freeKind(m.free),m.badge)+'</td>'+
+     '<td title="'+esc(m.credits_note||'')+'">'+pill(creditsKind(m.credits),m.credits_badge||m.credits)+'</td>'+
+      '<td title="'+esc(codeTip(m))+'">'+pill(codeKind(m.code_verdict),m.code_badge||'?')+'</td>'+
+     '<td class="dim">'+esc(m.window)+'</td>'+
+     '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('')
+    : '<tr><td colspan="6" class="dim">当前无可用模型'+(hiding?'（可取消勾选「隐藏不可用」）':'')+'</td></tr>';
   document.getElementById('free-gaps').textContent=(f.gaps||[]).map(function(g){
     return '['+g.provider+'] '+g.reason;}).join('   |   ');
 }

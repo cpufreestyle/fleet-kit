@@ -111,7 +111,7 @@ BRIDGES = [
     ("qwen",           "qwen2codex",             11, "qwen3.8-flash",              "QWEN2CODEX_KEY"),
     ("cline",          "cline2codex",           12, "cline-free/deepseek-v4.1-flash", "CLINE2CODEX_KEY"),
     ("zcode",          "zcode2codex",           13, "zcode/GLM-5.3-Flash",       "ZCODE2CODEX_KEY"),
-    ("kimi",           "kimi2codex",             15, "kimi/kimi-for-coding",     "KIMI2CODEX_KEY"),
+    ("kimi-code",      "kimi2codex",            15, "kimi/kimi-for-coding",     "KIMI2CODEX_KEY"),
     ("minimax",        "minimax2codex",          16, "minimax/MiniMax-M2.7",     "MINIMAX2CODEX_KEY"),
 ]
 

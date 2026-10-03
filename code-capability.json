@@ -1,0 +1,430 @@
+{
+ "version": 1,
+ "updated": "2026-10-03 15:15:29",
+ "stale_after_days": 7.0,
+ "note": "code_model_bench.py snapshot: FULL/PARTIAL/NORUN/DEAD per model",
+ "models": {
+  "workbuddy/deepseek-v4-flash": {
+   "bridge": "workbuddy",
+   "reachable": true,
+   "smoke": 1.6,
+   "total_seconds": 7.8,
+   "error": null,
+   "tasks": [
+    {
+     "task": "parse_window",
+     "score": [
+      8,
+      8
+     ],
+     "total": 8,
+     "no_runnable": false,
+     "score_str": "8/8",
+     "prose": 0,
+     "failures": [],
+     "note": null,
+     "seconds": 2.4
+    },
+    {
+     "task": "convert_anthropic_to_openai",
+     "score": [
+      7,
+      7
+     ],
+     "total": 7,
+     "no_runnable": false,
+     "score_str": "7/7",
+     "prose": 0,
+     "failures": [],
+     "note": null,
+     "seconds": 3.8
+    }
+   ],
+   "verdict": "FULL",
+   "measured_at": "2026-10-03 15:15:29"
+  },
+  "workbuddy/deepseek-v4.1-flash": {
+   "bridge": "workbuddy",
+   "reachable": true,
+   "smoke": 1.4,
+   "total_seconds": 7.0,
+   "error": null,
+   "tasks": [
+    {
+     "task": "parse_window",
+     "score": [
+      8,
+      8
+     ],
+     "total": 8,
+     "no_runnable": false,
+     "score_str": "8/8",
+     "prose": 0,
+     "failures": [],
+     "note": null,
+     "seconds": 2.0
+    },
+    {
+     "task": "convert_anthropic_to_openai",
+     "score": [
+      7,
+      7
+     ],
+     "total": 7,
+     "no_runnable": false,
+     "score_str": "7/7",
+     "prose": 0,
+     "failures": [],
+     "note": null,
+     "seconds": 3.6
+    }
+   ],
+   "verdict": "FULL",
+   "measured_at": "2026-10-03 15:15:29"
+  },
+  "workbuddy/deepseek-v4-pro": {
+   "bridge": "workbuddy",
+   "reachable": true,
+   "smoke": 1.6,
+   "total_seconds": 9.4,
+   "error": null,
+   "tasks": [
+    {
+     "task": "parse_window",
+     "score": [
+      8,
+      8
+     ],
+     "total": 8,
+     "no_runnable": false,
+     "score_str": "8/8",
+     "prose": 0,
+     "failures": [],
+     "note": null,
+     "seconds": 3.2
+    },
+    {
+     "task": "convert_anthropic_to_openai",
+     "score": [
+      7,
+      7
+     ],
+     "total": 7,
+     "no_runnable": false,
+     "score_str": "7/7",
+     "prose": 0,
+     "failures": [],
+     "note": null,
+     "seconds": 4.6
+    }
+   ],
+   "verdict": "FULL",
+   "measured_at": "2026-10-03 15:15:29"
+  },
+  "qoder/DeepSeek-V4-Pro": {
+   "bridge": "qoder",
+   "reachable": true,
+   "smoke": 1.5,
+   "total_seconds": 36.8,
+   "error": null,
+   "tasks": [
+    {
+     "task": "parse_window",
+     "score": [
+      8,
+      8
+     ],
+     "total": 8,
+     "no_runnable": false,
+     "score_str": "8/8",
+     "prose": 0,
+     "failures": [],
+     "seconds": 18.2
+    },
+    {
+     "task": "convert_anthropic_to_openai",
+     "score": [
+      7,
+      7
+     ],
+     "total": 7,
+     "no_runnable": false,
+     "score_str": "7/7",
+     "prose": 0,
+     "failures": [],
+     "seconds": 17.1
+    }
+   ],
+   "verdict": "FULL",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "trae/trae-seed-code-pro-0430": {
+   "bridge": "trae",
+   "reachable": true,
+   "smoke": 1.4,
+   "total_seconds": 83.0,
+   "error": "task2: TimeoutError('timed out after 45s')",
+   "tasks": [
+    {
+     "task": "parse_window",
+     "score": [
+      8,
+      8
+     ],
+     "total": 8,
+     "no_runnable": false,
+     "score_str": "8/8",
+     "prose": 0,
+     "failures": [],
+     "seconds": 32.1
+    }
+   ],
+   "verdict": "PARTIAL",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "xhx/xhx-sn-deepseek-v4-1-flash": {
+   "bridge": "xhx",
+   "reachable": true,
+   "smoke": 1.0,
+   "total_seconds": 15.0,
+   "error": null,
+   "tasks": [
+    {
+     "task": "parse_window",
+     "score": null,
+     "total": 8,
+     "no_runnable": true,
+     "score_str": null,
+     "prose": 337,
+     "failures": [],
+     "seconds": 7.2
+    },
+    {
+     "task": "convert_anthropic_to_openai",
+     "score": null,
+     "total": 7,
+     "no_runnable": true,
+     "score_str": null,
+     "prose": 337,
+     "failures": [],
+     "seconds": 6.7
+    }
+   ],
+   "verdict": "NORUN",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "xhx/xhx-sn-glm-5-3": {
+   "bridge": "xhx",
+   "reachable": true,
+   "smoke": 1.0,
+   "total_seconds": 38.4,
+   "error": null,
+   "tasks": [
+    {
+     "task": "parse_window",
+     "score": null,
+     "total": 8,
+     "no_runnable": true,
+     "score_str": null,
+     "prose": 3,
+     "failures": [],
+     "seconds": 18.9
+    },
+    {
+     "task": "convert_anthropic_to_openai",
+     "score": null,
+     "total": 7,
+     "no_runnable": true,
+     "score_str": null,
+     "prose": 3,
+     "failures": [],
+     "seconds": 18.5
+    }
+   ],
+   "verdict": "NORUN",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "xhx/xhx-sn-kimi-k3": {
+   "bridge": "xhx",
+   "reachable": true,
+   "smoke": 1.0,
+   "total_seconds": 38.5,
+   "error": null,
+   "tasks": [
+    {
+     "task": "parse_window",
+     "score": null,
+     "total": 8,
+     "no_runnable": true,
+     "score_str": null,
+     "prose": 1071,
+     "failures": [],
+     "seconds": 18.8
+    },
+    {
+     "task": "convert_anthropic_to_openai",
+     "score": null,
+     "total": 7,
+     "no_runnable": true,
+     "score_str": null,
+     "prose": 1071,
+     "failures": [],
+     "seconds": 18.7
+    }
+   ],
+   "verdict": "NORUN",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "codely/codely-core": {
+   "bridge": "codely",
+   "reachable": true,
+   "smoke": 0.9,
+   "total_seconds": 11.2,
+   "error": null,
+   "tasks": [
+    {
+     "task": "parse_window",
+     "score": null,
+     "total": 8,
+     "no_runnable": true,
+     "score_str": null,
+     "prose": 0,
+     "failures": [],
+     "seconds": 5.4
+    },
+    {
+     "task": "convert_anthropic_to_openai",
+     "score": null,
+     "total": 7,
+     "no_runnable": true,
+     "score_str": null,
+     "prose": 0,
+     "failures": [],
+     "seconds": 4.9
+    }
+   ],
+   "verdict": "NORUN",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "workbuddy-gpt/hy4-preview": {
+   "bridge": "workbuddy-gpt",
+   "reachable": false,
+   "smoke": null,
+   "total_seconds": null,
+   "error": "smoke: HTTPError('http://127.0.0.1:8788/v1/chat/completions', 429, 'Service Unavailable', ...)",
+   "tasks": [],
+   "verdict": "DEAD",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "workbuddy-gpt/hy3": {
+   "bridge": "workbuddy-gpt",
+   "reachable": false,
+   "smoke": null,
+   "total_seconds": null,
+   "error": "smoke: HTTPError('http://127.0.0.1:8788/v1/chat/completions', 503, 'Service Unavailable', ...)",
+   "tasks": [],
+   "verdict": "DEAD",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "workbuddy-gpt/gpt-5.3-codex": {
+   "bridge": "workbuddy-gpt",
+   "reachable": false,
+   "smoke": null,
+   "total_seconds": null,
+   "error": "smoke: HTTPError('http://127.0.0.1:8788/v1/chat/completions', 503, 'Service Unavailable', ...)",
+   "tasks": [],
+   "verdict": "DEAD",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "cline/cline-free/deepseek-v4.1-flash": {
+   "bridge": "cline",
+   "reachable": false,
+   "smoke": null,
+   "total_seconds": null,
+   "error": "smoke: HTTPError('http://127.0.0.1:8799/v1/chat/completions', 502, 'Service Unavailable', ...)",
+   "tasks": [],
+   "verdict": "DEAD",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "cline/stealth/pixel-canary": {
+   "bridge": "cline",
+   "reachable": false,
+   "smoke": null,
+   "total_seconds": null,
+   "error": "smoke: HTTPError('http://127.0.0.1:8799/v1/chat/completions', 502, 'Service Unavailable', ...)",
+   "tasks": [],
+   "verdict": "DEAD",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "lingxi/lingxi/deepseek-flash": {
+   "bridge": "lingxi",
+   "reachable": true,
+   "smoke": 2.1,
+   "total_seconds": 12.0,
+   "error": "task1: HTTPError('http://127.0.0.1:8792/v1/chat/completions', 429, ...)",
+   "tasks": [],
+   "verdict": "DEAD",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "kimi-code/kimi-for-coding": {
+   "bridge": "kimi-code",
+   "reachable": false,
+   "smoke": null,
+   "total_seconds": null,
+   "error": "smoke: HTTPError('http://127.0.0.1:8802/v1/chat/completions', 503, 'Service Unavailable', ...)",
+   "tasks": [],
+   "verdict": "DEAD",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "qwen/qwen3.8-max": {
+   "bridge": "qwen",
+   "reachable": false,
+   "smoke": null,
+   "total_seconds": null,
+   "error": "smoke: HTTPError('http://127.0.0.1:8798/v1/chat/completions', 503, 'Service Unavailable', ...)",
+   "tasks": [],
+   "verdict": "DEAD",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "gemini/gemini-3-flash-preview": {
+   "bridge": "gemini",
+   "reachable": false,
+   "smoke": null,
+   "total_seconds": null,
+   "error": "smoke: HTTPError('http://127.0.0.1:8794/v1/chat/completions', 502, 'Service Unavailable', ...)",
+   "tasks": [],
+   "verdict": "DEAD",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "zcode/GLM-5.3": {
+   "bridge": "zcode",
+   "reachable": false,
+   "smoke": null,
+   "total_seconds": null,
+   "error": "smoke: HTTPError('http://127.0.0.1:8800/v1/chat/completions', 503, 'Service Unavailable', ...)",
+   "tasks": [],
+   "verdict": "DEAD",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "catpaw/deepseek-v3.2": {
+   "bridge": "catpaw",
+   "reachable": false,
+   "smoke": null,
+   "total_seconds": null,
+   "error": "smoke: HTTPError('http://127.0.0.1:8795/v1/chat/completions', 502, 'Service Unavailable', ...)",
+   "tasks": [],
+   "verdict": "DEAD",
+   "measured_at": "2026-10-03 15:14:58"
+  },
+  "antigravity/claude-sonnet-4-5@20250929": {
+   "bridge": "antigravity",
+   "reachable": false,
+   "smoke": null,
+   "total_seconds": null,
+   "error": "smoke: HTTPError('http://127.0.0.1:8797/v1/chat/completions', 502, 'Service Unavailable', ...)",
+   "tasks": [],
+   "verdict": "DEAD",
+   "measured_at": "2026-10-03 15:14:58"
+  }
+ }
+}

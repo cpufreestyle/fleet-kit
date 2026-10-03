@@ -1,6 +1,6 @@
 # xhx2codex Runbook — 商汤小浣熊（SenseTime Raccoon）反代理到 Codex
 
-日期：2026-09-25 | 状态：**全链路已通**（桥 / ocx / 官方 CLI 三处实测 200）
+日期：2026-09-25 | 状态：**全链路已通**（桥 / ocx / 官方 CLI 三处实测 200）｜2026-10-03 升级 v0.2.0 多账号池，见「多账号池与积分余额」
 
 ## 架构（实测）
 ```
@@ -38,12 +38,73 @@ Codex 官方 CLI/桌面 → ocx(:10100) → xhx2codex 桥(:8793) → https://xia
 | `sn-sensenova-6-8-flash` | SenseNova-6.8-Flash | 256k | 64k | 0.5 |
 | `sn-sensenova-6-8-flash-lite` | SenseNova-6.8-Flash-Lite | 256k | 64k | 0.5 |
 
+## 多账号池与积分余额（v0.2.0，2026-10-03）
+
+**为什么要有池**：官方 `refresh_token` 是单次轮换，桌面 app 刷新会与桥互相顶号；
+`~/.box-agent/config/auth.json` 一旦被 app 清空/重写，全节点就报「小浣熊未登录」。
+`bridges/xhx/account_pool.py` 因此在桥自己的 `auths/` 目录持有账号副本
+（`import_current` 从官方登录**一次性单向拷贝**），**绝不写官方目录**
+（池构造时硬禁 auths dir 等于/位于官方登录目录下）。
+
+**池文件**：`$XHX_AUTH_POOL_DIR`（默认 `<桥目录>/auths/`，部署态 `<FLEET_HOME>/bridges/xhx/auths/`）：
+- `xhx-<ref16>.json`：单账号会话副本（access/refresh/account_uid/name），原子写、0600。
+  `ref16 = sha256(uid)[:16]`；uid 是稳定账号键（stored account_uid > JWT sid），跨 token 轮换不变。
+- `pool-state.json`：primary/active 指向 + 每账号冷却与积分缓存
+  （`cooldown_until / reason / failures / last_used / points / daily_points / reward_points / points_ts`）。
+
+**请求选号**：`candidates()` 按 primary → active → 最久未用排序，跳过冷却中账号；请求失败即
+记冷却并切下一个账号重试，成功 `mark_success` 置 active。首个 401/403 会先无条件换号再试一次
+（覆盖 access_token 边缘过期）。
+
+**失败冷却表**（`_account_failure`，秒）：
+
+| 上游表现 | 原因 | 冷却 |
+|---|---|---|
+| 402 / insufficient_points / 积分·余额不足 | 账号积分不足 | 3600 |
+| 401/403 / refresh_conflict / 200822 / token expired·invalid | 登录态失效，等待重新认证或刷新 | 600 |
+| 429 / rate limit / too many requests / 限流 | 账号触发限流 | 60 |
+| 5xx | 上游 HTTP 5xx | 30 |
+| 网络异常 | 上游网络错误 | 30 |
+
+**积分余额**：每账号 `GET /api/web/points/v1/balance` 只读快照落 `pool-state.json`
+（TTL 300s，`/health` 触发异步刷新；`POST /admin/pool/points` 强制刷新）。
+注意 `llm/v2` 聊天链路本身不扣积分（见下节），此积分是账号资产快照，
+也是 `insufficient_points` 熔断时「哪个账号还能用」的判据。
+
+**管理端点**（都要 `Authorization: Bearer $XHX2CODEX_KEY`）：
+
+```bash
+KEY=$XHX2CODEX_KEY   # ~/.zshrc
+# 导入桌面 app 当前登录（幂等：同账号刷 token，新账号追加）
+curl -s -X POST http://127.0.0.1:8793/admin/pool/import  -H "Authorization: Bearer $KEY"
+# 强制刷新所有账号积分
+curl -s -X POST http://127.0.0.1:8793/admin/pool/points   -H "Authorization: Bearer $KEY"
+# 指定主账号 / 移除账号 / 重载池
+curl -s -X POST   http://127.0.0.1:8793/admin/pool/<ref>/primary -H "Authorization: Bearer $KEY"
+curl -s -X DELETE http://127.0.0.1:8793/admin/pool/<ref>           -H "Authorization: Bearer $KEY"
+curl -s -X POST   http://127.0.0.1:8793/admin/pool/reload          -H "Authorization: Bearer $KEY"
+```
+
+**加第二账号**：在「商汤小浣熊」桌面 app 登录另一账号（app 会重写官方 auth.json），
+然后 `POST /admin/pool/import` 把它拷进池——**RT 单次轮换无法伪造，导入必须走真实桌面登录**。
+导完跑一次 `/admin/pool/points` 刷新积分；`/health` 的 `account_pool.status[]` 每账号一行
+（name / 脱敏 uid / state=ready|cooling|expired|error / points / primary / active / cooldown_until）。
+
+**面板呈现**：`node_credits.py` 的 xhx 行优先读桥 `/health` 的 `account_pool`（读不到才回落官方
+auth.json），多账号时汇总成 `A <available> / B <available>` 简字串；`status_ui.py` 账号单元格下
+渲染每账号积分小字行。
+
+**凭据分家**：池与`checkin.py` 的 xhx 签到各持一套登录（签到走官方 auth.json，池走 auths/ 副本），
+别互相手工覆盖。
+
 ## 排坑记录（重要）
 1. **refresh_token 单次轮换**：每次刷新都换发新 RT，旧 RT 立即失效（code 200822 refresh_conflict）。
-   桥的 `refresh_token()` 成功后立即原子写回 auth.json（保留 office_identity 等字段，0600 权限）；
-   若 401 时刷新冲突，会重新读盘拿桌面端可能已重同步的新 token。
-   **不要在桥外手动调 refresh 而不落盘**——会把轮换链烧断（本次排查时烧过一次，靠重启桌面 app 自动重同步恢复）。
-2. 桌面 app 启动时会**删除并重写** `~/.box-agent/config/auth.json`；桥不缓存 token，每次请求读盘。
+   池化后轮换**只写池文件**（`auths/xhx-<ref16>.json` 原子写、0600），绝不写官方 auth.json；
+   desktop app 顶号只影响它自己那份，桥不再跟着掉线。
+   **不要在桥外手动调 refresh 而不落盘**——会把轮换链烧断（历史教训：烧过一次，靠重启桌面 app 自动重同步恢复）。
+2. 桌面 app 启动时会**删除并重写** `~/.box-agent/config/auth.json`；池化后桥不读官方文件
+   （仅 `/admin/pool/import` 拷贝时读一次），app 顶号不再影响在役账号。
+   池内每账号会话常驻内存，access_token 临期 120s（`XHX_REFRESH_MARGIN`）前自动单次轮换刷新。
 3. 模型多为推理模型：`max_tokens` 给太小（如 64）会全耗在 reasoning 上、content 为空、finish_reason=length；
    验证时给 1024。
 4. `ocx provider add xhx` 后需手动给 `~/.opencodex/config.json` 的 xhx 条目加 `"allowPrivateNetwork": true`；
@@ -61,7 +122,7 @@ codex exec -c model_provider=xhx -m "xhx/xhx-sn-glm-5-3-flash" "..."   # 官方 
 ```
 
 ## 未动/警告
-- 商汤小浣熊桌面 app 当前在后台运行（保持 token 自动同步；若桥偶发 401 可重开 app）
+- 商汤小浣熊桌面 app 当前在后台运行（池化后桥已不依赖它；仍需要它的是 xhx 每日签到，以及添加新账号时当 import 源）
 - workbuddy（8787/8788）、qoder（8789）、codely（8790）、trae（8791）、lingxi（8792）桥保持运行
 
 ## 计费真相（2026-09-29 实测）：这条链路不扣积分

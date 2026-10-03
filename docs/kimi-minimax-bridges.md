@@ -55,7 +55,7 @@ CN 主机上也是同样的 401。所以 minimax 桥的 401 提示里同时给�
 Kimi 桌面版把签发出去的 coding key 存在
 ~/Library/Application Support/kimi-desktop/daimon-share/daimon/kimi-code-key.json。
 本桥在 KIMI_CODING_API_KEY 没给时回落到那份文件（只读），所以这台机器上
-finish.sh kimi 之后直接就能用，不用手贴 key。
+finish.sh kimi-code 之后直接就能用，不用手贴 key。
 
 - KIMI_UPSTREAM_KEY_FILE=<path> 指定别的位置
 - KIMI_NO_APP_KEY=1 关掉回落（测试、或不想读 app 存储时）
@@ -65,7 +65,7 @@ finish.sh kimi 之后直接就能用，不用手贴 key。
 ## 安装与使用
 
     bash install.sh --skip-deps --home '<FleetKit>/runtime'   # 同步代码 + 装服务
-    bash bridges/finish.sh kimi --home '<FleetKit>/runtime'   # 重启 + 注入 catalog
+    bash bridges/finish.sh kimi-code --home '<FleetKit>/runtime'   # 重启 + 注入 catalog
     bash bridges/finish.sh minimax
     bash tools/status.sh               # 看两座桥的健康与 key 状态
 
@@ -113,6 +113,71 @@ Codex 里模型以 kimi/kimi-for-coding、minimax/MiniMax-M2.7 出现。
     launchctl kickstart -k gui/$(id -u)/com.opencodex.proxy
 
 磁盘上的 opencodex-catalog.json 是对的，只有跑着的代理是旧的。
+
+
+## 账号池：积分品牌的统一契约
+
+kimi 与 minimax 都接上 bridges/plan_key_pool.py 的 KeyPool 契约（xhx/workbuddy
+同款），先把 key 池化，调用时才决定用哪把：
+
+    pool = KeyPool(brand, auth_dir, seed=lambda: read_keys(), read_points=reader)
+    verdict = request_with_pool(pool, send, classify)
+
+契约行为：
+
+- 200 -> mark_success，这把 key 升为活跃
+- 非 200 先过 classify：有 verdict -> mark_failure 并换下一把 key；
+  无 verdict 原样返回上游响应
+- 异常 -> PoolUnavailable（没 key）/ PoolExhausted（failures 里带每把 key 的
+  (ref, status, body, reason, tag)）
+
+classify 的 tag 分六类：key_dead / plan_inactive / forbidden / rate_limit /
+upstream_5xx / transport。两个桥的差异只有归类口径：
+
+- kimi：403 access_terminated_error = plan_inactive（套餐过期，key 本身是好的，
+  单独措辞提示续费）
+- minimax：401 = key_dead（提示里同时给换 key 和 MINIMAX_UPSTREAM 指到
+  https://api.minimax.io/v1 两条路），403 = forbidden
+
+播种 key（默认读 codex auth.json 里已有的账号 key，也可以用环境变量追加）：
+
+    KIMI_API_KEYS=sk-a,sk-b     # 逗号分隔，追加为主 key 源
+    MINIMAX_API_KEYS=sk-a,sk-b  # 同上
+
+配额读取器返回 {"points","unit","plan","detail","error"}，tools/node_credits.py
+按节点汇总，两座桥的 /health 里都有 account_pool 段（key 数、当前活跃 ref、
+熔断剩余秒数）。
+
+## 移植清单：机队每个积分品牌的池状态
+
+契约只对「有多份可互换凭据」的品牌有意义——一把 key 的桥没有可切换的对象。
+下表按 node_credits.py 的全量输出逐节点给出结论（2026-10-03）：
+
+| 节点            | 积分口径     | 池状态                                        |
+|-----------------|--------------|-----------------------------------------------|
+| workbuddy       | client       | 已移植（account_pool.py，样板）               |
+| workbuddy-gpt   | client       | 已移植（与 workbuddy 共用 core.py，auths 独立）|
+| xhx             | client       | 已移植（account_pool.py，v0.2.1 显式加载）    |
+| kimi-code       | subscription | 已移植（plan_key_pool.py，v1.2.0）            |
+| minimax         | subscription | 已移植（plan_key_pool.py，v1.2.0，缺 key）    |
+| gemini          | limit        | 自有 GeminiAccountPool（多谷歌账号轮换）      |
+| zcode           | client       | 单 JWT + 自带 captcha 票据池，见下            |
+| codely          | client       | 单会话，上游无余额端点                        |
+| trae            | client       | 单会话，上游无余额端点                        |
+| lingxi          | client       | 单会话，上游无余额端点                        |
+| qoder           | limit        | 单 IDE 账号，上游未提供余额接口               |
+| cline           | limit        | 单会话，上游无余额端点                        |
+| catpaw          | unknown      | 上游未提供余额接口                            |
+| antigravity     | limit        | 上游未提供余额接口                            |
+| stepfun         | own          | ocx 网关 provider，无本地 client 积分         |
+| tokendance      | own          | ocx 网关 provider，无本地 client 积分         |
+
+zcode 单独说明：它确实燃烧套餐（ZCode Trust Build 100M tokens），但凭据只有
+~/.zcode/v2/credentials.json 里的一把 OAuth JWT（safeStorage 加密，脱离本机
+桌面端拿不到第二把），没有可轮换的凭据面。它真正的失败轴是每次调用都要消耗的
+一次性 captchaVerifyParam——这条轴已经由 captcha 票据池（captcha-mint /
+captcha-relay :8910 / captcha-pool-keeper.sh）解决，与 KeyPool 是不同的旋转轴，
+不重复实现。
 
 ## 测试
 

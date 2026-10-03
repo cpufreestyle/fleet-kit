@@ -70,8 +70,8 @@ except Exception:                                        # pragma: no cover
 
 NODE_ORDER = ("workbuddy", "workbuddy-gpt", "xhx", "zcode", "qoder", "codely",
               "trae", "lingxi", "cline", "qwen", "gemini", "catpaw",
-              "antigravity", "kimi", "minimax", "stepfun", "tokendance",
-              "kimi-code", "minimax-code")
+              "antigravity", "stepfun", "tokendance",
+              "kimi-code", "minimax")
 
 VENDORS = {
     "workbuddy": "腾讯云代码助手 CodeBuddy（国内版）",
@@ -87,12 +87,10 @@ VENDORS = {
     "qwen": "阿里 Qwen（MaaS）",
     "cline": "Cline（cline.bot 免费档）",
     "zcode": "智谱 Z.AI Coding（ZCode）",
-    "kimi": "月之暗面 Kimi Code（kimi 桥）",
-    "minimax": "MiniMax（minimax 桥）",
     "stepfun": "阶跃星辰 StepFun（ocx 原生）",
     "tokendance": "TokenDance 词元跳动（ocx 原生）",
     "kimi-code": "月之暗面 Kimi Code（coding 套餐）",
-    "minimax-code": "MiniMax（编程套餐 / Agent）",
+    "minimax": "MiniMax（编程套餐 / Agent）",
 }
 
 # Which upstream facts each bridge reports, and where. The bridges disagree on
@@ -416,11 +414,11 @@ def credits_kind(name):
 # plan gets cancelled without anyone noticing.
 PLAN_ACCOUNTS = {
     "kimi-code": {"vendor": "月之暗面 Kimi Code（coding 套餐）",
-                  "env": "KIMI_CODING_API_KEY", "plan": "kimi"},
-    # "minimax-code", not "minimax": the fleet's minimax *bridge* node owns the
-    # plain name (fleet_probe.PORTS), and one name cannot be two rows.
-    "minimax-code": {"vendor": "MiniMax（编程套餐 / Agent）",
-                     "env": "MINIMAX_API_KEY", "plan": "minimax"},
+                  "env": "KIMI_CODING_API_KEY", "plan": "kimi",
+                  "port": 8802},
+    "minimax": {"vendor": "MiniMax（编程套餐 / Agent）",
+                "env": "MINIMAX_API_KEY", "plan": "minimax",
+                "port": 8803},
 }
 
 
@@ -592,11 +590,92 @@ def _refusal_text(out):
     return str(body)[:80]
 
 
+def _pool_accounts_row(name, row):
+    """(row, True) filled from the bridge's own account pool, else (row, False).
+
+    Kimi and MiniMax are subscription-keyed, not login-keyed, so a second
+    account is added to the bridge's pool rather than to a profile. The pool
+    is what the bridge actually burns, which makes /health the one place
+    that names every usable account and what each has left; the single key
+    plan_key() finds in the environment cannot say any of that.
+
+    A key minted for pay-as-you-go billing has no Token Plan behind it, so
+    its balance simply is not published -- the row says that instead of
+    showing a zero the platform never reported.
+    """
+    port = PLAN_ACCOUNTS[name].get("port")
+    if not port:
+        return row, False
+    status, health = _get("http://127.0.0.1:%d/health" % port)
+    if status != 200 or not isinstance(health, dict):
+        return row, False
+    accounts = [item for item in ((health.get("account_pool") or {}).get("accounts") or [])
+                if isinstance(item, dict)]
+    if not accounts:
+        return row, False
+    primary = next((item for item in accounts if item.get("primary")), accounts[0])
+    priced = [item for item in accounts if item.get("points") is not None]
+    total = sum(_num(item.get("points")) or 0 for item in priced)
+
+    def label(item):
+        value = _num(item.get("points"))
+        return "%s %s%s" % (item.get("name") or "account",
+                            _pretty(value) if value is not None else "?",
+                            " (cooling)" if item.get("state") == "cooling" else "")
+
+    if len(accounts) > 1:
+        # One line the panel can put under the account name: a pool burns
+        # accounts one by one, so "which ones, how much each" is the question
+        # a multi-account row has to answer.
+        row["credits_accounts"] = " / ".join(
+            "%s %s" % (item.get("name") or "account",
+                       _pretty(_num(item.get("points")))
+                       if _num(item.get("points")) is not None else "?")
+            for item in accounts)
+    row["up"] = True
+    row["logged_in"] = True
+    row["account"] = primary.get("name") or ""
+    row["credits_value"] = _num(primary.get("points"))
+    row["credits_unit"] = (primary.get("points_unit")
+                           or ("points" if priced else ""))
+    row["credits_source"] = "bridge /health account_pool"
+    plan = PLAN_ACCOUNTS[name]["plan"]
+    detail = " / ".join(label(item) for item in accounts)
+    if plan == "kimi":
+        row["credits_note"] = (
+            "Kimi Code coding plan remaining points (GET /coding/v1/usages); "
+            "%d account(s), %s points total: %s"
+            % (len(accounts), _pretty(total), detail)
+            if priced else
+            "%d account(s) (%s); /coding/v1/usages returned no points number, "
+            "only a subscription key has a balance to read, a pay-as-you-go key "
+            "only shows up when it starts answering 403"
+            % (len(accounts), detail))
+    else:
+        row["credits_note"] = (
+            "MiniMax Token Plan remaining (GET /v1/token_plan/remains, needs a "
+            "subscription Key); %d account(s), %s total: %s"
+            % (len(accounts), _pretty(total), detail)
+            if priced else
+            "%d account(s) (%s); the balance route only accepts a subscription "
+            "Key, a pay-as-you-go key has no balance to read, so the only signal "
+            "left is a one-token chat call"
+            % (len(accounts), detail))
+    row["checkin"] = "upstream has no daily check-in endpoint (quota is read-only, see plan_credits.py)"
+    row["detail"] += "; account_pool %d account(s)" % len(accounts)
+    if health.get("key_source"):
+        row["detail"] += "; key from %s" % health["key_source"]
+    return row, True
+
+
 def read_plan_account(name):
     row = _row(name)
     row["vendor"] = PLAN_ACCOUNTS[name]["vendor"]
     row["credits_kind"] = "subscription"
     row["checkin"] = "上游无每日签到端点（额度只读，见 plan_credits.py）"
+    row, from_pool = _pool_accounts_row(name, row)
+    if from_pool:
+        return row
     key, source, why = plan_key(name)
     row["credits_source"] = "plan_credits（%s）" % (source or "无凭据")
     if not key:
@@ -647,10 +726,11 @@ def read_plan_account(name):
 def _row(name):
     return {"node": name, "vendor": VENDORS.get(name, name), "up": False,
             "account": "", "plan": "", "logged_in": None,
-            "credits_kind": credits_kind(name), "credits_value": None,
-            "credits_unit": "", "credits_source": "", "credits_note": "",
-            "checked_in": None, "checkin": "", "streak_days": None,
-            "detail": ""}
+           "credits_kind": credits_kind(name), "credits_value": None,
+           "credits_unit": "", "credits_source": "", "credits_note": "",
+           "credits_accounts": None,
+           "checked_in": None, "checkin": "", "streak_days": None,
+           "detail": ""}
 
 
 def read_node(name):
@@ -771,14 +851,47 @@ def read_node(name):
         return row
 
     if name == "xhx":
+        row["detail"] += "；models %d" % len(health.get("models") or [])
+        # The bridge owns an account pool (bridges/xhx/account_pool.py). Its
+        # /health carries per-account points, which beats the single official
+        # auth.json read: the pool keeps answering after the desktop app
+        # rotates or clears its own login.
+        pool = health.get("account_pool") or {}
+        accounts = [item for item in (pool.get("accounts") or [])
+                    if isinstance(item, dict)]
+        priced = [item for item in accounts if item.get("points") is not None]
+        if priced:
+            primary = next((item for item in accounts if item.get("primary")),
+                           accounts[0])
+            total = sum(_num(item.get("points")) or 0 for item in priced)
+            per = " / ".join(
+                "%s %s%s" % (item.get("name") or "账号",
+                             _pretty(_num(item.get("points"))) or "?",
+                             "（冷却中）" if item.get("state") == "cooling" else "")
+                for item in accounts)
+            if len(accounts) > 1:
+                # one line the panel can show under the account name: a pool
+                # burns accounts one by one, so "which ones, how much each"
+                # is the question a multi-account row has to answer.
+                row["credits_accounts"] = " / ".join(
+                    "%s %s" % (item.get("name") or "账号",
+                               _pretty(_num(item.get("points"))) or "?")
+                    for item in accounts)
+            row["credits_value"] = _num(primary.get("points"))
+            row["credits_unit"] = "points"
+            row["credits_source"] = "bridge /health account_pool"
+            row["credits_note"] = ("每日签到发放；llm/v2 调用不结算积分；"
+                                   "账号 %d 个共 %s points：%s"
+                                   % (len(accounts), _pretty(total), per))
+            row["checkin"] = "见签到面板（每日登录积分）"
+            return row
         points = xhx_points()
         if points.get("ok"):
             data = points.get("data") or {}
             row["credits_value"] = _num(data.get("available_points"))
             row["credits_unit"] = "points"
             row["credits_source"] = "xiaohuanxiong /api/web/points/v1/balance"
-            row["credits_note"] = "每日签到发放；llm/v2 调用不结算积分"
-            row["detail"] += "；models %d" % len(health.get("models") or [])
+            row["credits_note"] = "每日签到发放；llm/v2 调用不结算积分（账号池余额暂不可读，回落官方登录态）"
         else:
             row["credits_note"] = "%s（%s）" % (NO_BALANCE_NOTE,
                                               points.get("detail") or "未知")

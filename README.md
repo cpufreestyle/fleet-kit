@@ -346,10 +346,16 @@ ocx live、Codex catalog 合并输出。改标注只改 JSON，不用动代码�
     python3 tools/free_models.py --json                   # 机器可读（状态面板同源）
     python3 tools/free_models.py --check-sources          # 官网来源可达性
 
-状态面板（8796）的「模型标注」区块：免费徽标 + **客户端积分徽标** + 时段 + 是否在选择器，
+状态面板（8796）的「模型标注」区块：免费徽标 + **客户端积分徽标** + **写代码徽标** + 时段 + 是否在选择器，
 与 CLI 同源；积分单元格 hover 显示该行积分口径来源（如「codely 月度免费点数优先扣」）。
 两个开关：「隐藏不可用」（探测即停或 verdict≠REAL 的 provider）、
 「只看走客户端积分」（只列 `client` 行，方便排查额度耗尽）。
+
+「写代码」列（2026-10-03 新增）：徽标来自 `code_model_bench.py snapshot` 的实测判定
+（全过 / 部分 / NO_RUN / 断桥 / `?` = 无实测），hover 显示判定、实测日期与耗时；
+快照落盘 `kit/code-capability.json`，单桥 snapshot 不清空其他模型的旧记录，超过
+7 天（`stale_after_days`）标 stale 但不丢弃。实测方法与命令见
+`docs/code-model-selection.md`。
 
 ### 哪些走客户端积分（2026-09-29 按官网/桥代码核实）
 
@@ -420,12 +426,16 @@ sensenova 直接去掉、gpt- 前缀去掉等）。效果示例：
 ### 默认模型
 
 Codex 启动时选中的模型由 `~/.codex/config.toml` 的 `model` 键决定（值填 catalog slug）。
-当前默认 `stepfun/step-5-preview`：StepFun 阶跃星辰**官方 Plan API**
+当前默认 `workbuddy/deepseek-v4-flash`（2026-10-03 起）：全机队 21 个模型
+实测里唯一能稳定写出本仓库代码的路线，两道 FleetKit 真实代码题 8/8 + 7/7、
+prose 0、单轮 7.5s，端到端过网关 10100 实测 `E2E_OK`。选型依据见
+docs/code-model-selection.md。
+港湾仍是 `stepfun/step-5-preview`：StepFun 阶跃星辰**官方 Plan API**
 （`https://api.stepfun.com/step_plan/v1`），不经本地桥、直连官方，上下文 1M
-（ocx 记 1000000）。此前默认走 trae 桥 8791 的 `trae/trae-step-5-preview`
-（选择器显示 `trae/step-5-pv`），该桥上游已挂（401→502）后切到官方直连；
-tokendance 同款 `step-5-preview` 也因 key 401 不可用。接入细节与两个坑见
-docs/stepfun2codex-runbook.md。
+（ocx 记 1000000），默认路线死时由守卫跳回它。此前默认走 trae 桥 8791 的
+`trae/trae-step-5-preview`（选择器显示 `trae/step-5-pv`），该桥上游已挂
+（401→502）后切到官方直连；tokendance 同款 `step-5-preview` 也因 key 401
+不可用。接入细节与两个坑见 docs/stepfun2codex-runbook.md。
 `setup-providers.sh` 在最后一次 `ocx sync` 之后重新 pin 这个键——CC Switch 和
 `ocx provider add --force` 都会重写 config.toml，不 pin 默认模型会被打回。
 改默认：`fleet.env` 里设 `FLEET_DEFAULT_MODEL=<slug>`，或直接手改 config.toml。
@@ -665,8 +675,8 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 
 1. **tokendance（step-5 备选路线）**：API key 已失效——网关聊天端点返回
   401「API 密钥不存在」（/v1/models 列表端点是公开的，所以模型照样列得出）。
-  默认模型已切到 StepFun 官方 Plan API 的 `stepfun/step-5-preview`
-  （见「默认模型」一节）；
+  默认模型当时已切到 StepFun 官方 Plan API 的 `stepfun/step-5-preview`，
+  2026-10-03 起改为 `workbuddy/deepseek-v4-flash`（见「默认模型」一节）；
   key 重建后若想切回，改 `fleet.env` 的 `FLEET_DEFAULT_MODEL` 再跑一次
   `setup-providers.sh`。重建：tokendance.space 控制台重新生成 key，
   然后 `ocx provider add tokendance --adapter openai-chat --base-url
@@ -838,6 +848,11 @@ timer；`status` 报 watchdog 安装态和当前 strikes，health 的 `watchdog`
 Codex 选择器按 catalog 里的文件顺序渲染，所以一个死桥会把可用模型挤出首屏。
 `catalog_sort.py` 按实测可达性重排：**可达 provider 在最前**（顺序取 `--order`），
 其后是未测量过的，最后才是实测不可达的。
+
+但置顶优先于可达性：LEAD_SLUGS（可用 FLEET_FIRST_MODEL 覆盖）固定排在全部行最前，
+默认即 2026-10-03 双题实测满分的 workbuddy 三兄弟 deepseek-v4-flash、
+deepseek-v4.1-flash、deepseek-v4-pro（依据见 docs/code-model-selection.md）；
+DEFAULT_ORDER 也从同一天起把 workbuddy 调到 provider 顺序最前。
 
     python3 tools/catalog_sort.py --dry-run      # 只看新顺序
     python3 tools/catalog_sort.py                # 写入

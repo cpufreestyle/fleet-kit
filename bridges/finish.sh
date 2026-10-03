@@ -6,7 +6,7 @@
 # and runs a one-shot smoke chat.
 #
 # Usage: finish.sh <name> [--home DIR] [--tries N] [--skip-chat] [-h|--help]
-#   names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode kimi minimax
+#   names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode kimi-code minimax
 set -euo pipefail
 
 NAME=""
@@ -50,7 +50,7 @@ done
 
 if [ -z "$NAME" ]; then
   echo "bridge name required" >&2
-  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode kimi minimax" >&2
+  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode kimi-code minimax" >&2
   exit 1
 fi
 
@@ -115,12 +115,12 @@ antigravity|antigravity2codex|10|antigravity|ANTIGRAVITY2CODEX_KEY|antigravity_b
 qwen|qwen2codex|11|qwen|QWEN2CODEX_KEY|QWEN
 cline|cline2codex|12|cline|CLINE2CODEX_KEY|cline_bridge.py
 zcode|zcode2codex|13|zcode|ZCODE2CODEX_KEY|zcode_bridge.py
-kimi|kimi2codex|15|kimi|KIMI2CODEX_KEY|KIMI
+kimi-code|kimi2codex|15|kimi|KIMI2CODEX_KEY|KIMI
 minimax|minimax2codex|16|minimax|MINIMAX2CODEX_KEY|MINIMAX
 CASES
 if [ -z "$found" ]; then
   echo "unknown bridge: $NAME" >&2
-  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode kimi minimax" >&2
+  echo "names: workbuddy workbuddy-gpt qoder codely trae lingxi xhx gemini catpaw antigravity qwen cline zcode kimi-code minimax" >&2
   exit 1
 fi
 
