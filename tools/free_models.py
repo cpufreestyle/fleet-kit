@@ -187,6 +187,9 @@ def annotate(db, provider, model):
     credits_note = (override or {}).get("credits_note") or pdef.get("credits_note") or ""
     start = (override or {}).get("window_start") or pdef.get("window_start") or ""
     end = (override or {}).get("window_end") or pdef.get("window_end") or ""
+    # standing is the one state no date can produce, so the row has to say it
+    # was asserted rather than computed; otherwise a reader cannot tell "the
+    # vendor says no end" from "nobody has looked yet".
     standing = bool((override or {}).get("window_standing",
                                         pdef.get("window_standing", False)))
     state = "standing" if (standing and not start and not end) \
@@ -196,6 +199,7 @@ def annotate(db, provider, model):
             "credits": credits, "credits_badge": CREDITS_BADGE.get(credits, credits),
             "credits_note": credits_note,
             "window": window, "window_start": start, "window_end": end,
+            "window_standing": standing,
             "window_state": state, "state_badge": WINDOW_BADGE[state],
             "source": source, "verified": bool(verified)}
 
@@ -360,9 +364,11 @@ def refresh_sources(db, timeout=12, only=None):
 
     A stale "verified: true" is the same claim the hand-typed window used to be:
     it says the page was read, with no date attached. This turns it into a
-    measurement. An unreachable page proves nothing about the pricing, but it
-    does prove the record can no longer claim it was read, so verified goes
-    false rather than staying true on the strength of an old look.
+    measurement. verified stays true only while at least one official source
+    still answers; a provider whose every source has gone dark drops to false
+    rather than standing on the strength of an old look. An unreachable page
+    proves nothing about the pricing either way, so one dead link beside a live
+    one does not invalidate a record that was still read today.
     """
     checked = {}
     for name, pdef in db.get("providers", {}).items():
