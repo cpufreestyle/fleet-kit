@@ -12,9 +12,12 @@ makes the grader itself testable -- the offline subcommand grades known good
 and known garbage fixtures with no network at all.
 
 Subcommands:
-  offline   grade the built-in fixtures; expect OFFLINE_SELFTEST PASS
-  grade     grade a saved raw model response file (TASK with --task 1 or 2)
-  live      ask a live model and score it (--bridge NAME, or the gateway)
+ offline   grade the built-in fixtures; expect OFFLINE_SELFTEST PASS
+ grade     grade a saved raw model response file (TASK with --task 1 or 2)
+ live      ask a live model and score it (--bridge NAME, or the gateway)
+snapshot  bench models and merge the verdicts into kit/code-capability.json
+          (the file the status panel and free_models.py read for the
+           can-this-model-write-code column; rows not re-measured are kept)
 
 The conclusion this file backs is written up in kit/docs/code-model-
 selection.md: which model FleetKit should use to edit FleetKit itself.
@@ -55,6 +58,21 @@ KEY_ENV = {
     "minimax": "MINIMAX2CODEX_KEY",
 }
 
+# Where the verdicts live. Every consumer (status panel column, free_models.py
+# annotations, the default-model guard) reads this one file, so a bench run
+# refreshes the whole fleet can-write-code claim at once.
+SNAPSHOT_PATH = os.path.join(REPO, "kit", "code-capability.json")
+
+# Verdicts, strongest first. FULL means every check of every task passed;
+# NORUN means the model answered in prose and never emitted a runnable code
+# fence; DEAD means smoke never passed, so no code claim exists at all.
+VERDICTS = ("FULL", "PARTIAL", "NORUN", "DEAD")
+CODE_BADGE = {"FULL": "FULL", "PARTIAL": "PARTIAL", "NORUN": "NO_RUN",
+              "DEAD": "DEAD"}
+
+# A week-old measurement still shows -- a dated run beats a fresh vibe -- but
+# consumers stamp the age so nobody reads last Tuesday bench as today one.
+STALE_AFTER_DAYS = 7.0
 # Backslash-free source: the three regexes that need a backslash build it from
 # chr(92), and embedded newlines use chr(10), so this file carries no literal
 # backslash to trip over when the content is copied or patched.
@@ -489,6 +507,83 @@ def _fmt_live(res):
     return NL.join(lines)
 
 
+def verdict_of(res):
+    """Collapse one benchmark_model() result into a verdict anyone can sort on.
+
+    FULL     every check of every finished task passed
+    PARTIAL  it ran code but missed checks, or a task never finished -- a
+             timeout after the first task already passed is a partial, not a
+             pass, because the second task has no evidence behind it
+    NORUN    the reply was prose with no runnable code fence
+    DEAD     smoke never passed, so there is no code claim to make
+    """
+    if not res.get("reachable"):
+        return "DEAD"
+    tasks = res.get("tasks") or []
+    if not tasks:
+        return "DEAD"
+    if any(task.get("no_runnable") for task in tasks):
+        return "NORUN"
+    if len(tasks) < len(TASKS):
+        # a task that never finished -- the 2026-10-03 trae run timed out on
+        # task2 after task1 scored 8/8 -- is a partial, not a pass: half the
+        # suite has no evidence behind it
+        return "PARTIAL"
+    for task in tasks:
+        total = task.get("total") or 0
+        if task.get("score_str") != "%d/%d" % (total, total):
+            return "PARTIAL"
+    return "FULL"
+
+
+def slug_key(model, bridge=None):
+    """Snapshot key: with a bridge it is the picker slug the user sees
+    (workbuddy/deepseek-v4-flash); a gateway run already carries one."""
+    if bridge:
+        return "%s/%s" % (bridge, model)
+    return model
+
+
+def record_snapshot(results, out=SNAPSHOT_PATH):
+    """Merge fresh runs into the snapshot, keeping every unmeasured row.
+
+    A single-bridge bench must not blank the rest of the fleet, so only the
+    slugs in results are rewritten; the file is replaced atomically.
+    """
+    snap = {"version": 1, "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "stale_after_days": STALE_AFTER_DAYS,
+            "note": "code_model_bench.py snapshot: FULL/PARTIAL/NORUN/DEAD per model",
+            "models": {}}
+    try:
+        with open(out, encoding="utf-8") as fh:
+            previous = json.load(fh)
+        if isinstance(previous.get("models"), dict):
+            snap["models"] = previous["models"]
+            snap["note"] = previous.get("note", snap["note"])
+            snap["stale_after_days"] = previous.get("stale_after_days",
+                                                     STALE_AFTER_DAYS)
+    except (OSError, ValueError):
+        pass
+    for res in results:
+        slug = slug_key(res.get("model"), res.get("bridge"))
+        snap["models"][slug] = {
+            "bridge": res.get("bridge"),
+            "reachable": bool(res.get("reachable")),
+            "smoke": res.get("smoke"),
+            "total_seconds": res.get("total_seconds"),
+            "error": res.get("error"),
+            "tasks": res.get("tasks") or [],
+            "verdict": verdict_of(res),
+            "measured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    tmp = out + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(snap, fh, ensure_ascii=False, indent=1)
+        fh.write(chr(10))
+    os.replace(tmp, out)
+    return snap
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Which FleetKit model writes FleetKit code best.")
     sub = parser.add_subparsers(dest="cmd")
@@ -500,6 +595,13 @@ def main(argv=None):
     runner.add_argument("models", nargs="+")
     runner.add_argument("--bridge")
     runner.add_argument("--timeout", type=int, default=60)
+    snapper = sub.add_parser(
+        "snapshot",
+        help="bench models and merge verdicts into code-capability.json")
+    snapper.add_argument("models", nargs="+")
+    snapper.add_argument("--bridge")
+    snapper.add_argument("--timeout", type=int, default=60)
+    snapper.add_argument("--out", default=SNAPSHOT_PATH)
     args = parser.parse_args(argv)
 
     if args.cmd == "offline":
@@ -519,6 +621,24 @@ def main(argv=None):
     if args.cmd == "live":
         for model in args.models:
             print(_fmt_live(benchmark_model(model, bridge=args.bridge, timeout=args.timeout)))
+        return 0
+
+    if args.cmd == "snapshot":
+        results = [benchmark_model(model, bridge=args.bridge,
+                                   timeout=args.timeout)
+                   for model in args.models]
+        for res in results:
+            print(_fmt_live(res))
+            print("    verdict=%s" % verdict_of(res))
+        snap = record_snapshot(results, args.out)
+        tally = {}
+        for entry in snap["models"].values():
+            tally[entry.get("verdict")] = tally.get(entry.get("verdict"), 0) + 1
+        print("snapshot: %d entries (%s) -> %s" % (
+            len(snap["models"]),
+            "  ".join("%s=%d" % (CODE_BADGE.get(v, v), tally[v])
+                      for v in VERDICTS if tally.get(v)),
+            args.out))
         return 0
 
     parser.print_help()
