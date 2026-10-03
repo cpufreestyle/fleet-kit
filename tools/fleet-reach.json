@@ -5,7 +5,8 @@
     "trae",
     "xhx",
     "lingxi",
-    "cline"
+    "cline",
+    "spacebunny"
   ],
   "unreachable": [
     "antigravity",
@@ -17,7 +18,7 @@
     "zcode",
     "tokendance"
   ],
-  "measured_at": "2026-09-27T17:00:00+08:00",
+  "measured_at": "2026-10-03T19:50:00+08:00",
   "evidence": {
     "workbuddy": "glm-5.2 -> E2E_OK",
     "workbuddy-gpt": "gpt-6-astra -> E2E_OK",
@@ -32,6 +33,7 @@
     "antigravity": "gemini-2.5-flash, claude-haiku timeout",
     "qwen": "GLM-5.3 503 (ESA captcha)",
     "zcode": "GLM-5.3 / GLM-5.3-Flash 503 (ESA 3012)",
-    "tokendance": "401 key invalid"
+    "tokendance": "401 key invalid",
+    "spacebunny": "space-bunny-alpha -> E2E_OK"
   }
 }

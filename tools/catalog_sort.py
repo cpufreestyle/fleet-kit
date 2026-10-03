@@ -54,7 +54,7 @@ DEFAULT_ORDER = os.environ.get(
     # both code tasks full-mark (deepseek trio, docs/code-model-selection.md),
     # so its block belongs right after the pinned leads, not fifth in line.
     "workbuddy,workbuddy-gpt,tokendance,trae,cline,stepfun,catpaw,xhx,codely,"
-    "gemini,qoder,lingxi,antigravity,zcode,qwen")
+    "gemini,qoder,lingxi,antigravity,zcode,qwen,spacebunny")
 
 # Model families, in the order the user wants them listed. A family is a
 # vendor substring matched against the model id, so zcode/GLM-5.3 and
@@ -104,6 +104,7 @@ PER_PROVIDER_IMPORTANT = {
     "tokendance": ("deepseek-v4.1-flash", "deepseek-v4-pro", "glm-5.3",
                      "glm-5.2", "qwen-3.7-plus"),
     "qwen": ("qwen3.8-max", "qwen-3.7-plus"),
+    "spacebunny": ("space-bunny-alpha",),
 }
 
 
