@@ -1159,6 +1159,7 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
     <h2>模型标注：免费状态 + 是否走客户端积分（官网信息，更新于 <span id="free-updated">?</span>）</h2>
     <label class="meta" style="font-weight:400;margin-left:10px"><input type="checkbox" id="free-hide" checked onchange="renderFree()"> 隐藏不可用</label>
     <label class="meta" style="font-weight:400;margin-left:10px"><input type="checkbox" id="free-credits-only" onchange="renderFree()"> 只看走客户端积分</label>
+    <label class="meta" style="font-weight:400;margin-left:10px" title="展开 credits=仅限额 的全部模型（含未单独实测的）"><input type="checkbox" id="free-include-limit" onchange="renderFree()"> 含限额免费</label>
     <span class="meta" id="free-hidden"></span>
     <div class="row"><span class="meta" id="free-meta"></span></div>
     <div class="row"><span class="meta" id="free-credits-legend"></span></div>
@@ -1374,14 +1375,19 @@ function renderFree(){
   var ccode=[];for(var c2 in (f.code_counts||{})){ccode.push(f.code_counts[c2]+' '+(CODE_BADGE_UI[c2]||c2));}
  var clg=document.getElementById('free-credits-legend');
   if(clg){clg.textContent='客户端积分口径：'+(f.legend&&f.legend.credits?Object.keys(f.legend.credits).map(function(k){
-   return (CREDITS_BADGE[k]||k)+'='+f.legend.credits[k];}).join('  ·  '):'');}
+  return (CREDITS_BADGE[k]||k)+'='+f.legend.credits[k];}).join('  ·  '):'');}
   if(clg){clg.textContent+='；口径为逐模型标注：徽章旁 N/M = 该平台走此口径的模型数，「全平台」即整平台一致（如限额免费），「本模型」即只覆盖部分';}
+  if(clg){clg.textContent+='｜「仅限额」徽章即平台限额免费口径（全平台 N/N）；勾选「含限额免费」可逐个看到这类平台的模型';}
   var klg=document.getElementById('free-code-legend');
   if(klg){klg.textContent='写代码口径：两个真实编码任务的实测判定（code_model_bench snapshot）：全过=全分 · 部分=未全过 · NO_RUN=只出文本 · 断桥=不可达 · ?=无实测；超过 '+(f.code_stale_after_days||7)+' 天标 stale';}
  var co=document.getElementById('free-credits-only');
   var creditsOnly=!!(co&&co.checked);
   var hide=document.getElementById('free-hide');
   var hiding=!!(hide&&hide.checked);
+  var ilEl=document.getElementById('free-include-limit');
+  var incLimit=!!(ilEl&&ilEl.checked);
+  // 基线可见：进过选择器或实测免费；仅限额模型默认不展开，勾选后才列出
+  function passBase(m){return m.in_picker||m.free==='free'||m.free==='free-window'||m.free==='quota'||m.free==='trial';}
   // 口径覆盖范围：积分四档是逐模型标注的，徽章旁 N/M 表示该平台有多少模型走
   // 同一口径——N=M 即整平台一致（如限额免费），N<M 即只覆盖部分模型。
   var pkind={};(f.models||[]).forEach(function(m){
@@ -1392,7 +1398,7 @@ function renderFree(){
     var n=d[m.credits]||0;
     return '<span style="font-size:11px">'+(n===tot?'全平台 ':'本模型 ')+n+'/'+tot+'</span>';}
   var all=(f.models||[]).filter(function(m){
-    return m.in_picker||m.free==='free'||m.free==='free-window'||m.free==='quota'||m.free==='trial';});
+    return passBase(m)||(incLimit&&m.credits==='limit');});
   var list=[],hidden={},hiddenN=0;
   all.forEach(function(m){
     if(creditsOnly&&m.credits!=='client'){return;}
@@ -1405,8 +1411,8 @@ function renderFree(){
   meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+ccnt.join(' · ')+' · '+ccode.join(' · ')+' · 显示 '+list.length+'/'+(creditsOnly?all.filter(function(m){return m.credits==='client';}).length:all.length);
   rows.innerHTML=list.length?list.map(function(m){
    return '<tr><td>'+esc(m.picker_name||m.picker_slug||m.model)+'</td>'+
-     '<td>'+pill(freeKind(m.free),m.badge)+'</td>'+
-     '<td title="'+esc(m.credits_note||'')+'">'+pill(creditsKind(m.credits),m.credits_badge||m.credits)+' '+credCover(m)+'</td>'+
+     '<td>'+(passBase(m)?pill(freeKind(m.free),m.badge):pill('warn','限额免费'))+'</td>'+
+    '<td title="'+esc(m.credits_note||'')+'">'+pill(creditsKind(m.credits),m.credits_badge||m.credits)+' '+credCover(m)+'</td>'+
       '<td title="'+esc(codeTip(m))+'">'+pill(codeKind(m.code_verdict),m.code_badge||'?')+'</td>'+
      '<td class="dim">'+esc(m.window)+'</td>'+
      '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('')
