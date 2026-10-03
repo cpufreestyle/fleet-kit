@@ -177,24 +177,39 @@ case "$sub" in
         unlink_one "$OCX_ALIAS" || rc=1
         exit $rc
         ;;
+    --apply-sort)
+        # Windows callers cannot shadow npm's real ocx with a wrapper symlink
+        # (link_one refuses a real file), so ocx-catalog-guard invokes this
+        # directly after its own heal has run ocx sync. Fall through with
+        # needs_sort set and no real ocx call: the tail below does the work.
+        APPLY_ONLY=1
+        ;;
 esac
 
-run_real "$@"
-rc=$?
+if [ "${APPLY_ONLY:-0}" = "1" ]; then
+    rc=0
+    needs_sort=1
+else
+    run_real "$@"
+    rc=$?
 
-needs_sort=0
-case "$sub" in
-    sync|sync-cache) needs_sort=1 ;;
-esac
+    needs_sort=0
+    case "$sub" in
+        sync|sync-cache) needs_sort=1 ;;
+    esac
+fi
 
 # seconds since the reachability snapshot was written; big when missing
 reach_age() {
     [ -f "$REACH" ] || { echo 999999; return; }
     local now mt
     now=$(date +%s)
-    # BSD stat uses -f %m, GNU stat uses -c %Y; Windows/Git Bash has GNU stat.
+    # GNU stat (Linux, Windows/Git Bash) must be tried FIRST: its -f is
+    # --file-system, which exits 0 printing a whole filesystem report, and
+    # that garbage poisoned mt into an arithmetic error (age came out empty).
+    # BSD stat (macOS) fails on -c and falls through to -f %m.
     local mt
-    mt=$(stat -f %m "$REACH" 2>/dev/null || stat -c %Y "$REACH" 2>/dev/null || echo 0)
+    mt=$(stat -c %Y "$REACH" 2>/dev/null || stat -f %m "$REACH" 2>/dev/null || echo 0)
     echo $(( now - mt ))
 }
 

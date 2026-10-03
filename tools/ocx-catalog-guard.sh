@@ -205,6 +205,7 @@ cmd_run() {
     if ocx sync >>"$LOG_FILE" 2>&1; then
       after="$(catalog_bridge_count || echo unknown)"
       log "heal done: $count, now $after"
+      apply_fleet_sort
     else
       log "heal FAILED: ocx sync exited non-zero"
       return 1
@@ -236,10 +237,22 @@ cmd_run() {
   if ocx sync >>"$LOG_FILE" 2>&1; then
     after="$(catalog_bridge_count || echo unknown)"
     log "heal done: $count bridge models, now $after"
+    apply_fleet_sort
   else
     log "heal FAILED: ocx sync exited non-zero"
     return 1
   fi
+}
+
+# ocx sync resets every catalog priority to 5 -- that is why
+# fleet-sort-after-sync.sh exists. Its normal install shadows the ocx command
+# with a wrapper symlink, which Windows cannot do (npm's ocx is a real file,
+# link_one refuses it), so the heal applies the reachable-first order itself.
+apply_fleet_sort() {
+  local sort="${SCRIPT_DIR}/fleet-sort-after-sync.sh"
+  [ -f "$sort" ] || return 0
+  bash "$sort" --apply-sort >>"$LOG_FILE" 2>&1 \
+    || log "fleet-sort failed after ocx sync"
 }
 
 cmd_install_timer() {
