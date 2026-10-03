@@ -1119,8 +1119,8 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
     <div class="panel">
       <h2>节点积分 / 账号（15 个节点）</h2>
       <div class="row"><span class="meta" id="nc-note"></span></div>
-      <table><thead><tr><th>节点</th><th>状态</th><th>账号</th><th>登录</th>
-        <th>积分口径</th><th>积分 / 额度</th><th>来源</th><th>签到</th></tr></thead>
+      <table><thead><tr><th>节点</th><th>状态</th><th>账号</th><th>套餐 plan</th><th>登录</th>
+      <th>积分口径</th><th>积分 / 额度</th><th>来源</th><th>签到</th></tr></thead>
       <tbody id="nc-rows"></tbody></table>
       <pre id="nc-out" style="margin-top:8px"></pre>
     </div>
@@ -1249,14 +1249,15 @@ function render(){
       +'<td>'+esc(n.account||'-')
       +(n.credits_accounts
         ? '<div class=dim style="font-size:11px">'+esc(n.credits_accounts)+'</div>' : '')
+      +'</td><td>'+(n.plan?esc(n.plan):'<span class=dim>-</span>')
       +'</td><td>'+login
       +'<td>'+esc(n.credits_kind)+'</td><td>'+cred.trim()
       +'<td class=dim>'+esc(n.credits_source||'-')+'</td>'
       +'<td class=dim>'+esc(n.checkin||'-')+'</td></tr>';}).join('');
-  document.getElementById('nc-rows').innerHTML = ncrows
-    || '<tr><td colspan=8 class=dim>暂无数据</td></tr>';
-  document.getElementById('nc-note').textContent =
-    '来源：各桥 /health · /health account_pool（小浣熊多账号积分）· /ui/checkin（Buddy 加油站）· /entitlements（ZCode 额度）· 官方余额；口径见 free-windows.json';
+ document.getElementById('nc-rows').innerHTML = ncrows
+    || '<tr><td colspan=9 class=dim>暂无数据</td></tr>';
+ document.getElementById('nc-note').textContent =
+    '来源：各桥 /health（套餐 edition/tier）· /health account_pool（多账号积分+套餐名）· /ui/checkin（Buddy 加油站）· /entitlements（ZCode plan）· 官方余额；口径见 free-windows.json';
   var xu=s.xhx_usage||{};
   document.getElementById('xhx-path').textContent = xu.path||'';
   document.getElementById('xhx-note').textContent = xu.note||'';

@@ -12,6 +12,7 @@ import http.server
 import importlib.util
 import json
 import os
+import re
 import socket
 import threading
 
@@ -159,6 +160,42 @@ def test_zcode_entitlements_become_a_token_quota(monkeypatch):
     assert row["credits_unit"] == "tokens"
     assert row["credits_source"] == "bridge /entitlements"
     assert "ZCode Trust Build" in row["credits_note"]
+    # /health has no plan field for this node, so the entitlement name is the
+    # only one there is -- a row that dropped it would show a blank cell next
+    # to a hundred million tokens.
+    assert row["plan"] == "ZCode Trust Build"
+
+
+def test_a_plan_that_expires_shows_the_date(monkeypatch):
+    """A plan the bridge publishes an expiry for is half an answer without it."""
+    routes = {
+        "/health": ({"ok": True, "logged_in": True, "edition": "Trae CN",
+                     "expires_at_ms": 1791554733096.0, "models": ["a"]}, 200),
+    }
+    server = _Server(routes)
+    try:
+        monkeypatch.setitem(node_credits.PORTS, "trae", server.port)
+        row = node_credits.read_node("trae")
+    finally:
+        server.close()
+    assert row["plan"] == "Trae CN"
+    assert row["credits_note"].endswith("到期")
+    assert re.search(r"\d{4}-\d{2}-\d{2}", row["credits_note"])
+
+
+def test_a_bridge_that_only_names_its_tier_shows_it_as_the_plan(monkeypatch):
+    """Gemini answers currentTier.id, not a marketing plan name."""
+    routes = {
+        "/health": ({"ok": True, "logged_in": True, "tier": "PLUS",
+                     "models": ["a"]}, 200),
+    }
+    server = _Server(routes)
+    try:
+        monkeypatch.setitem(node_credits.PORTS, "qoder", server.port)
+        row = node_credits.read_node("qoder")
+    finally:
+        server.close()
+    assert row["plan"] == "PLUS"
 
 
 def _checkin_routes(accounts, activity=None):

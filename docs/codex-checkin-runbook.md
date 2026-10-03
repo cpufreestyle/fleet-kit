@@ -65,11 +65,27 @@ stdlib（urllib），可单独跑，不进任何 venv：
     python3 tools/node_credits.py --json          # 机器可读
     python3 tools/node_credits.py --node zcode    # 单节点
 
-每行：状态 / 账号 / 登录 / 积分口径（free-windows.json）/ 积分值 / 来源 / 签到状态。
+每行：状态 / 账号 / 套餐 plan / 登录 / 积分口径（free-windows.json）/ 积分值 / 来源 / 签到状态。
+
 真数字来源：xhx 官方 points balance、workbuddy 两桥 /ui/checkin、zcode /entitlements
 （一次性 100,000,000 tokens）；其余节点口径来自 free-windows.json，数值留空并写清原因。
 status_ui 面板「节点积分 / 账号」就是这份数据（30s 缓存）。
 
+#### 2026-10-03：每行补上「套餐 plan」与到期日
+
+面板「节点积分 / 账号」从 8 列变 9 列，账号后面多一列 `套餐 plan`：套餐叫什么名字，
+以及带到期日的套餐什么时候到期。名字不只是给人看的——同一个桥换个套餐，模型池可能整个
+变掉，而到期日不显示出来，token 会在会话中间悄悄死掉。
+
+套餐名按节点来源不同：
+
+- `workbuddy` / `workbuddy-gpt`：Buddy 加油站 activity_name（本期活动名）
+- `trae`：bridge /health 的 `edition`，并附 `expires_at_ms` 折算的 UTC+8 到期日
+- `kimi-code` / `minimax`：/health account_pool 每账号的 `points_plan`（与积分同一处）
+- `zcode`：/entitlements 的 `plan`（实测 ZCode Trust Build，本节点 /health 无 plan 字段）
+- `gemini` / `antigravity`：Google Code Assist `currentTier.id`（账号 403 时为空）
+
+CLI 表格同样多一列，列宽 16，超长名字按 16 字符截断。
 
 ### 两个编程套餐账号（Kimi Code / MiniMax，2026-10-01 加入）
 它们不是桥：机队没有为它们跑桥进程，所以每一行仍是同样三个问题——账号活着吗、哪个 key、
