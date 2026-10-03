@@ -69,8 +69,10 @@ FAMILY_ORDER = tuple(
 # back to family + version-number ordering.
 PER_PROVIDER_IMPORTANT = {
     # deepseek leads workbuddy (the user's top pick); hy4 stays right behind.
-    "workbuddy": ("deepseek-v4-pro", "deepseek-v4-flash", "hy4-preview", "hy3",
-                  "glm-5.3", "glm-5.2"),
+    "workbuddy": ("deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-flash",
+                  "hy4-preview", "hy3", "glm-5.3", "glm-5.3-flash",
+                  "kimi-k2.8-preview", "glm-5.2", "glm-5.1", "glm-5v-turbo",
+                  "minimax-m3", "kimi-k3-1", "kimi-k2.7", "kimi-k2.6", "auto"),
     "workbuddy-gpt": ("hy4-preview", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4",
                        "glm-5.3", "gemini-3.5-flash"),
     "stepfun": ("step-5-preview", "step-3.7-flash", "step-3.5-flash",
@@ -148,11 +150,12 @@ def family_rank(slug, families=FAMILY_ORDER):
 #
 # Configurable with FLEET_FIRST_MODEL (comma-separated <provider>/<model>) so
 # the top pick changes without a code edit. hy4 was the original pick; the
-# user moved the top slot to workbuddy's deepseek flagship (note: workbuddy
-# has no deepseek-v4.1 -- its live deepseeks are v4-pro / v4-flash).
+# user moved the top slot to workbuddy's deepseek v4.1 flash (the CodeBuddy
+# app lists Deepseek-V4.1-Flash at 0.11x; the bridge's static table lagged
+# until 2026-10-03, when the model was added and routed for real).
 LEAD_SLUGS = tuple(
     s.strip() for s in os.environ.get(
-        "FLEET_FIRST_MODEL", "workbuddy/deepseek-v4-pro").split(",")
+        "FLEET_FIRST_MODEL", "workbuddy/deepseek-v4.1-flash").split(",")
     if s.strip())
 
 
