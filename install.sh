@@ -387,6 +387,10 @@ VENV_PIP="${FLEET_HOME}/.venv/bin/pip"
 if command -v fleet_is_windows >/dev/null 2>&1 && fleet_is_windows; then
   VENV_PIP="${FLEET_HOME}/.venv/Scripts/pip.exe"
 fi
+VENV_PY="${FLEET_HOME}/.venv/bin/python"
+if command -v fleet_is_windows >/dev/null 2>&1 && fleet_is_windows; then
+  VENV_PY="${FLEET_HOME}/.venv/Scripts/python.exe"
+fi
 if [ "$SKIP_DEPS" = "1" ]; then
   if [ ! -x "$FLEET_PYTHON" ]; then
     FLEET_PYTHON="$(command -v ${SYS_PYTHON%% *})"
@@ -400,8 +404,12 @@ else
     info "[dry-run] ${SYS_PYTHON} -m venv ${FLEET_HOME}/.venv ; pip install -r requirements.txt"
   else
     ${SYS_PYTHON} -m venv "${FLEET_HOME}/.venv"
-    "$VENV_PIP" install --quiet --upgrade pip
-    "$VENV_PIP" install --quiet -r "${KIT_DIR}/requirements.txt"
+    # Drive pip through the venv interpreter, not the pip console script:
+    # modern pip refuses to upgrade itself as the console script ("ERROR: To
+    # modify pip, please run ... python -m pip install ...") and the install
+    # dies right here under set -e.
+    "$VENV_PY" -m pip install --quiet --upgrade pip
+    "$VENV_PY" -m pip install --quiet -r "${KIT_DIR}/requirements.txt"
     touch "${FLEET_HOME}/.venv/.fleet-deps-ok"
   fi
 fi
