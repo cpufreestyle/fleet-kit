@@ -643,10 +643,11 @@ def read_plan_account(name):
 def _row(name):
     return {"node": name, "vendor": VENDORS.get(name, name), "up": False,
             "account": "", "plan": "", "logged_in": None,
-            "credits_kind": credits_kind(name), "credits_value": None,
-            "credits_unit": "", "credits_source": "", "credits_note": "",
-            "checked_in": None, "checkin": "", "streak_days": None,
-            "detail": ""}
+           "credits_kind": credits_kind(name), "credits_value": None,
+           "credits_unit": "", "credits_source": "", "credits_note": "",
+           "credits_accounts": None,
+           "checked_in": None, "checkin": "", "streak_days": None,
+           "detail": ""}
 
 
 def read_node(name):
@@ -767,14 +768,47 @@ def read_node(name):
         return row
 
     if name == "xhx":
+        row["detail"] += "；models %d" % len(health.get("models") or [])
+        # The bridge owns an account pool (bridges/xhx/account_pool.py). Its
+        # /health carries per-account points, which beats the single official
+        # auth.json read: the pool keeps answering after the desktop app
+        # rotates or clears its own login.
+        pool = health.get("account_pool") or {}
+        accounts = [item for item in (pool.get("accounts") or [])
+                    if isinstance(item, dict)]
+        priced = [item for item in accounts if item.get("points") is not None]
+        if priced:
+            primary = next((item for item in accounts if item.get("primary")),
+                           accounts[0])
+            total = sum(_num(item.get("points")) or 0 for item in priced)
+            per = " / ".join(
+                "%s %s%s" % (item.get("name") or "账号",
+                             _pretty(_num(item.get("points"))) or "?",
+                             "（冷却中）" if item.get("state") == "cooling" else "")
+                for item in accounts)
+            if len(accounts) > 1:
+                # one line the panel can show under the account name: a pool
+                # burns accounts one by one, so "which ones, how much each"
+                # is the question a multi-account row has to answer.
+                row["credits_accounts"] = " / ".join(
+                    "%s %s" % (item.get("name") or "账号",
+                               _pretty(_num(item.get("points"))) or "?")
+                    for item in accounts)
+            row["credits_value"] = _num(primary.get("points"))
+            row["credits_unit"] = "points"
+            row["credits_source"] = "bridge /health account_pool"
+            row["credits_note"] = ("每日签到发放；llm/v2 调用不结算积分；"
+                                   "账号 %d 个共 %s points：%s"
+                                   % (len(accounts), _pretty(total), per))
+            row["checkin"] = "见签到面板（每日登录积分）"
+            return row
         points = xhx_points()
         if points.get("ok"):
             data = points.get("data") or {}
             row["credits_value"] = _num(data.get("available_points"))
             row["credits_unit"] = "points"
             row["credits_source"] = "xiaohuanxiong /api/web/points/v1/balance"
-            row["credits_note"] = "每日签到发放；llm/v2 调用不结算积分"
-            row["detail"] += "；models %d" % len(health.get("models") or [])
+            row["credits_note"] = "每日签到发放；llm/v2 调用不结算积分（账号池余额暂不可读，回落官方登录态）"
         else:
             row["credits_note"] = "%s（%s）" % (NO_BALANCE_NOTE,
                                               points.get("detail") or "未知")

@@ -1245,14 +1245,17 @@ function render(){
     var vendor = n.vendor ? '<div class=dim>'+esc(n.vendor)+'</div>' : '';
     return '<tr><td><b>'+esc(n.node)+'</b>'+vendor+'</td>'
       +(n.up?pill('ok','up'):pill('bad','down'))
-      +'<td>'+esc(n.account||'-')+'</td><td>'+login
+      +'<td>'+esc(n.account||'-')
+      +(n.credits_accounts
+        ? '<div class=dim style="font-size:11px">'+esc(n.credits_accounts)+'</div>' : '')
+      +'</td><td>'+login
       +'<td>'+esc(n.credits_kind)+'</td><td>'+cred.trim()
       +'<td class=dim>'+esc(n.credits_source||'-')+'</td>'
       +'<td class=dim>'+esc(n.checkin||'-')+'</td></tr>';}).join('');
   document.getElementById('nc-rows').innerHTML = ncrows
     || '<tr><td colspan=8 class=dim>暂无数据</td></tr>';
   document.getElementById('nc-note').textContent =
-    '来源：各桥 /health · /ui/checkin（Buddy 加油站）· /entitlements（ZCode 额度）· 官方余额；口径见 free-windows.json';
+    '来源：各桥 /health · /health account_pool（小浣熊多账号积分）· /ui/checkin（Buddy 加油站）· /entitlements（ZCode 额度）· 官方余额；口径见 free-windows.json';
   var xu=s.xhx_usage||{};
   document.getElementById('xhx-path').textContent = xu.path||'';
   document.getElementById('xhx-note').textContent = xu.note||'';
