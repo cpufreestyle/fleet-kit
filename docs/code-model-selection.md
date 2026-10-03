@@ -5,7 +5,9 @@ bridges, the launchd glue, this tooling. Answered from measured ground truth,
 not vibes: real coding tasks, real pytest, real seconds, and a count of wasted
 prose.
 
-**TL;DR -- use `workbuddy/deepseek-v4-flash` as the coding model.**
+**TL;DR -- use `workbuddy/deepseek-v4-flash` as the coding model.** It is
+also the boot default as of 2026-10-03 (`FLEET_DEFAULT_MODEL`), so Codex
+opens on a model measured to write this repo, not on the harbor.
 
 ## Method (why this is ground truth)
 
@@ -71,6 +73,58 @@ its bridge recovers.
 
 ## Conclusion
 
+### 2026-10-03 full-fleet re-run (21 models, every bridge in /v1/models)
+
+`code_model_bench.py live` over the same two tasks, one pass per model. This is
+the pass that decided the boot default, so it covered the whole fleet rather
+than the bridges that looked healthy the evening before:
+
+| model | bridge | task1 (parse_window) | task2 (convert) | seconds | prose | result |
+| --- | --- | --- | --- | --- | --- | --- |
+| `deepseek-v4-flash` | workbuddy | 8/8 | 7/7 | 7.5 | 0 | **primary** |
+| `deepseek-v4.1-flash` | workbuddy | 8/8 | 7/7 | 6.4 | 0 | full marks, fastest |
+| `deepseek-v4-pro` | workbuddy | 8/8 | 7/7 | 9.1 | 0 | full marks again |
+| `DeepSeek-V4-Pro` | qoder | 8/8 | 7/7 | 36.8 | 0 | full marks, ~5x slower; excluded by user preference |
+| `trae/seed-code-pro-0430` | trae | 8/8 (32.1s) | timeout at 45s | 83.0 | 0 | task1 passes, task2 too slow |
+| `hy4-preview` | workbuddy-gpt | - | - | - | - | smoke 429 rate-limited |
+| `gpt-5.3-codex` | workbuddy-gpt | - | - | - | - | smoke 503 |
+| `hy3` | workbuddy-gpt | - | - | - | - | smoke 503 |
+| `xhx/sn-deepseek-v4-1-flash` | xhx | NO_RUNNABLE | NO_RUNNABLE | 15.0 | 337 | chat answers, never a code fence |
+| `xhx/sn-glm-5-3` | xhx | NO_RUNNABLE | NO_RUNNABLE | 38.4 | 3 | same |
+| `xhx/sn-kimi-k3` | xhx | NO_RUNNABLE | NO_RUNNABLE | 38.5 | 1071 | same |
+| `cline-free/deepseek-v4.1-flash` | cline | - | - | - | - | smoke 502 |
+| `stealth/pixel-canary` | cline | - | - | - | - | smoke 502 |
+| `lingxi/deepseek-flash` | lingxi | - | - | - | - | 429 on task1 |
+| `codely-core` | codely | NO_RUNNABLE | NO_RUNNABLE | 11.2 | 0 | both tasks unusable |
+| `kimi/kimi-for-coding` | kimi-code | - | - | - | - | smoke 503 |
+| `qwen/qwen3.8-max` | qwen | - | - | - | - | smoke 503 |
+| `gemini-3-flash-preview` | gemini | - | - | - | - | smoke 502 |
+| `GLM-5.3` | zcode | - | - | - | - | smoke 503 |
+| `claude-sonnet-4-5@20250929` | antigravity | - | - | - | - | smoke 502 |
+| `deepseek-v3.2` | catpaw | - | - | - | - | smoke 502 |
+
+Three findings the evening run could not show:
+
+- **Only workbuddy's deepseek route writes this repo reliably.** Four models
+  finished both tasks (the workbuddy three plus qoder's DeepSeek-V4-Pro), but
+  qoder took 36.8s against flash's 7.5s and the user excludes qoder here
+  anyway. Every other bridge either failed its smoke call or answered prose
+  where the harness needs a fenced block.
+- **`xhx` looks alive and is not usable.** All three xhx models reach and reply
+  in 15-39s, yet none produce a runnable block. A listening port and a real
+  answer are not the same thing as a model that can edit code.
+- **The live default had drifted onto one of those dead ends.**
+  `~/.codex/config.toml` carried `model = "xhx/xhx-sn-deepseek-v4-1-flash"`, a
+  NO_RUNNABLE route. `default_model_guard.py` did not flag it, correctly: that
+  route does answer a chat call, and the guard owns route health, not whether
+  the model behind it can produce code. That gap is why this document exists.
+
+The re-run is what promoted flash to the boot default. `FLEET_DEFAULT_MODEL`
+now names `workbuddy/deepseek-v4-flash`, `~/.codex/config.toml` pins the same
+slug, and both the guard and an end-to-end call through the gateway (10100,
+responses API, `PROXY_MANAGED`) answer: all three workbuddy deepseek models
+return `E2E_OK` in 1.4-1.7s.
+
 - **Primary coding model: `workbuddy/deepseek-v4-flash`.** Full marks on both
   tasks, fastest round trip (2-4s), zero wasted prose -- built for the tight
   edit-run loop this repo lives in.
@@ -108,10 +162,12 @@ fold those bridges back into the tables above.
 
 ## Related settings (do not change silently)
 
-- `FLEET_DEFAULT_MODEL` stays `stepfun/step-5-preview`. This document is about
-  which model a human or agent should reach for when editing FleetKit; it does
-  not change the gateway boot default. Changing the boot default is its own,
-  separate decision.
+- `FLEET_DEFAULT_MODEL` is `workbuddy/deepseek-v4-flash` since the 2026-10-03
+  re-run above: the model measured to write this repo is now the model Codex
+  boots on, and the harbor (`stepfun/step-5-preview`) stays the failover target
+  when that route dies. Changing the boot default again is its own decision --
+  edit `fleet.env`, re-pin `~/.codex/config.toml` with the same line transform
+  `setup-providers.sh` uses, then re-run `tools/default_model_guard.py`.
 - Token/file-size note from the 2026-10-02 run: keep `max_tokens` at 16000 or
   more where possible or the context burns fast; `deepseek-v4-pro`/`flash` live
   on the ocx gateway (port 10100), a different network from local 4002, so they

@@ -378,12 +378,16 @@ sensenova 直接去掉、gpt- 前缀去掉等）。效果示例：
 ### 默认模型
 
 Codex 启动时选中的模型由 `~/.codex/config.toml` 的 `model` 键决定（值填 catalog slug）。
-当前默认 `stepfun/step-5-preview`：StepFun 阶跃星辰**官方 Plan API**
+当前默认 `workbuddy/deepseek-v4-flash`（2026-10-03 起）：全机队 21 个模型
+实测里唯一能稳定写出本仓库代码的路线，两道 FleetKit 真实代码题 8/8 + 7/7、
+prose 0、单轮 7.5s，端到端过网关 10100 实测 `E2E_OK`。选型依据见
+docs/code-model-selection.md。
+港湾仍是 `stepfun/step-5-preview`：StepFun 阶跃星辰**官方 Plan API**
 （`https://api.stepfun.com/step_plan/v1`），不经本地桥、直连官方，上下文 1M
-（ocx 记 1000000）。此前默认走 trae 桥 8791 的 `trae/trae-step-5-preview`
-（选择器显示 `trae/step-5-pv`），该桥上游已挂（401→502）后切到官方直连；
-tokendance 同款 `step-5-preview` 也因 key 401 不可用。接入细节与两个坑见
-docs/stepfun2codex-runbook.md。
+（ocx 记 1000000），默认路线死时由守卫跳回它。此前默认走 trae 桥 8791 的
+`trae/trae-step-5-preview`（选择器显示 `trae/step-5-pv`），该桥上游已挂
+（401→502）后切到官方直连；tokendance 同款 `step-5-preview` 也因 key 401
+不可用。接入细节与两个坑见 docs/stepfun2codex-runbook.md。
 `setup-providers.sh` 在最后一次 `ocx sync` 之后重新 pin 这个键——CC Switch 和
 `ocx provider add --force` 都会重写 config.toml，不 pin 默认模型会被打回。
 改默认：`fleet.env` 里设 `FLEET_DEFAULT_MODEL=<slug>`，或直接手改 config.toml。
@@ -623,8 +627,8 @@ qwen3-30b-a3b-instruct-2507 保留）。2026-09-26 起 cogevol（深度研究/PP
 
 1. **tokendance（step-5 备选路线）**：API key 已失效——网关聊天端点返回
   401「API 密钥不存在」（/v1/models 列表端点是公开的，所以模型照样列得出）。
-  默认模型已切到 StepFun 官方 Plan API 的 `stepfun/step-5-preview`
-  （见「默认模型」一节）；
+  默认模型当时已切到 StepFun 官方 Plan API 的 `stepfun/step-5-preview`，
+  2026-10-03 起改为 `workbuddy/deepseek-v4-flash`（见「默认模型」一节）；
   key 重建后若想切回，改 `fleet.env` 的 `FLEET_DEFAULT_MODEL` 再跑一次
   `setup-providers.sh`。重建：tokendance.space 控制台重新生成 key，
   然后 `ocx provider add tokendance --adapter openai-chat --base-url
