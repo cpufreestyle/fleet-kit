@@ -81,6 +81,29 @@ def _run_cli(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
                           timeout=timeout, cwd=str(Path.home()))
 
 
+# Windows CreateProcess caps one command line at 32767 chars, and Codex
+# resends its whole conversation every turn -- past the limit the CLI never
+# starts (WinError 206) and the stream dies mid-turn. The CLI reads the
+# prompt from stdin when the positional argument is omitted, so past a safe
+# margin it travels there instead. Measured 2026-10-04 on a >32k history.
+ARGV_SAFE = 24000
+
+
+def _cli_argv(args: list[str], body: str) -> tuple[list[str], "str | None"]:
+    """(argv, stdin_text): the prompt rides argv while it fits, stdin after."""
+    if body and sum(len(a) for a in args) + len(body) + 256 > ARGV_SAFE:
+        trimmed = [a for a in args]
+        if sum(len(a) for a in trimmed) + 256 > ARGV_SAFE:
+            # A huge --append-system-prompt can overflow on its own; a lost
+            # system prompt degrades the reply, a crashed stream loses it.
+            for i, a in enumerate(trimmed):
+                if a == "--append-system-prompt":
+                    trimmed = trimmed[:i] + trimmed[i + 2:]
+                    break
+        return trimmed, body
+    return args + [body], None
+
+
 def _auth_state() -> dict:
     auth = Path.home() / ".qoder-cn/.auth/user"
     exists = auth.is_file()
@@ -285,11 +308,12 @@ async def chat_completions(request: Request,
 
 
 async def _collect(body: str, base_args: list[str], model: str, payload: dict) -> dict:
-    args = base_args + ["--output-format", "json", body]
+    args = base_args + ["--output-format", "json"]
+    argv, stdin_text = _cli_argv(args, body)
     try:
         proc = await asyncio.to_thread(
-            subprocess.run, [_cli()] + args,
-            capture_output=True, text=True, timeout=CALL_TIMEOUT, cwd=str(Path.home()))
+            subprocess.run, [_cli()] + argv,
+            input=stdin_text, capture_output=True, text=True, timeout=CALL_TIMEOUT, cwd=str(Path.home()))
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail={"error": {
             "message": f"qoderclicn 超时（{CALL_TIMEOUT}s）", "type": "upstream_timeout"}})
@@ -341,10 +365,16 @@ async def _stream(body: str, base_args: list[str], model: str, payload: dict):
 
     yield chunk({"role": "assistant"})
 
-    args = base_args + ["--output-format", "stream-json", body]
+    args = base_args + ["--output-format", "stream-json"]
+    argv, stdin_text = _cli_argv(args, body)
     proc = await asyncio.create_subprocess_exec(
-        _cli(), *args, cwd=str(Path.home()),
+        _cli(), *argv, cwd=str(Path.home()),
+        stdin=asyncio.subprocess.PIPE if stdin_text else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    if stdin_text:
+        assert proc.stdin is not None
+        proc.stdin.write(stdin_text.encode("utf-8"))
+        await proc.stdin.wait_closed()
 
     assert proc.stdout is not None
     async for raw in proc.stdout:
