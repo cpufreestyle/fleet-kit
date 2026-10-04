@@ -53,6 +53,11 @@ FALLBACK_MODELS = [
 ]
 CALL_TIMEOUT = int(os.environ.get("QODER_CALL_TIMEOUT") or "300")
 API_KEY = os.environ.get("QODER2CODEX_KEY", "")
+# Windows 上 CreateProcess 起 .cmd 实际要过 cmd.exe，它的命令行上限是 8191
+# 字符（不是 CreateProcess 的 32767）；超过后 CLI 退出码 1，且在 stderr 写
+# ANSI 码页错误文本。prompt 一律走 stdin，这里只决定系统提示还能不能留在
+# argv，留足余量给 flag 和附件路径。
+_MAX_ARGV = 5000
 
 app = _common.make_app("qoder2codex", BRIDGE_VERSION)
 
@@ -79,7 +84,12 @@ def _cli() -> str:
 
 
 def _run_cli(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
+    # encoding/errors 必须显式:CLI 的 stdout 是 UTF-8,但 stderr 走 ANSI
+    # 码页(zh-CN 主机上是 GBK)。text=True 在 UTF-8 模式下严格解码,读到
+    # GBK 字节会让读取线程 UnicodeDecodeError 崩掉——错误文本全吞,只剩
+    # 一个光秃秃的退出码。
     return subprocess.run([_cli()] + args, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace",
                           timeout=timeout, cwd=str(Path.home()))
 
 
@@ -367,7 +377,12 @@ async def chat_completions(request: Request,
         "--max-output-tokens", str(min(int(payload.get("max_tokens") or 4096), 32000)),
     ]
     if system_prompt:
-        base_args += ["--append-system-prompt", system_prompt]
+        # 系统提示塞不进 argv(临近 32767 上限)时折进 stdin 正文，
+        # 长会话(AGENTS.md、长指令)也不会再把 CreateProcess 撑爆。
+        if sum(len(a) for a in base_args) + len(system_prompt) + 32 <= _MAX_ARGV:
+            base_args += ["--append-system-prompt", system_prompt]
+        else:
+            body = f"<system>\n{system_prompt}\n</system>\n\n{body}"
     for path in attachments:
         base_args += ["--attachment", path]
 
@@ -381,11 +396,14 @@ async def chat_completions(request: Request,
 
 
 async def _collect(body: str, base_args: list[str], model: str, payload: dict) -> dict:
-    args = base_args + ["--output-format", "json", body]
+    # prompt 走 stdin:argv 只放 flag,避开 Windows 32767 字符上限
+    args = base_args + ["--output-format", "json"]
     try:
         proc = await asyncio.to_thread(
-            subprocess.run, [_cli()] + args,
-            capture_output=True, text=True, timeout=CALL_TIMEOUT, cwd=str(Path.home()))
+            lambda: subprocess.run([_cli()] + args,
+                                   input=body, capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace",
+                                   timeout=CALL_TIMEOUT, cwd=str(Path.home())))
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail={"error": {
             "message": f"qoderclicn 超时（{CALL_TIMEOUT}s）", "type": "upstream_timeout"}})
@@ -438,10 +456,18 @@ async def _stream(body: str, base_args: list[str], model: str, payload: dict, tm
     try:
         yield chunk({"role": "assistant"})
 
-        args = base_args + ["--output-format", "stream-json", body]
+        args = base_args + ["--output-format", "stream-json"]
         proc = await asyncio.create_subprocess_exec(
             _cli(), *args, cwd=str(Path.home()),
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+
+        # prompt 走 stdin(argv 只放 flag);stdin 无长度限制,drain() 处理
+        # 大 prompt 的背压,写完立即 close 给 CLI 送 EOF。
+        assert proc.stdin is not None
+        proc.stdin.write(body.encode("utf-8"))
+        await proc.stdin.drain()
+        proc.stdin.close()
 
         # stderr 必须持续抽干：管道缓冲写满后 CLI 会阻塞在 write 上，整个流
         # 跟着挂死；抽干的同时留住文本，进程异常退出时回报给调用方。
