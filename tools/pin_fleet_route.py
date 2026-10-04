@@ -48,8 +48,12 @@ GATEWAY = os.environ.get("FLEET_GATEWAY") or "http://127.0.0.1:10100/v1"
 CATALOG_NAME = os.environ.get("FLEET_CATALOG_NAME") or "opencodex-catalog.json"
 FALLBACK_MODEL = "combo/fleetcore"
 
-ROOT_KEYS = ("model_catalog_json", "openai_base_url",
-             "experimental_realtime_ws_base_url")
+# experimental_realtime_ws_base_url is deliberately NOT pinned: the desktop
+# app prefers that WebSocket transport when the key exists, and this fleet's
+# opencodex answers the upgrade with 426 -- every compose then locks (measured
+# 2026-10-04: all turns served over the plain HTTP responses API). Leave the
+# key out of the config entirely.
+ROOT_KEYS = ("model_catalog_json", "openai_base_url")
 # experimental_bearer_token: ocx's own rewrite of the provider table drops it,
 # and without it requires_openai_auth=true leaves the desktop app unable to
 # authenticate the provider -- the compose/send control greys out (measured
