@@ -443,27 +443,50 @@ async def _stream(body: str, base_args: list[str], model: str, payload: dict, tm
             _cli(), *args, cwd=str(Path.home()),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
 
-        assert proc.stdout is not None
-        async for raw in proc.stdout:
-            line = raw.decode("utf-8", "replace").strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                event = json.loads(line)
-            except Exception:
-                continue
-            etype = event.get("type")
-            if etype == "assistant":
-                message = event.get("message") or {}
-                blocks = message.get("content") or []
-                for block in blocks if isinstance(blocks, list) else []:
-                    if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
-                        yield chunk({"content": block["text"]})
-            elif etype == "result":
-                if event.get("is_error"):
-                    yield chunk({"content": f"[qoder error] {event.get('result', '')}"})
-                break
-        await proc.wait()
+        # stderr 必须持续抽干：管道缓冲写满后 CLI 会阻塞在 write 上，整个流
+        # 跟着挂死；抽干的同时留住文本，进程异常退出时回报给调用方。
+        stderr_buf = bytearray()
+
+        async def _drain_stderr():
+            assert proc.stderr is not None
+            async for raw in proc.stderr:
+                stderr_buf.extend(raw)
+
+        pump = asyncio.ensure_future(_drain_stderr())
+        try:
+            assert proc.stdout is not None
+            async for raw in proc.stdout:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line or not line.startswith("{"):
+                    continue
+                try:
+                    event = json.loads(line)
+                except Exception:
+                    continue
+                etype = event.get("type")
+                if etype == "assistant":
+                    message = event.get("message") or {}
+                    blocks = message.get("content") or []
+                    for block in blocks if isinstance(blocks, list) else []:
+                        if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                            yield chunk({"content": block["text"]})
+                elif etype == "result":
+                    if event.get("is_error"):
+                        yield chunk({"content": f"[qoder error] {event.get('result', '')}"})
+                    break
+            await proc.wait()
+            if proc.returncode != 0:
+                detail = stderr_buf.decode("utf-8", "replace").strip()[:400]
+                yield chunk({"content": f"[qoder error] 退出码 {proc.returncode}: {detail}"})
+        finally:
+            pump.cancel()
+        yield chunk({}, "stop")
+        yield "data: [DONE]\n\n"
+    except Exception as exc:
+        # 流一旦开始，HTTP 状态码就无法改了；此时让异常把连接裸断掉，客户端
+        # 只会看到 "socket closed unexpectedly"（且无从判断发生了什么）。
+        # 把错误当成最后一个内容块推完，再正常收尾，客户端至少能拿到真相。
+        yield chunk({"content": f"[bridge error] {type(exc).__name__}: {exc}"})
         yield chunk({}, "stop")
         yield "data: [DONE]\n\n"
     finally:
