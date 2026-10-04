@@ -145,6 +145,31 @@ function Get-Specs {
     return $specs
 }
 
+function Ensure-ClineHub {
+    # The cline bridge's upstream is the Cline CLI's local hub daemon
+    # (ws://127.0.0.1:25463, discovered via ~/.cline/data/locks/hub). When the
+    # daemon is down -- after a reboot, or because the app was closed -- every
+    # cline call dies with WinError 1225 and the bridge just logs
+    # "chat error: ConnectionRefusedError" forever. Ask the CLI to ensure it.
+    param($Specs)
+    if (-not ($Specs | Where-Object { $_.Name -eq 'cline' })) { return }
+    $clineCmd = Get-Command cline -ErrorAction SilentlyContinue
+    if (-not $clineCmd) {
+        $clineCmd = Get-Command (Join-Path $env:APPDATA 'npm\cline.cmd') -ErrorAction SilentlyContinue
+    }
+    if (-not $clineCmd) {
+        Write-Host "  [warn ] cline CLI not found; the cline bridge needs 'cline hub ensure'" -ForegroundColor Yellow
+        return
+    }
+    try {
+        & $clineCmd.Source hub ensure 2>$null | Out-Null
+        Write-Host "  [ensure] cline hub daemon"
+    }
+    catch {
+        Write-Host "  [warn ] 'cline hub ensure' failed: $_" -ForegroundColor Yellow
+    }
+}
+
 function Start-Bridge {
     param($Spec, [string]$LogDir)
     if (Test-PortListening -Port $Spec.Port) {
@@ -283,12 +308,14 @@ if (-not $specs -or $specs.Count -eq 0) { throw "no bridges matched (fleet home:
 switch ($Action) {
     'start' {
         Write-Host "starting bridges (fleet home: $fleetHome, python: $python)"
+        Ensure-ClineHub -Specs $specs
         foreach ($s in $specs) { Start-Bridge -Spec $s -LogDir $logDir }
     }
     'stop' {
         foreach ($s in $specs) { Stop-Bridge -Spec $s -LogDir $logDir }
     }
     'restart' {
+        Ensure-ClineHub -Specs $specs
         foreach ($s in $specs) { Stop-Bridge -Spec $s -LogDir $logDir; Start-Bridge -Spec $s -LogDir $logDir }
     }
     'status' {
