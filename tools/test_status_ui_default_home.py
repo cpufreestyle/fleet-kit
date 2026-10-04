@@ -47,12 +47,25 @@ class StatusUiDefaultHomeTest(unittest.TestCase):
         os.makedirs(self.home)
         self._old_home = os.environ.get("HOME")
         os.environ["HOME"] = self.home
+        # Since python 3.8, expanduser("~") on Windows prefers USERPROFILE
+        # (then HOMEDRIVE/HOMEPATH) over HOME, so pin those to the sandbox
+        # too or a real install on the test machine leaks into the case.
+        self._old_profile = {key: os.environ.get(key)
+                             for key in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH")}
+        os.environ["USERPROFILE"] = self.home
+        os.environ["HOMEDRIVE"], _ = os.path.splitdrive(self.home)
+        os.environ["HOMEPATH"] = self.home
 
     def tearDown(self):
         if self._old_home is None:
             os.environ.pop("HOME", None)
         else:
             os.environ["HOME"] = self._old_home
+        for key, value in self._old_profile.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         os.environ.clear()
         os.environ.update(self._saved)
 

@@ -44,6 +44,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -124,14 +125,22 @@ def _short(text, limit=140):
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+# Console-less parents (pythonw) would otherwise make every child console app
+# — schtasks, netstat, ocx — pop a visible console window, once per refresh.
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
 def run(cmd, timeout=10.0):
     """Run a command and return (returncode, combined output). Never raises."""
     try:
-        # text=True alone decodes with the ambient code page (GBK on a zh-CN
-        # host); ocx prints emoji, which makes the reader thread raise and the
-        # whole capture come back empty.
+        # encoding="utf-8" + errors="replace": text=True alone would decode
+        # with the ambient code page (GBK on a zh-CN host) -- ocx prints emoji,
+        # and tools like netstat emit GBK -- either way a strict reader dies
+        # and the whole capture comes back empty. NO_WINDOW keeps the
+        # console-less panel from spawning console flashes per child.
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                              encoding="utf-8", errors="replace")
+                              encoding="utf-8", errors="replace",
+                              creationflags=NO_WINDOW)
     except FileNotFoundError:
         return 127, "command not found: %s" % cmd[0]
     except subprocess.TimeoutExpired:
@@ -206,13 +215,64 @@ def resolve_python(keys):
 # collectors
 # --------------------------------------------------------------------------- #
 
-def launchd_info(label):
+def _pid_alive(pid):
+    """Is a pid live? os.kill probing on POSIX, OpenProcess on Windows."""
+    if not pid:
+        return False
+    try:
+        if os.name == "nt":
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            k32 = ctypes.windll.kernel32
+            handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+            if not handle:
+                return False
+            try:
+                exit_code = ctypes.c_ulong()
+                if k32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return exit_code.value == STILL_ACTIVE
+                return True
+            finally:
+                k32.CloseHandle(handle)
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def launchd_info(label, port=None):
     """Service state for a label: launchd on macOS, schtasks on Windows,
     pgrep on Linux. Kept under the old name so callers do not change."""
     if fleet_platform.is_macos():
         code, out = run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), label)], timeout=6.0)
         if code != 0:
             return {"loaded": False, "state": "not loaded", "pid": None, "last_exit": None}
+    elif fleet_platform.is_windows():
+        state = fleet_platform.service_status(label)
+        pid = None
+        if state == "missing":
+            # No scheduled task carries the label: this install supervises the
+            # bridges with plain .cmd wrappers plus *super.ps1 keepalives, so
+            # fall back to the pid files those wrappers leave in service_dir.
+            # The keepalive may have rotated the child since, so a port that
+            # still answers is the last word on "running".
+            for stem in (label + ".child.pid", label + ".super.pid"):
+                try:
+                    with open(os.path.join(fleet_platform.service_dir(), stem)) as handle:
+                        candidate = int((handle.read() or "").strip() or 0)
+                except (OSError, ValueError):
+                    continue
+                if _pid_alive(candidate):
+                    state, pid = "running", candidate
+                    break
+            # A foreign app squatting on the port would fool a bare TCP
+            # check, so a live probe result is the last word instead.
+            if state == "missing" and port and fleet_platform.port_open(port):
+                state = "listening"
+        if state == "missing":
+            return {"loaded": False, "state": "not loaded", "pid": None, "last_exit": None}
+        out = "state = %s" % state + ("\npid = %d" % pid if pid else "")
     else:
         out = ""
         state = fleet_platform.service_status(label)
@@ -238,9 +298,20 @@ def launchd_info(label):
 def listen_info(port):
     """Is something answering on the port, and with which pid.
 
-    lsof only exists on macOS/Linux; on Windows a plain connect answers the
-    question this column actually asks.
+    lsof only exists on macOS/Linux; on Windows netstat -ano names the
+    owning pid, and a plain connect is the fallback when it does not.
     """
+    if fleet_platform.is_windows():
+        code, out = run(["netstat", "-ano", "-p", "tcp"], timeout=6.0)
+        if code == 0:
+            for line in out.splitlines():
+                parts = line.split()
+                if (len(parts) >= 5 and parts[3].upper() == "LISTENING"
+                        and parts[1].endswith(":%d" % port)):
+                    return {"ok": True, "pid": int(parts[4])}
+        if fleet_platform.port_open(port):
+            return {"ok": True, "pid": None}
+        return {"ok": False, "pid": None}
     code, out = run(["lsof", "-nP", "-iTCP:%d" % port, "-sTCP:LISTEN"], timeout=6.0)
     if code == 0 and out.strip():
         pid = None
@@ -289,8 +360,11 @@ def plist_path(launch_dir, label):
     return os.path.join(launch_dir, label + ".plist")
 
 
-def log_paths_from_plist(plist, log_dir, suffix):
-    """Log candidates: whatever the launchd plist declares, then common names."""
+def log_paths_from_plist(plist, log_dir, suffix, label=None):
+    """Log candidates: whatever the launchd plist declares, then common names.
+
+    On Windows the wrappers log as <label>.log (full com.local.* name), so the
+    label spelling is probed too when the caller has it."""
     paths = []
     if os.path.isfile(plist):
         try:
@@ -303,9 +377,10 @@ def log_paths_from_plist(plist, log_dir, suffix):
         except Exception:
             pass
     for candidate in (os.path.join(log_dir, suffix + ".log"),
+                      os.path.join(log_dir, label + ".log") if label else None,
                       os.path.join(log_dir, suffix + "-bridge.log"),
                       "/tmp/%s-bridge.log" % suffix):
-        if candidate not in paths:
+        if candidate and candidate not in paths:
             paths.append(candidate)
     return paths
 
@@ -427,14 +502,15 @@ def collect_bridge(cfg, spec):
     port = cfg["port_base"] + offset
     label = cfg["label_prefix"] + "." + suffix
     key = cfg["keys"].get(keyenv) or None
-    paths = log_paths_from_plist(plist_path(cfg["launch_dir"], label), cfg["log_dir"], suffix)
+    paths = log_paths_from_plist(plist_path(cfg["launch_dir"], label), cfg["log_dir"], suffix,
+                                 label=label)
     log = None
     for path in paths:
         log = tail_file(path, 5)
         if log:
             break
     return {"name": name, "port": port, "label": label,
-            "agent": launchd_info(label), "listen": listen_info(port),
+            "agent": launchd_info(label, port=port), "listen": listen_info(port),
             "probe": probe_bridge(port, key),
             "key": {"env": keyenv, "md5": md5_short(key), "set": bool(key)},
             "logs": paths, "log": log}
@@ -513,7 +589,8 @@ def free_models():
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "free_models.py")
     try:
         out = subprocess.run([sys.executable, script, "--json"],
-                             capture_output=True, timeout=FREE_SUBPROCESS_TIMEOUT)
+                             capture_output=True, timeout=FREE_SUBPROCESS_TIMEOUT,
+                             creationflags=NO_WINDOW)
         value = json.loads(out.stdout.decode("utf-8", "ignore"))
         value["available"] = True
     except Exception as exc:
@@ -560,7 +637,8 @@ def node_credits(cfg):
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "node_credits.py")
     try:
         out = subprocess.run([cfg["python"] or sys.executable, script, "--json"],
-                             capture_output=True, timeout=NODE_CREDITS_SUBPROCESS_TIMEOUT)
+                             capture_output=True, timeout=NODE_CREDITS_SUBPROCESS_TIMEOUT,
+                             creationflags=NO_WINDOW)
         value = json.loads(out.stdout.decode("utf-8", "ignore"))
         value["available"] = True
     except Exception as exc:
@@ -786,6 +864,10 @@ def build_config(args):
                     or keys.get("LABEL_PREFIX") or "com.local")
     log_dir = (args.log_dir or os.environ.get("LOG_DIR")
                or keys.get("LOG_DIR") or "/tmp/fleet-logs")
+    if fleet_platform.is_windows() and log_dir.replace("\\", "/").startswith("/tmp"):
+        # fleet.env is written by the Git Bash installer, where /tmp is the
+        # user's temp dir; native Windows python resolves /tmp to <drive>:\tmp.
+        log_dir = os.path.join(tempfile.gettempdir(), log_dir[5:].lstrip("/\\"))
     launch_dir = (args.launch_dir or os.environ.get("FLEET_SERVICE_DIR")
                   or os.environ.get("FLEET_LAUNCH_DIR")
                   or keys.get("LAUNCH_DIR")
@@ -849,7 +931,7 @@ def _checkin_worker(cfg, force):
     started = ACTIONS["checkin"]["started_at"]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, env=env)
+                                text=True, env=env, creationflags=NO_WINDOW)
     except OSError as exc:
         with ACTIONS_LOCK:
             ACTIONS["checkin"] = {"running": False, "started_at": started, "force": force,
@@ -891,7 +973,8 @@ def _verify_worker(cfg):
     cmd = [sys.executable, script, "--json", "--port-base", str(cfg["port_base"])]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True)
+                                stderr=subprocess.STDOUT, text=True,
+                                creationflags=NO_WINDOW)
     except OSError as exc:
         with ACTIONS_LOCK:
             ACTIONS["verify"] = {"running": False, "started_at": started,
@@ -1033,7 +1116,7 @@ class FleetUIServer(ThreadingHTTPServer):
         lines = max(10, min(lines, 2000))
         label = self.cfg["label_prefix"] + "." + spec[1]
         candidates = log_paths_from_plist(plist_path(self.cfg["launch_dir"], label),
-                                         self.cfg["log_dir"], spec[1])
+                                         self.cfg["log_dir"], spec[1], label=label)
         for path in candidates:
             found = tail_file(path, lines)
             if found:

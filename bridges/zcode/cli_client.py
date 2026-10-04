@@ -103,7 +103,10 @@ def _trace(message):
 
 
 def _safe_storage_key():
-    """sha256 of ZCode's safeStorage fallback secret."""
+    """Candidate sha256 keys of ZCode's safeStorage fallback secret.
+
+    Returns a list: the Node (encrypting side) platform spelling first, then
+    python's, because they disagree on Windows (`win32` vs `windows`)."""
     try:
         import platform as _platform
         system = _platform.system().lower()
@@ -114,9 +117,20 @@ def _safe_storage_key():
         user = pwd.getpwuid(os.getuid()).pw_name
     except Exception:
         user = os.environ.get("USER") or os.environ.get("USERNAME") or ""
-    secret = os.environ.get("ZCODE_CREDENTIAL_SECRET") or (
-        "zcode-credential-fallback:%s:%s:%s" % (system, str(Path.home()), user))
-    return hashlib.sha256(secret.encode("utf-8")).digest()
+    if os.environ.get("ZCODE_CREDENTIAL_SECRET"):
+        return hashlib.sha256(
+            os.environ["ZCODE_CREDENTIAL_SECRET"].encode("utf-8")).digest()
+    # The encrypting side is Node: os.platform() says `win32` on Windows while
+    # python's platform.system().lower() says `windows` — different sha256
+    # keys, unfathomable InvalidTag. Try Node's spelling first. macOS/linux
+    # agree (`darwin`/`linux`), which is why only Windows boxes hit this.
+    node_platform = {"win32": "win32", "darwin": "darwin", "linux": "linux"}.get(
+        sys.platform, system)
+    keys = [hashlib.sha256(
+        ("zcode-credential-fallback:%s:%s:%s" % (pl, str(Path.home()), user))
+        .encode("utf-8")).digest()
+        for pl in dict.fromkeys([node_platform, system])]
+    return keys
 
 
 def _b64d(s):
@@ -149,8 +163,14 @@ def _decrypt(value):
     try:
         iv_b64, tag_b64, ct_b64 = value[len("enc:v1:"):].split(".")
         iv, tag, ct = _b64d(iv_b64), _b64d(tag_b64), _b64d(ct_b64)
-        return _aes_gcm_decrypt(_safe_storage_key(), iv, tag, ct).decode(
-            "utf-8", "replace")
+        last_exc = None
+        for key in _safe_storage_key():
+            try:
+                return _aes_gcm_decrypt(key, iv, tag, ct).decode(
+                    "utf-8", "replace")
+            except Exception as exc:
+                last_exc = exc
+        raise last_exc if last_exc else RuntimeError("no candidate key")
     except Exception as exc:
         _trace("credential decrypt failed: %r" % (exc,))
         return ""

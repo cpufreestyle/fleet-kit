@@ -462,6 +462,17 @@ class CredentialManager:
             s = self._session()
             return self._build_headers_from(s.get("auth") or {}, s.get("account") or {})
 
+    def force_refresh(self) -> None:
+        """上游 401/403 后的强制刷新。
+
+        auth 文件的 expiresAt 只是本端视角：会话在别处被顶下线时上游已吊销
+        旧 accessToken，而文件里的时间还没到，get_headers 永远不会触发刷新，
+        账号就被误判成「登录态失效」送去冷却。refreshToken 通常仍有效，此时
+        强制刷一次即可自愈，不需要重新登录。
+        """
+        with self._lock:
+            self._refresh()
+
     def summary(self) -> dict:
         s = self._session()
         auth = s.get("auth") or {}
@@ -770,8 +781,10 @@ def _save_image_route_model(model: str):
 
 def _resolve_route_model(requested_model: str) -> str:
     model = str(requested_model or "").strip()
-    if model.lower().startswith("workbuddy/"):
-        model = model.split("/", 1)[1]
+    # ocx 会把 provider 限定名（workbuddy-gpt/hy4-preview、workbuddy-overseas/gpt-5.6-sol）
+    # 原样送到桥；上游只认裸模型名，这里统一剥掉前缀，否则会静默落到 route_model。
+    if "/" in model:
+        model = model.rsplit("/", 1)[-1].strip()
     if model in DEFAULT_MODELS:
         return model
     return CONFIG.get("route_model") or DEFAULT_ROUTE_MODEL
@@ -2776,6 +2789,7 @@ async def _collect_with_pool(url: str, pool: AccountPool, body: dict,
     last_status = 502
     last_raw = b"all WorkBuddy accounts failed"
     channel_tries = 0
+    auth_retried: set[str] = set()
     for candidate in candidates:
         headers = await _headers_for_candidate(pool, candidate, rid)
         if headers is None:
@@ -2795,6 +2809,17 @@ async def _collect_with_pool(url: str, pool: AccountPool, body: dict,
                         failure = _account_failure(response.status_code, raw)
                         _log(f"[{rid}] ✗ HTTP {response.status_code} | account={candidate.ref} | {model_name} | {_truncate(raw.decode('utf-8','replace'),200)}")
                         if failure:
+                            if response.status_code in (401, 403) and candidate.ref not in auth_retried:
+                                auth_retried.add(candidate.ref)
+                                try:
+                                    await asyncio.to_thread(candidate.manager.force_refresh)
+                                except Exception as exc:
+                                    _log(f"[{rid}] ✗ 401 后强制刷新失败 | account={candidate.ref} | {_truncate(str(exc), 140)}")
+                                    pool.mark_failure(candidate.ref, failure[0], failure[1])
+                                    continue
+                                _log(f"[{rid}] ↻ 401 已强制刷新 token，重试同一账号 | account={candidate.ref}")
+                                candidates.insert(0, candidate)
+                                continue
                             pool.mark_failure(candidate.ref, failure[0], failure[1])
                             continue
                         raise HTTPException(status_code=response.status_code,
@@ -2813,6 +2838,17 @@ async def _collect_with_pool(url: str, pool: AccountPool, body: dict,
                         if failure is None and exc.status >= 500:
                             failure = ("上游 SSE 响应无效", 30)
                         if failure:
+                            if exc.status in (401, 403) and candidate.ref not in auth_retried:
+                                auth_retried.add(candidate.ref)
+                                try:
+                                    await asyncio.to_thread(candidate.manager.force_refresh)
+                                except Exception as exc_refresh:
+                                    _log(f"[{rid}] ✗ 401 后强制刷新失败 | account={candidate.ref} | {_truncate(str(exc_refresh), 140)}")
+                                    pool.mark_failure(candidate.ref, failure[0], failure[1])
+                                    continue
+                                _log(f"[{rid}] ↻ 401 已强制刷新 token，重试同一账号 | account={candidate.ref}")
+                                candidates.insert(0, candidate)
+                                continue
                             pool.mark_failure(candidate.ref, failure[0], failure[1])
                             continue
                         raise HTTPException(status_code=exc.status,
@@ -3105,7 +3141,7 @@ def main():
         forbidden_dirs=auth_dirs(),
     )
     CONFIG["pool"] = pool
-    CONFIG["account_service"] = WorkBuddyAccountService(pool, BRIDGE_VERSION)
+    CONFIG["account_service"] = WorkBuddyAccountService(pool, BRIDGE_VERSION, backend=BACKEND)
     # The check-in endpoints live behind the same backend the bridge itself
     # talks to, and the two variants are different hosts: measured
     # 2026-10-01, the overseas bridge asked copilot.tencent.com with a

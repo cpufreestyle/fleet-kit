@@ -283,9 +283,12 @@ def _exe(name):
 
 def _run(cmd, timeout=8.0, env=None):
     cmd = [_exe(str(cmd[0]))] + [str(part) for part in cmd[1:]]
+    # CREATE_NO_WINDOW: a console-less parent (pythonw panel) must not make
+    # every schtasks/pgrep child pop a visible console window.
+    no_window = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     try:
         out = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             timeout=timeout, env=env)
+                             timeout=timeout, env=env, creationflags=no_window)
         return out.returncode, out.stdout.decode("utf-8", "replace")
     except Exception as exc:
         return 1, str(exc)

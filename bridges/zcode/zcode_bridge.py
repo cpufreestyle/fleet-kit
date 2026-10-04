@@ -157,12 +157,28 @@ def _login_name() -> str:
     return os.environ.get("USERNAME") or os.environ.get("USER") or ""
 
 
+def _candidate_secrets() -> list:
+    """Fallback-key secrets, most likely first.
+
+    The encrypting side is Node, whose os.platform() says `win32` on Windows
+    while python's platform.system().lower() says `windows` — a mismatch that
+    yields a different sha256 key and an unfathomable "未登录". macOS/linux
+    agree (`darwin`/`linux`), which is why only Windows boxes hit this.
+    """
+    if os.environ.get("ZCODE_CREDENTIAL_SECRET"):
+        return [os.environ["ZCODE_CREDENTIAL_SECRET"]]
+    home = str(Path.home())
+    user = _login_name()
+    node_platform = {"win32": "win32", "darwin": "darwin", "linux": "linux"}.get(
+        sys.platform, platform.system().lower())
+    py_platform = platform.system().lower()
+    secrets = ["zcode-credential-fallback:%s:%s:%s" % (pl, home, user)
+               for pl in dict.fromkeys([node_platform, py_platform])]
+    return secrets
+
+
 def _safe_storage_key() -> bytes:
-    secret = os.environ.get("ZCODE_CREDENTIAL_SECRET") or (
-        "zcode-credential-fallback:%s:%s:%s" % (
-            platform.system().lower(), str(Path.home()),
-            _login_name()))
-    return hashlib.sha256(secret.encode("utf-8")).digest()
+    return hashlib.sha256(_candidate_secrets()[0].encode("utf-8")).digest()
 
 
 def _decrypt(value: str) -> str:
@@ -175,7 +191,14 @@ def _decrypt(value: str) -> str:
         ct = base64.urlsafe_b64decode(_pad(ct_b64))
     except Exception as exc:
         raise RuntimeError("bad ciphertext layout: %s" % exc)
-    return _aes_gcm_decrypt(_safe_storage_key(), iv, tag, ct)
+    last_exc: Exception = RuntimeError("no candidate key")
+    for secret in _candidate_secrets():
+        key = hashlib.sha256(secret.encode("utf-8")).digest()
+        try:
+            return _aes_gcm_decrypt(key, iv, tag, ct)
+        except Exception as exc:
+            last_exc = exc
+    raise last_exc
 
 
 def _pad(s: str) -> str:
