@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -23,6 +24,7 @@ import _common
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -181,6 +183,91 @@ def _messages_to_prompt(messages: list) -> tuple[str, str]:
     return "\n\n".join(system_parts), "\n\n".join(turns)
 
 
+_IMAGE_EXT_BY_MIME = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+}
+
+
+def _extract_image_attachments(messages: list) -> tuple[list[str], Optional[str]]:
+    """把 OpenAI 视觉消息里的图片落成临时文件，返回 (附件路径, 临时目录)。
+
+    qoderclicn 只接受 --attachment 文件路径，所以 base64/URL 图片必须先落盘。
+    同一张图片（按内容哈希）只附一次，避免多轮对话重复塞同一张图。
+    """
+    import hashlib
+    import urllib.request
+
+    seen: set[str] = set()
+    paths: list[str] = []
+    tmp_dir: Optional[str] = None
+
+    def _save(raw: bytes, mime: str) -> None:
+        nonlocal tmp_dir
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest in seen:
+            return
+        seen.add(digest)
+        if tmp_dir is None:
+            tmp_dir = tempfile.mkdtemp(prefix="qoder_img_")
+        path = os.path.join(tmp_dir, f"img_{len(paths)}{_IMAGE_EXT_BY_MIME.get(mime, '.png')}")
+        with open(path, "wb") as fh:
+            fh.write(raw)
+        paths.append(path)
+
+    def _from_url(url: str) -> None:
+        if url.startswith("data:"):
+            header, _, data = url.partition(",")
+            mime = header[5:].split(";")[0]
+            if "base64" not in header:
+                return
+            try:
+                _save(base64.b64decode(data), mime)
+            except Exception:
+                pass
+        elif url.startswith("http://") or url.startswith("https://"):
+            try:
+                with urllib.request.urlopen(url, timeout=20) as resp:
+                    _save(resp.read(), resp.headers.get("Content-Type", ""))
+            except Exception:
+                pass
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = str(part.get("type") or "").lower()
+            if ptype in ("image_url", "image"):
+                node = part.get("image_url") or part.get("image") or {}
+                url = node.get("url", "") if isinstance(node, dict) else str(node)
+                if url:
+                    _from_url(str(url))
+            elif ptype == "input_image":
+                source = part.get("source") or {}
+                if isinstance(source, dict):
+                    data = str(source.get("data") or source.get("base64") or "")
+                    if data:
+                        try:
+                            _save(base64.b64decode(data), str(source.get("media_type") or ""))
+                        except Exception:
+                            pass
+    return paths, tmp_dir
+
+
+def _cleanup_tmp(tmp_dir: Optional[str]) -> None:
+    if tmp_dir:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def _extract_text(payload: dict) -> str:
     """从 CLI 的 json 输出里抽取回答文本（多格式容错）。"""
     for key in ("result", "response", "text", "output", "answer"):
@@ -263,8 +350,12 @@ async def chat_completions(request: Request,
     model = _clean_model(str(payload.get("model") or ""))
     wants_stream = bool(payload.get("stream"))
     system_prompt, body = _messages_to_prompt(messages)
+    attachments, tmp_dir = _extract_image_attachments(messages)
     if not body.strip():
-        raise HTTPException(status_code=400, detail={"error": {"message": "empty prompt"}})
+        if attachments:
+            body = "请描述附件图片的内容。"  # 纯图片请求（无文字）也放行
+        else:
+            raise HTTPException(status_code=400, detail={"error": {"message": "empty prompt"}})
 
     base_args = [
         "-p",
@@ -277,11 +368,16 @@ async def chat_completions(request: Request,
     ]
     if system_prompt:
         base_args += ["--append-system-prompt", system_prompt]
+    for path in attachments:
+        base_args += ["--attachment", path]
 
     if wants_stream:
-        return StreamingResponse(_stream(body, base_args, model, payload),
+        return StreamingResponse(_stream(body, base_args, model, payload, tmp_dir),
                                  media_type="text/event-stream")
-    return JSONResponse(content=await _collect(body, base_args, model, payload))
+    try:
+        return JSONResponse(content=await _collect(body, base_args, model, payload))
+    finally:
+        _cleanup_tmp(tmp_dir)
 
 
 async def _collect(body: str, base_args: list[str], model: str, payload: dict) -> dict:
@@ -328,7 +424,7 @@ async def _collect(body: str, base_args: list[str], model: str, payload: dict) -
     return response
 
 
-async def _stream(body: str, base_args: list[str], model: str, payload: dict):
+async def _stream(body: str, base_args: list[str], model: str, payload: dict, tmp_dir=None):
     """把 qoderclicn 的 stream-json 事件转成 OpenAI SSE。"""
     chat_id = "chatcmpl-" + os.urandom(8).hex()
     created = int(time.time())
@@ -339,36 +435,39 @@ async def _stream(body: str, base_args: list[str], model: str, payload: dict):
                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-    yield chunk({"role": "assistant"})
+    try:
+        yield chunk({"role": "assistant"})
 
-    args = base_args + ["--output-format", "stream-json", body]
-    proc = await asyncio.create_subprocess_exec(
-        _cli(), *args, cwd=str(Path.home()),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        args = base_args + ["--output-format", "stream-json", body]
+        proc = await asyncio.create_subprocess_exec(
+            _cli(), *args, cwd=str(Path.home()),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
 
-    assert proc.stdout is not None
-    async for raw in proc.stdout:
-        line = raw.decode("utf-8", "replace").strip()
-        if not line or not line.startswith("{"):
-            continue
-        try:
-            event = json.loads(line)
-        except Exception:
-            continue
-        etype = event.get("type")
-        if etype == "assistant":
-            message = event.get("message") or {}
-            blocks = message.get("content") or []
-            for block in blocks if isinstance(blocks, list) else []:
-                if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
-                    yield chunk({"content": block["text"]})
-        elif etype == "result":
-            if event.get("is_error"):
-                yield chunk({"content": f"[qoder error] {event.get('result', '')}"})
-            break
-    await proc.wait()
-    yield chunk({}, "stop")
-    yield "data: [DONE]\n\n"
+        assert proc.stdout is not None
+        async for raw in proc.stdout:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line or not line.startswith("{"):
+                continue
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            etype = event.get("type")
+            if etype == "assistant":
+                message = event.get("message") or {}
+                blocks = message.get("content") or []
+                for block in blocks if isinstance(blocks, list) else []:
+                    if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                        yield chunk({"content": block["text"]})
+            elif etype == "result":
+                if event.get("is_error"):
+                    yield chunk({"content": f"[qoder error] {event.get('result', '')}"})
+                break
+        await proc.wait()
+        yield chunk({}, "stop")
+        yield "data: [DONE]\n\n"
+    finally:
+        _cleanup_tmp(tmp_dir)
 
 
 def main():
