@@ -202,17 +202,25 @@ def resolve_python(keys):
 # collectors
 # --------------------------------------------------------------------------- #
 
-def launchd_info(label):
+def launchd_info(label, name=None, log_dir=None):
     """Service state for a label: launchd on macOS, schtasks on Windows,
-    pgrep on Linux. Kept under the old name so callers do not change."""
+    pgrep on Linux. Kept under the old name so callers do not change.
+
+    On Windows a missing per-bridge task is not yet a verdict: the bridges may
+    be owned by the shared bridges launcher, whose pid files tell the truth.
+    """
     if fleet_platform.is_macos():
         code, out = run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), label)], timeout=6.0)
         if code != 0:
             return {"loaded": False, "state": "not loaded", "pid": None, "last_exit": None}
     else:
-        out = ""
         state = fleet_platform.service_status(label)
         if state == "missing":
+            if name and log_dir and fleet_platform.is_windows():
+                pid = windows_pidfile_alive(log_dir, name)
+                if pid:
+                    return {"loaded": True, "state": "logon task", "pid": pid,
+                            "last_exit": None}
             return {"loaded": False, "state": "not loaded", "pid": None, "last_exit": None}
         out = "state = %s" % state
 
@@ -231,7 +239,29 @@ def launchd_info(label):
     return {"loaded": True, "state": state or "unknown", "pid": pid, "last_exit": last_exit}
 
 
+def windows_pidfile_alive(log_dir, name):
+    """The bridges launcher records every pid it starts in <log_dir>/<name>.pid.
+
+    A live pid is the truth about "is this bridge service-managed" on Windows,
+    where no per-bridge launchd agent exists and the bridges may be owned by
+    the shared logon task instead of one task each. Returns the pid or None.
+    """
+    try:
+        with open(os.path.join(log_dir, name + ".pid"), encoding="utf-8") as fh:
+            pid = int(fh.read().strip().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    code, out = run(["tasklist", "/FI", "PID eq %d" % pid, "/NH"], timeout=8.0)
+    if code != 0 or not out or str(pid) not in out:
+        return None
+    return pid
+
+
 def listen_info(port):
+    if fleet_platform.is_windows():
+        # lsof does not exist on Windows; a loopback connect is the honest
+        # listener probe there (the pid is not worth another spawn).
+        return {"ok": fleet_platform.port_open(port), "pid": None}
     code, out = run(["lsof", "-nP", "-iTCP:%d" % port, "-sTCP:LISTEN"], timeout=6.0)
     if code != 0 or not out.strip():
         return {"ok": False, "pid": None}
@@ -271,6 +301,20 @@ def probe_bridge(port, key, timeout=PROBE_TIMEOUT):
 
 def plist_path(launch_dir, label):
     return os.path.join(launch_dir, label + ".plist")
+
+
+def service_artifact_present(cfg, label, name):
+    """Whether this bridge has *some* service that starts it.
+
+    macOS: the launchd plist. Windows: a per-bridge task.xml, or the shared
+    bridges launcher in the fleet home (start-bridges.cmd, which the logon
+    task runs) -- a plist check itself is meaningless there.
+    """
+    if not fleet_platform.is_windows():
+        return os.path.isfile(plist_path(cfg["launch_dir"], label))
+    if os.path.isfile(os.path.join(cfg["launch_dir"], label + ".task.xml")):
+        return True
+    return os.path.isfile(os.path.join(cfg["home"], "start-bridges.cmd"))
 
 
 def log_paths_from_plist(plist, log_dir, suffix):
@@ -418,7 +462,8 @@ def collect_bridge(cfg, spec):
         if log:
             break
     return {"name": name, "port": port, "label": label,
-            "agent": launchd_info(label), "listen": listen_info(port),
+            "agent": launchd_info(label, name=name, log_dir=cfg["log_dir"]),
+            "listen": listen_info(port),
             "probe": probe_bridge(port, key),
             "key": {"env": keyenv, "md5": md5_short(key), "set": bool(key)},
             "logs": paths, "log": log}
@@ -448,15 +493,16 @@ def collect(cfg):
                 and cfg["env_found"]):
             warnings.append("%s: HTTP %d 且 key 未读取到 - 登录后执行 bash %s/bridges/finish.sh %s"
                             % (bridge["name"], bridge["probe"]["http"], cfg["home"], bridge["name"]))
-        if not os.path.isfile(plist_path(cfg["launch_dir"], bridge["label"])):
-            warnings.append("%s: plist 缺失 %s" % (bridge["name"], bridge["label"]))
+        if not service_artifact_present(cfg, bridge["label"], bridge["name"]):
+            warnings.append("%s: 服务未安装 %s" % (bridge["name"], bridge["label"]))
 
     summary = {
         "bridges": len(bridges),
         # "not running" must not count as up: compare the whole state, not a substring.
         "agent_up": sum(1 for b in bridges
                         if b["agent"]["loaded"]
-                        and (b["agent"]["state"] or "").strip().lower() == "running"),
+                        and (b["agent"]["state"] or "").strip().lower()
+                        in ("running", "logon task")),
         "listening": sum(1 for b in bridges if b["listen"]["ok"]),
         "models": sum(b["probe"]["count"] for b in bridges),
         "probe_ok": sum(1 for b in bridges if b["probe"]["ok"]),
@@ -772,6 +818,11 @@ def build_config(args):
                     or keys.get("LABEL_PREFIX") or "com.local")
     log_dir = (args.log_dir or os.environ.get("LOG_DIR")
                or keys.get("LOG_DIR") or "/tmp/fleet-logs")
+    if fleet_platform.is_windows() and not re.match(r"^[A-Za-z]:", log_dir):
+        # The bridges launcher refuses POSIX-style log dirs on Windows and
+        # writes next to the fleet home instead; the pid files and the log
+        # tails the panel shows live there, so read the same place.
+        log_dir = os.path.join(home, "logs")
     launch_dir = (args.launch_dir or os.environ.get("FLEET_SERVICE_DIR")
                   or os.environ.get("FLEET_LAUNCH_DIR")
                   or keys.get("LAUNCH_DIR")
@@ -1200,7 +1251,7 @@ function render(){
   document.getElementById('warn').innerHTML = s.warnings.length
     ? '<div class="warnbox">'+s.warnings.map(esc).join('<br>')+'</div>' : '';
   var sum=s.summary;
-  var cards=[['桥在线',sum.agent_up+' / '+sum.bridges,'launchd loaded 且在跑'],
+  var cards=[['桥在线',sum.agent_up+' / '+sum.bridges,'服务已加载且在跑'],
              ['端口监听',sum.listening+' / '+sum.bridges,'127.0.0.1 LISTEN'],
              ['模型总数',sum.models,'/v1/models 汇总'],
              ['今日签到',sum.checkin_ok_today+' / '+sum.checkin_total,'tasks ok today'],
