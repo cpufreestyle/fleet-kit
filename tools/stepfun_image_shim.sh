@@ -91,7 +91,17 @@ fi
 set +u
 PY="$FLEET_PYTHON"
 if [ -z "$PY" ] || [ ! -x "$PY" ]; then
-  PY="$(command -v python3 || true)"
+  # A bare python3 on Windows resolves to the Store/WSL stub, which lacks the
+  # shim's httpx -- prefer the runtime venv (it exists to carry the bridge
+  # dependencies), then a real python, then python3 last.
+  for cand in "$HOME/FleetKit/runtime/.venv/Scripts/python.exe" \
+              "$(command -v python 2>/dev/null || true)" \
+              "$(command -v python3 2>/dev/null || true)"; do
+    if [ -n "$cand" ] && [ -x "$cand" ]; then
+      PY="$cand"
+      break
+    fi
+  done
 fi
 set -u
 if [ -z "$PY" ] || [ ! -x "$PY" ]; then
