@@ -95,7 +95,10 @@ def _prov_line(key, gateway):
     if key == "base_url":
         return "base_url = %s\n" % _toml_str(gateway)
     if key == "wire_api":
-        return 'wire_api = "responses"\n'
+        # chat: FreeLLMAPI (the second-level scheduler) and every bridge speak
+        # chat/completions natively; its /v1/responses schema rejects Codex's
+        # full payload ("input: Invalid input", measured 2026-10-05).
+        return 'wire_api = "chat"\n'
     if key == "experimental_bearer_token":
         return 'experimental_bearer_token = "PROXY_MANAGED"\n'
     return "requires_openai_auth = false\n"

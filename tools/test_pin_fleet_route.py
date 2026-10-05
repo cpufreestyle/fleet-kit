@@ -128,9 +128,13 @@ class FleetRoutePin(unittest.TestCase):
         text = self._read()
         self.assertIn(self._decl(self.catalog), text)
         self.assertIn('openai_base_url = "%s"' % GATEWAY, text)
-        self.assertIn('experimental_realtime_ws_base_url = "%s"' % GATEWAY, text)
+        # The realtime-ws key is deliberately no longer pinned: the desktop
+        # app prefers that transport when it exists and the proxy answers the
+        # upgrade with 426, which locks compose.
+        self.assertNotIn("experimental_realtime_ws_base_url", text)
         self.assertIn("[model_providers.opencodex]", text)
         self.assertIn('model_provider = "opencodex"', text)
+        self.assertIn('wire_api = "chat"', text)
 
     def test_the_foreign_provider_section_survives_verbatim(self):
         """Sessions already open on the switcher's provider must keep working.
