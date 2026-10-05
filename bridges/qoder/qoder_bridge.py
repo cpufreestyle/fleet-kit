@@ -465,9 +465,29 @@ async def _stream(body: str, base_args: list[str], model: str, payload: dict, tm
         # prompt 走 stdin(argv 只放 flag);stdin 无长度限制,drain() 处理
         # 大 prompt 的背压,写完立即 close 给 CLI 送 EOF。
         assert proc.stdin is not None
-        proc.stdin.write(body.encode("utf-8"))
-        await proc.stdin.drain()
-        proc.stdin.close()
+        try:
+            proc.stdin.write(body.encode("utf-8"))
+            await proc.stdin.drain()
+            proc.stdin.close()
+        except (BrokenPipeError, ConnectionResetError):
+            # CLI 可能在读 stdin 之前就退出(典型:当日配额耗尽/登录态失效时
+            # 直接退)。裸的 WinError 109 毫无信息量——等它退出并取 stderr,
+            # 把真实原因交给调用方。
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10)
+            except Exception:
+                proc.kill()
+            err_tail = b""
+            if proc.stderr is not None:
+                try:
+                    err_tail = await asyncio.wait_for(proc.stderr.read(), timeout=3)
+                except Exception:
+                    pass
+            reason = err_tail.decode("utf-8", "replace").strip()[:400] or "CLI 未给出说明"
+            yield chunk({"content": f"[qoder error] CLI 提前退出(退出码 {proc.returncode}): {reason}"})
+            yield chunk({}, "stop")
+            yield "data: [DONE]\n\n"
+            return
 
         # stderr 必须持续抽干：管道缓冲写满后 CLI 会阻塞在 write 上，整个流
         # 跟着挂死；抽干的同时留住文本，进程异常退出时回报给调用方。
@@ -479,6 +499,8 @@ async def _stream(body: str, base_args: list[str], model: str, payload: dict, tm
                 stderr_buf.extend(raw)
 
         pump = asyncio.ensure_future(_drain_stderr())
+        errored = False    # result.is_error 已发过带前缀的错误块
+        explained = False  # 正文里已出现人话原因(如配额耗尽提示)
         try:
             assert proc.stdout is not None
             async for raw in proc.stdout:
@@ -495,15 +517,20 @@ async def _stream(body: str, base_args: list[str], model: str, payload: dict, tm
                     blocks = message.get("content") or []
                     for block in blocks if isinstance(blocks, list) else []:
                         if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                            explained = True
                             yield chunk({"content": block["text"]})
                 elif etype == "result":
-                    if event.get("is_error"):
+                    if event.get("is_error") and event.get("result"):
+                        errored = True
                         yield chunk({"content": f"[qoder error] {event.get('result', '')}"})
                     break
             await proc.wait()
             if proc.returncode != 0:
                 detail = stderr_buf.decode("utf-8", "replace").strip()[:400]
-                yield chunk({"content": f"[qoder error] 退出码 {proc.returncode}: {detail}"})
+                # 正文通常已带原因;只在没有任何解释时才补退出码行,免得
+                # 客户端看到 "[qoder error] " + "[qoder error] 退出码 1: " 连环噪音。
+                if detail or not (errored or explained):
+                    yield chunk({"content": f"[qoder error] 退出码 {proc.returncode}: {detail}"})
         finally:
             pump.cancel()
         yield chunk({}, "stop")
