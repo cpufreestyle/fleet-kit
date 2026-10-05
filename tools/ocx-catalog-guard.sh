@@ -178,6 +178,16 @@ route_pin() {
   [ -n "$FLEET_PY_BIN" ] || return 0
   local pin="${FLEET_ROUTE_PIN_TOOL:-${SCRIPT_DIR}/pin_fleet_route.py}"
   [ -f "$pin" ] || return 0
+  # The pin target follows the deployment's dispatcher: fleet.env's
+  # FLEET_GATEWAY (this deployment pins CC Switch's gateway) overrides the
+  # tool's default, so the guard restores the switcher's own route instead of
+  # fighting it.
+  local fleet_env="${FLEET_HOME:-$HOME/FleetKit/runtime}/fleet.env"
+  if [ -f "$fleet_env" ]; then
+    local gw
+    gw="$(sed -n 's/^FLEET_GATEWAY=//p' "$fleet_env" | head -1 | tr -d '\r"')"
+    [ -n "$gw" ] && export FLEET_GATEWAY="$gw"
+  fi
   local extra=""
   [ "$DRY_RUN" = "1" ] && extra="--dry-run"
   # shellcheck disable=SC2086  # $extra is either empty or one flag
