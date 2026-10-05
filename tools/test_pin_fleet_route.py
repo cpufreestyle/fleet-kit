@@ -135,6 +135,14 @@ class FleetRoutePin(unittest.TestCase):
         self.assertIn("[model_providers.opencodex]", text)
         self.assertIn('model_provider = "opencodex"', text)
         self.assertIn('wire_api = "responses"', text)
+        # Parse the file: string assertions can pass on the copied-through
+        # foreign section, so pin the fleet provider's own wire here -- the
+        # pin wrote "chat" once and Codex refused to load for whole days.
+        import tomllib
+        with open(self.config, "rb") as fh:
+            written = tomllib.load(fh)
+        self.assertEqual(
+            written["model_providers"]["opencodex"]["wire_api"], "responses")
 
     def test_the_foreign_provider_section_survives_verbatim(self):
         """Sessions already open on the switcher's provider must keep working.

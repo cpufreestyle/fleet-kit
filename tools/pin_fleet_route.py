@@ -95,10 +95,10 @@ def _prov_line(key, gateway):
     if key == "base_url":
         return "base_url = %s\n" % _toml_str(gateway)
     if key == "wire_api":
-        # chat: FreeLLMAPI (the second-level scheduler) and every bridge speak
-        # chat/completions natively; its /v1/responses schema rejects Codex's
-        # full payload ("input: Invalid input", measured 2026-10-05).
-        return 'wire_api = "chat"\n'
+        # responses: Codex 26.930 dropped wire_api = "chat" entirely (config
+        # load fails, discussion/7782) -- responses is the only supported wire,
+        # and FreeLLMAPI now accepts the full Responses payload.
+        return 'wire_api = "responses"\n'
     if key == "experimental_bearer_token":
         return 'experimental_bearer_token = "PROXY_MANAGED"\n'
     return "requires_openai_auth = false\n"
