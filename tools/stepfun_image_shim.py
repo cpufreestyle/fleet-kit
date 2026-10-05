@@ -645,19 +645,32 @@ def build_app(config: Config):
         if not isinstance(payload, dict):
             return raw, None
         model = payload.get("model") or ""
-        if not config.applies_to(model):
+        notes = []
+        # ocx/Codex 发来的限定名(如 "stepfun/step-5-preview")上游不认,原样
+        # 转发只会得到 404 "does not exist"——剥掉 provider 前缀再转发,
+        # 规则与 workbuddy 桥的 _resolve_route_model 一致。
+        if isinstance(model, str) and "/" in model:
+            stripped = model.rsplit("/", 1)[-1]
+            if stripped and stripped != model:
+                payload["model"] = stripped
+                notes.append("prefix_stripped=%r" % model)
+                model = stripped
+        if config.applies_to(model):
+            payload, info = image_cap.cap_images(payload, config.max_images)
+            if info["images"] and (info["dropped_duplicate"]
+                                   or info["dropped_cap"]):
+                stats.rewritten += 1
+                stats.images_seen += info["images"]
+                stats.images_kept += info["kept"]
+                notes.append("images=%d unique=%d kept=%d dup_dropped=%d "
+                             "cap_dropped=%d" % (info["images"], info["unique"],
+                                                 info["kept"],
+                                                 info["dropped_duplicate"],
+                                                 info["dropped_cap"]))
+        if not notes:
             return raw, None
-        payload, info = image_cap.cap_images(payload, config.max_images)
-        if not info["images"] or (info["dropped_duplicate"] == 0
-                                   and info["dropped_cap"] == 0):
-            return raw, None
-        stats.rewritten += 1
-        stats.images_seen += info["images"]
-        stats.images_kept += info["kept"]
         return json.dumps(payload, ensure_ascii=False).encode("utf-8"), (
-            "model=%s images=%d unique=%d kept=%d dup_dropped=%d cap_dropped=%d"
-            % (model, info["images"], info["unique"], info["kept"],
-               info["dropped_duplicate"], info["dropped_cap"]))
+            "model=%s %s" % (model, " ".join(notes)))
 
     def is_cap_path(path: str) -> bool:
         return any(path.endswith(suffix) for suffix in CAP_PATH_SUFFIXES)
