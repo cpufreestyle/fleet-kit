@@ -134,7 +134,7 @@ class FleetRoutePin(unittest.TestCase):
         self.assertNotIn("experimental_realtime_ws_base_url", text)
         self.assertIn("[model_providers.opencodex]", text)
         self.assertIn('model_provider = "opencodex"', text)
-        self.assertIn('wire_api = "chat"', text)
+        self.assertIn('wire_api = "responses"', text)
 
     def test_the_foreign_provider_section_survives_verbatim(self):
         """Sessions already open on the switcher's provider must keep working.
