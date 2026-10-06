@@ -593,7 +593,7 @@
   }
  ],
  "live": {
-  "measured_at": "2026-10-07 01:13:40",
+  "measured_at": "2026-10-07 02:31:25",
   "ports": {
    "10100": {
     "listening": true,
@@ -688,9 +688,9 @@
    "zcode": 2,
    "spacebunny": 1
   },
-  "state_from": "2026-10-07T00:52:52+08:00",
+  "state_from": "2026-10-07T01:59:50+08:00",
   "fleet_reach": {
-   "measured_at": "2026-10-07T00:52:52+08:00",
+   "measured_at": "2026-10-07T01:59:50+08:00",
    "reachable": [
     "codely",
     "lingxi",
