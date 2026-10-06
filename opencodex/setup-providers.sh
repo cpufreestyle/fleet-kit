@@ -316,5 +316,24 @@ else
   bash "$SHIM_SH" install-timer || echo "  [warn] stepfun image-cap shim install failed" >&2
 fi
 
+# The reverse proxy is only reachable from the Codex picker if CC Switch knows
+# it: the app owns ~/.codex/config.toml and rewrites it on every provider switch,
+# so with no ocx row in its own table the fleet route cannot be selected and the
+# provider that *is* selected writes back a foreign base_url -- measured
+# 2026-10-05, a workbuddy model answered 404 by the StepFun shim on 15722.
+# tools/register_cc_switch_provider.py inserts that row once, idempotently, and
+# re-runs cleanly on every setup.
+REGISTER="${KIT}/tools/register_cc_switch_provider.py"
+if [ -n "${FLEET_HOME:-}" ] && [ -f "${FLEET_HOME}/tools/register_cc_switch_provider.py" ]; then
+  REGISTER="${FLEET_HOME}/tools/register_cc_switch_provider.py"
+fi
+if [ "$DRY_RUN" = "1" ]; then
+  run python3 "$REGISTER" --dry-run
+elif [ -f "$REGISTER" ]; then
+  run python3 "$REGISTER" || echo "  [warn] CC Switch provider registration failed" >&2
+else
+  echo "  [warn] $REGISTER missing; the fleet route is not in the CC Switch list" >&2
+fi
+
 run ocx service restart
 echo "done. inspect with: ocx models live"

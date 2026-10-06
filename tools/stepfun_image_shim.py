@@ -230,10 +230,18 @@ class Config:
                 watchdog: bool | None = None,
                 watchdog_interval: float | None = None,
                 watchdog_timeout: float | None = None,
-                watchdog_strikes: int | None = None):
+                watchdog_strikes: int | None = None,
+                fleet_upstream: str | None = None):
         self.host = host
         self.port = port
         self.upstream = upstream.rstrip("/")
+        # Second upstream for the fleet's own models, see upstream_for(). Empty
+        # string disables the split and forwards everything to upstream.
+        self.fleet_upstream = ((
+            fleet_upstream if fleet_upstream is not None
+            else os.environ.get("IMAGE_CAP_FLEET_UPSTREAM",
+                                "http://127.0.0.1:10100/v1"))
+            or "").rstrip("/")
         self.max_images = max_images
         self.models = models
         self.repin_interval = float(
@@ -310,6 +318,23 @@ class Config:
         low = (model or "").lower()
         return any(f in low for f in filters)
 
+    def upstream_for(self, model: str) -> str:
+        """Pick the upstream this model belongs to.
+
+        Everything pinned at this port lands here, and a client whose base_url
+        was pinned to the shim keeps sending whatever model the session has --
+        including a fleet model. Those carry a bridge prefix
+        (workbuddy/deepseek-v4.1-flash), StepFun answers them 404 "model does
+        not exist", and the operator sees a dead model rather than a wrong
+        route. Measured 2026-10-05: a session resumed with
+        workbuddy/deepseek-v4.1-flash against http://127.0.0.1:15722/v1/responses.
+        StepFun's own ids have no slash, so the prefix is an exact enough test
+        and the fleet hop costs a StepFun client nothing.
+        """
+        if self.fleet_upstream and "/" in (model or ""):
+            return self.fleet_upstream
+        return self.upstream
+
 
 def parse_args(argv=None) -> Config:
     parser = argparse.ArgumentParser(
@@ -334,12 +359,17 @@ def parse_args(argv=None) -> Config:
     parser.add_argument("--retry-429", type=int, default=None,
                         help="retries with backoff on an upstream 429"
                              " (env IMAGE_CAP_429_RETRIES, default 3)")
+    parser.add_argument("--fleet-upstream", default=None,
+                        help="upstream for bridge-prefixed fleet models, empty"
+                             " to disable (env IMAGE_CAP_FLEET_UPSTREAM,"
+                             " default http://127.0.0.1:10100/v1)")
     args = parser.parse_args(argv)
     return Config(args.host, args.port, args.upstream, args.max_images,
                   args.models,
                   max_inflight=args.max_inflight,
                   queue_timeout=args.queue_timeout,
-                  retry_429=args.retry_429)
+                  retry_429=args.retry_429,
+                  fleet_upstream=args.fleet_upstream)
 
 
 def health_payload(config, stats):
@@ -691,6 +721,16 @@ def build_app(config: Config):
     def is_cap_path(path: str) -> bool:
         return any(path.endswith(suffix) for suffix in CAP_PATH_SUFFIXES)
 
+    def body_model(raw: bytes) -> str:
+        """The model id a JSON body asks for, "" when it has none."""
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        return payload.get("model") or ""
+
     @app.get(HEALTH_PATH)
     async def health():
         return health_payload(config, stats)
@@ -708,9 +748,19 @@ def build_app(config: Config):
 
         headers = {name: value for name, value in request.headers.items()
                    if name.lower() not in HOP_REQUEST_HEADERS}
-        joined = "%s/%s" % (config.upstream,
-                            forward_path(config.upstream, path))
-        url = joined.rstrip("/") or config.upstream
+        # A fleet model arriving here is a client still pinned at this port,
+        # not a StepFun model that vanished: send it to the fleet gateway
+        # instead of letting StepFun answer 404 (see Config.upstream_for).
+        upstream = config.upstream_for(body_model(body) if body else "")
+        if upstream != config.upstream:
+            # The fleet gateway authenticates the bridges itself, so the key a
+            # StepFun-pinned client sends must not ride along: forwarded, it is
+            # an unknown credential and the gateway answers 503 upstream_error
+            # for a model it otherwise serves (measured 2026-10-05).
+            headers = {name: value for name, value in headers.items()
+                       if name.lower() != "authorization"}
+        joined = "%s/%s" % (upstream, forward_path(upstream, path))
+        url = joined.rstrip("/") or upstream
         if request.url.query:
             url += "?" + request.url.query
 

@@ -14,9 +14,17 @@ count as NOT reachable, because the picker is what the user actually feels.
 skipped lists bridges the sweep does not call on purpose, so a strict sorter
 can tell them apart from a bridge a truncated run never reached.
 
+Reachability is not the same as being usable from an agentic client, so every
+bridge that answers also gets one call carrying `tools` (see try_tool_call).
+A bridge that answers text but drops `tools` looks perfectly reachable to this
+sweep and dead to a client that drives its loop on tool_calls -- qoder was
+exactly that until 2026-10-06. agentic records which bridges hand the call
+back as structured tool_calls and which leak it into the message body.
+
 Usage:
   fleet_probe.py            write ~/.codex/fleet-reach.json
   fleet_probe.py --stdout   print JSON instead of writing
+  fleet_probe.py --no-tools skip the tool-call check (text reachability only)
 """
 import argparse
 import datetime
@@ -36,6 +44,7 @@ PORTS = {
     "xhx": 8793, "gemini": 8794, "catpaw": 8795,
     "antigravity": 8797, "qwen": 8798, "cline": 8799,
     "zcode": 8800,
+    "doubao": 8805,
     "kimi-code": 8802, "minimax": 8803,
 }
 
@@ -57,6 +66,7 @@ KEY_ENV = {
     "catpaw": "CATPAW2CODEX_KEY", "antigravity": "ANTIGRAVITY2CODEX_KEY",
     "qwen": "QWEN2CODEX_KEY", "cline": "CLINE2CODEX_KEY",
     "zcode": "ZCODE2CODEX_KEY",
+    "doubao": "DOUBAO2CODEX_KEY",
     "kimi-code": "KIMI2CODEX_KEY", "minimax": "MINIMAX2CODEX_KEY",
 }
 
@@ -77,6 +87,11 @@ SKIP_RE = ("image", "tts", "embed", "ocr", "vision", "vl")
 # Add explicit --only <name> to probe one of these deliberately.
 NO_PROBE = {
     "zcode": "upstream requires per-call Aliyun captcha; probe is opt-in",
+    # spacebunny has no fleet bridge to call: it is routed straight through
+    # opencodex to an OpenRouter stealth preview. It still has to show up in
+    # the snapshot, because catalog_sort.py --strict-coverage treats a
+    # catalog provider with no verdict at all as a gap and refuses to sort.
+    "spacebunny": "no fleet bridge; routed through opencodex, opt-in only",
 }
 
 
@@ -215,6 +230,65 @@ def try_call(port, headers, model, timeout=20.0, budget=60):
                 and max(reasoning, spent) >= budget * 0.9):
             return None, text[:60]
     return False, text[:60]
+
+
+# ---- agentic 工具调用探针 ----
+# 桥能不能回文本，和它在 agentic 客户端里能不能用，是两件事。qoder 桥在
+# 2026-10-06 之前把请求里的 tools 直接丢掉：文本问答一切正常（本探针判
+# UP），但 ZCode 这类按 tool_calls 驱动循环的客户端收到的是 <tool_call>
+# 正文，循环直接卡死在 Thinking。只测文本回显测不出这种桥，所以每个答得
+# 上话的桥再补一发带 tools 的调用。
+
+TOOL_PROBE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "echo_nonce",
+        "description": "Echo the nonce back to the caller.",
+        "parameters": {"type": "object",
+                       "properties": {"nonce": {"type": "string"}},
+                       "required": ["nonce"]},
+    },
+}
+TOOL_PROBE_PROMPT = ("Call the echo_nonce tool with nonce=\"%s\". Answer with"
+                     " the tool call only, no plain text." % NONCE)
+
+
+def try_tool_call(port, headers, model, timeout=30.0):
+    """一次带 tools 的调用 → (verdict, why)。
+
+    True  = 桥回了原生 tool_calls，agentic 客户端能用
+    False = 调用被写成正文（或压根没调），这类客户端会卡死
+    None  = 探针自己没跑成（超时 / HTTP 错），不算桥的能力问题
+    """
+    url = "http://127.0.0.1:%d/v1/chat/completions" % port
+    body = json.dumps({
+        "model": model,
+        "max_tokens": 512,
+        "messages": [{"role": "user", "content": TOOL_PROBE_PROMPT}],
+        "tools": [TOOL_PROBE_TOOL],
+    }).encode()
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with OPENER.open(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        return None, "HTTP %s" % exc.code
+    except Exception as exc:
+        return None, str(exc)[:60]
+    message = ((data.get("choices") or [{}])[0].get("message") or {})
+    calls = message.get("tool_calls") or []
+    if calls:
+        fn = (calls[0].get("function") or {})
+        return True, "tool_calls: %s(%s)" % (fn.get("name"),
+                                            (fn.get("arguments") or "")[:40])
+    text = (message.get("content") or "").strip()
+    if "<tool_call>" in text or "<function=" in text:
+        return False, "tool call leaked as text"
+    if is_error_body(text):
+        return None, "upstream refused: " + (matched_marker(text) or "?")
+    if not text:
+        return False, "empty reply"
+    return False, "no tool_calls in reply"
 
 
 SKIP_EXACT = ("cline-free/",)
@@ -422,16 +496,22 @@ def main():
     ap.add_argument("--call-timeout", type=float, default=45.0,
                     help="per-attempt timeout; slow models must not look dead")
     ap.add_argument("--tries", type=int, default=6)
+    ap.add_argument("--no-tools", action="store_true",
+                    help="skip the agentic tool-call check (text reachability"
+                         " only; no extra call per bridge)")
     args = ap.parse_args()
 
     env = load_env(args.env)
     reachable, unreachable, evidence, ports = [], [], {}, {}
     verified_models = {}
     skipped = {}
+    agentic = {}
     # timestamps of the proofs we inherited rather than measured this run
     carried_at = {}
     names = [n.strip() for n in args.only.split(",") if n.strip()]
-    every = sorted(set(PORTS) | set(GATEWAY))
+    # A provider the sweep refuses to call is still a provider: covering it in
+    # the snapshot is what keeps --strict-coverage from refusing every sort.
+    every = sorted(set(PORTS) | set(GATEWAY) | set(NO_PROBE))
     for name in (names or every):
         if name in NO_PROBE and not names:
             # A bridge the sweep deliberately does not call can still be
@@ -459,6 +539,7 @@ def main():
             continue
         port = plist_port(name) or PORTS.get(name) or GATEWAY_PORT
         ports[name] = port
+        key = ""
         if name in GATEWAY:
             ok, why, model = probe_gateway(name, name, timeout=args.call_timeout)
         else:
@@ -470,6 +551,17 @@ def main():
         (reachable if ok else unreachable).append(name)
         verified_models[name] = model
         print(("UP  " if ok else "DOWN"), name, port, why, flush=True)
+        # A bridge that answers text but drops `tools` is reachable here and
+        # dead inside an agentic client, so it gets a second verdict of its
+        # own rather than borrowing the text one (see try_tool_call).
+        if ok and model and not args.no_tools:
+            headers = {"Authorization": "Bearer " + key} if key else {}
+            tverdict, twhy = try_tool_call(
+                port, headers, model,
+                timeout=min(CALL_TIMEOUT_OVERRIDE.get(name, args.call_timeout),
+                            90.0))
+            agentic[name] = {"agentic": bool(tverdict), "why": twhy}
+            print(("TOOL" if tverdict else "NOTOOL"), name, twhy, flush=True)
 
     tz = datetime.datetime.now().astimezone().tzinfo
     snap = {
@@ -480,6 +572,11 @@ def main():
             timespec="seconds"),
         "ports": ports,
         "evidence": evidence,
+        # which bridges hand a tool call back to the client as structured
+        # tool_calls, and which leak it into the message body instead
+        "agentic": agentic,
+        "agentic_text_only": sorted(
+            name for name, row in agentic.items() if not row.get("agentic")),
     }
     # which exact model answered, so the sorter can float proven-good rows up
     verified = {}

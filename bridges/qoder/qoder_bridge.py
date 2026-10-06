@@ -168,7 +168,13 @@ def _refresh_models(force: bool = False) -> list[dict]:
 
 
 def _messages_to_prompt(messages: list) -> tuple[str, str]:
-    """返回 (system_prompt, 对话正文)。"""
+    """返回 (system_prompt, 对话正文)。
+
+    tool 消息与 assistant 的 tool_calls 也要进正文：agentic 客户端（ZCode
+    这类）的多轮循环里，模型必须看到自己上一轮调了什么、工具回了什么，
+    否则同一调用会被反复发起。渲染成与工具协议一致的 <tool_call> 形式，
+    模型认得自己上轮的输出格式。
+    """
     system_parts: list[str] = []
     turns: list[str] = []
     for msg in messages:
@@ -182,14 +188,37 @@ def _messages_to_prompt(messages: list) -> tuple[str, str]:
                 for part in content
             )
         content = str(content or "").strip()
+        if role in ("system", "developer"):
+            if content:
+                system_parts.append(content)
+            continue
+        if role == "assistant":
+            calls = msg.get("tool_calls")
+            block = ""
+            if isinstance(calls, list) and calls:
+                rendered = []
+                for tc in calls:
+                    fn = (tc or {}).get("function") or {}
+                    args = fn.get("arguments")
+                    if not (isinstance(args, str) and args.strip()):
+                        args = json.dumps(args or {}, ensure_ascii=False)
+                    rendered.append('<tool_call>{"name": "%s", "arguments": %s}</tool_call>'
+                                    % (fn.get("name") or "", args))
+                block = "\n".join(rendered)
+            if content and block:
+                turns.append(f"Assistant: {content}\n{block}")
+            elif block:
+                turns.append(f"Assistant: {block}")
+            elif content:
+                turns.append(f"Assistant: {content}")
+            continue
+        if role == "tool":
+            tid = str(msg.get("tool_call_id") or "call")
+            turns.append(f"Tool result for {tid}:\n{content}")
+            continue
         if not content:
             continue
-        if role in ("system", "developer"):
-            system_parts.append(content)
-        elif role == "assistant":
-            turns.append(f"Assistant: {content}")
-        else:
-            turns.append(f"User: {content}")
+        turns.append(f"User: {content}")
     return "\n\n".join(system_parts), "\n\n".join(turns)
 
 
@@ -314,6 +343,117 @@ def _extract_usage(payload: dict) -> Optional[dict]:
             "total_tokens": prompt + completion}
 
 
+# ---- agentic 工具调用（文本级协议）----
+# 上游是 qoderclicn 的文本问答（--tools "" 禁了内置工具），OpenAI 的 tools
+# 参数到不了模型。agentic 客户端（ZCode 等）却按 tool_calls 驱动循环：不补
+# 这层，模型只能把调用写成正文文本，客户端看到 <tool_call> 原文，循环卡在
+# Thinking（实测 2026-10-06，qdr/qwen3.8-fl 在 ZCode 的 goal 模式里）。
+
+_TOOL_PROTOCOL = (
+    "\n\n# Tool use protocol\n"
+    "You can invoke tools. Available tools:\n{schemas}\n"
+    "To invoke one, emit a block exactly like:\n"
+    '<tool_call>{"name": "tool_name", "arguments": {"key": "value"}}</tool_call>\n'
+    "Rules: the block content must be valid JSON, one call per block, multiple"
+    " blocks for multiple calls, no prose inside a block. When no tool is"
+    " needed, answer in plain text with no <tool_call> block at all."
+)
+
+_TOOLCALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.S | re.I)
+_FUNCTION_RE = re.compile(r"<function\s*=\s*([\w.\-]+)\s*>(.*?)</function>", re.S | re.I)
+_PARAMETER_RE = re.compile(r"<parameter\s*=\s*([\w.\-]+)\s*>(.*?)</parameter>", re.S | re.I)
+_TAG_RE = re.compile(r"</?tool_call>", re.I)
+
+
+def _tool_arguments(value) -> str:
+    """OpenAI 的 arguments 恒为 JSON 字符串；容忍上游给对象或纯文本。"""
+    if value is None:
+        return "{}"
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return "{}"
+        try:
+            json.loads(s)
+            return s
+        except Exception:
+            return json.dumps({"input": s}, ensure_ascii=False)
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _parse_tool_block(inner: str):
+    """一个 <tool_call> 块 → (name, arguments)；认不出返回 None。
+
+    两种形态都收：Qwen 的 JSON 风格，和客户端历史里出现过的
+    <function=exec><parameter=cmd>…</parameter></function> XML 风格。
+    """
+    inner = inner.strip()
+    if not inner:
+        return None
+    try:
+        obj = json.loads(inner)
+        if isinstance(obj, dict) and obj.get("name"):
+            return str(obj["name"]), obj.get("arguments")
+    except Exception:
+        pass
+    fn = _FUNCTION_RE.search(inner)
+    if not fn:
+        return None
+    name, body = fn.group(1), fn.group(2)
+    args: dict = {}
+    for pm in _PARAMETER_RE.finditer(body):
+        key, val = pm.group(1), pm.group(2).strip()
+        try:
+            args[key] = json.loads(val)
+        except Exception:
+            args[key] = val
+    return name, args
+
+
+def _parse_tool_calls(text: str):
+    """从回答里摘出工具调用 → (剩余正文, [(name, arguments)])。"""
+    calls: list = []
+    spans: list = []
+    for m in _TOOLCALL_RE.finditer(text):
+        parsed = _parse_tool_block(m.group(1))
+        if parsed:
+            spans.append(m.span())
+            calls.append(parsed)
+    if not calls:
+        # 有的模型不包 <tool_call> 外壳，直接吐 <function=...> 块
+        for m in _FUNCTION_RE.finditer(text):
+            parsed = _parse_tool_block(m.group(0))
+            if parsed:
+                spans.append(m.span())
+                calls.append(parsed)
+    if not calls:
+        return text, None
+    parts, last = [], 0
+    for s, e in spans:
+        parts.append(text[last:s])
+        last = e
+    parts.append(text[last:])
+    content = _TAG_RE.sub("", "".join(parts)).strip()
+    return content, calls
+
+
+def _tool_call_entries(calls) -> list:
+    entries = []
+    for name, args in calls:
+        entries.append({
+            "id": "call_" + os.urandom(6).hex(),
+            "type": "function",
+            "function": {"name": str(name)[:128],
+                         "arguments": _tool_arguments(args)},
+        })
+    return entries
+
+
+def _tool_system_patch(tools: list) -> str:
+    schemas = "\n".join(json.dumps(t, ensure_ascii=False) for t in tools[:64])
+    return _TOOL_PROTOCOL.replace("{schemas}", schemas)
+
+
 # "auto"/"default" (and an empty model) fall back to DEFAULT_MODEL; anything
 # else keeps the qoder/ prefix stripped exactly once.
 _strip_qoder = _common.make_model_remapper("qoder/")
@@ -366,6 +506,11 @@ async def chat_completions(request: Request,
             body = "请描述附件图片的内容。"  # 纯图片请求（无文字）也放行
         else:
             raise HTTPException(status_code=400, detail={"error": {"message": "empty prompt"}})
+
+    tools = payload.get("tools") if isinstance(payload.get("tools"), list) else None
+    if tools:
+        system_prompt = (system_prompt + _tool_system_patch(tools)) if system_prompt \
+            else _tool_system_patch(tools).lstrip()
 
     base_args = [
         "-p",
@@ -424,17 +569,28 @@ async def _collect(body: str, base_args: list[str], model: str, payload: dict) -
     text = _extract_text(parsed)
     if not text.strip():
         text = (proc.stdout or "").strip()
-    if not text.strip():
+
+    tools_on = isinstance(payload.get("tools"), list) and bool(payload["tools"])
+    calls = None
+    if tools_on:
+        text, calls = _parse_tool_calls(text)
+    if not text.strip() and not calls:
         raise HTTPException(status_code=502, detail={"error": {
             "message": "Qoder 未返回内容", "type": "upstream_error"}})
+
+    message: dict = {"role": "assistant", "content": text or None}
+    finish = "stop"
+    if calls:
+        message["tool_calls"] = _tool_call_entries(calls)
+        finish = "tool_calls"
 
     response = {
         "id": "chatcmpl-" + os.urandom(8).hex(),
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
-                     "finish_reason": "stop"}],
+        "choices": [{"index": 0, "message": message,
+                     "finish_reason": finish}],
     }
     usage = _extract_usage(parsed)
     if usage:
@@ -455,6 +611,12 @@ async def _stream(body: str, base_args: list[str], model: str, payload: dict, tm
 
     try:
         yield chunk({"role": "assistant"})
+
+        # 带 tools 的请求走缓冲模式：工具调用要在全文上解析，流到一半的
+        # <tool_call> 没法收回，客户端会把原文渲染出来（就是本次的 bug 形态）。
+        tools_on = isinstance(payload.get("tools"), list) and bool(payload["tools"])
+        buffered: list[str] = []
+        finish = "stop"
 
         args = base_args + ["--output-format", "stream-json"]
         proc = await asyncio.create_subprocess_exec(
@@ -518,7 +680,10 @@ async def _stream(body: str, base_args: list[str], model: str, payload: dict, tm
                     for block in blocks if isinstance(blocks, list) else []:
                         if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
                             explained = True
-                            yield chunk({"content": block["text"]})
+                            if tools_on:
+                                buffered.append(block["text"])
+                            else:
+                                yield chunk({"content": block["text"]})
                 elif etype == "result":
                     if event.get("is_error") and event.get("result"):
                         errored = True
@@ -533,7 +698,17 @@ async def _stream(body: str, base_args: list[str], model: str, payload: dict, tm
                     yield chunk({"content": f"[qoder error] 退出码 {proc.returncode}: {detail}"})
         finally:
             pump.cancel()
-        yield chunk({}, "stop")
+
+        if tools_on:
+            # 缓冲模式下正文还没发给客户端：解析后要么发正文，要么发工具调用。
+            text, calls = _parse_tool_calls("".join(buffered))
+            if calls:
+                for i, entry in enumerate(_tool_call_entries(calls)):
+                    yield chunk({"tool_calls": [{**entry, "index": i}]})
+                finish = "tool_calls"
+            elif text:
+                yield chunk({"content": text})
+        yield chunk({}, finish)
         yield "data: [DONE]\n\n"
     except Exception as exc:
         # 流一旦开始，HTTP 状态码就无法改了；此时让异常把连接裸断掉，客户端
