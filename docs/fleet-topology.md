@@ -1,7 +1,7 @@
 # FleetKit 舰队拓扑
 
 > 由 `kit/docs/fleet-topology.json` 生成（`python3 tools/topology.py all`）。
-> 改拓扑改 JSON，不要手改本文件。实测：2026-10-07 00:45:27
+> 改拓扑改 JSON，不要手改本文件。实测：2026-10-07 01:13:40
 
 ```mermaid
 flowchart LR
@@ -75,7 +75,7 @@ flowchart LR
 
 | 组件 | 端口 | 状态 | 模型 |
 |---|---|---|---|
-| opencodex 反代理 :10100 | 10100 | 在听 | 242 |
+| opencodex 反代理 :10100 | 10100 | 在听 | 144 |
 | CC Switch :15721 | 15721 | 在听 | — |
 | FleetKit Anthropic 网关 :8801 | 8801 | 在听 | 283 |
 | FreeLLMAPI :3001 | 3001 | 在听 | — |
@@ -84,7 +84,7 @@ flowchart LR
 
 ## 订阅积分桥
 
-> 状态列由 `refresh` 从 `fleet_probe` 快照同步（2026-10-07T00:17:04+08:00）；免费/限额标签是人工标注，不会被覆盖。
+> 状态列由 `refresh` 从 `fleet_probe` 快照同步（2026-10-07T00:52:52+08:00）；免费/限额标签是人工标注，不会被覆盖。
 
 | 端口 | 桥 | 来源 | 状态 | 免费/限额 | 在听 |
 |---|---|---|---|---|---|
@@ -105,7 +105,8 @@ flowchart LR
 | 8803 | minimax | MiniMax | 不通 | — | 是 |
 | 8805 | doubao | 豆包 seed-main | 不通 | — | 是 |
 
-## fleet_probe 快照（2026-10-07T00:17:04+08:00）
+## fleet_probe 快照（2026-10-07T00:52:52+08:00）
 
 - 可达：codely, lingxi, qoder, stepfun, trae, workbuddy, xhx
 - 不可达：antigravity, catpaw, cline, doubao, gemini, kimi-code, minimax, qwen, tokendance, workbuddy-gpt
+- **文本能答但工具调用不交回客户端**（agentic 客户端会卡死）：qoder

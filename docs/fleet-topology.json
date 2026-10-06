@@ -593,11 +593,11 @@
   }
  ],
  "live": {
-  "measured_at": "2026-10-07 00:45:27",
+  "measured_at": "2026-10-07 01:13:40",
   "ports": {
    "10100": {
     "listening": true,
-    "models": 242
+    "models": 144
    },
    "15721": {
     "listening": true
@@ -666,9 +666,8 @@
     "listening": true
    }
   },
-  "ocx_models": 242,
+  "ocx_models": 144,
   "ocx_prefixes": {
-   "tokendance": 98,
    "trae": 22,
    "workbuddy": 16,
    "workbuddy-gpt": 14,
@@ -689,9 +688,9 @@
    "zcode": 2,
    "spacebunny": 1
   },
-  "state_from": "2026-10-07T00:17:04+08:00",
+  "state_from": "2026-10-07T00:52:52+08:00",
   "fleet_reach": {
-   "measured_at": "2026-10-07T00:17:04+08:00",
+   "measured_at": "2026-10-07T00:52:52+08:00",
    "reachable": [
     "codely",
     "lingxi",
@@ -713,7 +712,9 @@
     "tokendance",
     "workbuddy-gpt"
    ],
-   "agentic_text_only": []
+   "agentic_text_only": [
+    "qoder"
+   ]
   },
   "agentic": {
    "codely": {
@@ -722,11 +723,11 @@
    },
    "lingxi": {
     "agentic": true,
-    "why": "tool_calls: echo_nonce({\"nonce\":\"E2E_OK\"})"
+    "why": "tool_calls: echo_nonce({\"nonce\": \"E2E_OK\"})"
    },
    "qoder": {
-    "agentic": true,
-    "why": "tool_calls: echo_nonce({\"nonce\": \"E2E-1783739895-9e4643\"})"
+    "agentic": false,
+    "why": "no tool_calls in reply"
    },
    "stepfun": {
     "agentic": true,

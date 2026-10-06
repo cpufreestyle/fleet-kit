@@ -19,6 +19,19 @@ stays -- tokendance included, because its 401 is recent: 31,817 successful
 requests in the last 30 days. A provider that died this month is a key to
 renew, not a row to delete, so it is reported under "recently_dead" instead.
 
+A provider with no balance at all is not a catalog question, though: switch it
+off in the proxy itself (`ocx models provider tokendance off`), which drops its
+98 rows from the advertised list in one step. Two traps found while doing
+exactly that on 2026-10-07:
+
+  * the command triggers a catalog sync, which undoes catalog_filter.py's
+    hiding (67 rows came back as 147). Re-run the filter, or this tool, after
+    any ocx model/provider change;
+  * catalog_filter.py then refuses to drop bridges at all, because the status
+    panel's verify snapshot is older than --max-verify-age (24h). A stale
+    verify is not a stale bridge: this tool reads fleet-reach.json instead,
+    which fleet_probe refreshes on its own timer.
+
 Usage:
   catalog_shrink.py                 report only (changes nothing)
   catalog_shrink.py --apply         rewrite the catalog, with a backup
