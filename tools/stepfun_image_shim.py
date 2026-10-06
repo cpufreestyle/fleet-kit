@@ -636,7 +636,7 @@ def build_app(config: Config):
         timeout=httpx.Timeout(None, connect=config.connect_timeout),
         mounts=LOOPBACK_MOUNTS)
 
-    def rewrite_body(raw: bytes):
+    def rewrite_body(raw: bytes, path: str = ""):
         """Return (bytes to forward, log line or None). Never raises."""
         try:
             payload = json.loads(raw.decode("utf-8"))
@@ -655,14 +655,22 @@ def build_app(config: Config):
                 payload["model"] = stripped
                 notes.append("prefix_stripped=%r" % model)
                 model = stripped
-        # 输出预算钳制:客户端对自定义 provider 会申请过大的输出(实测 Codex
-        # 64K,而线程输入已 986K,合计超 1M 窗口仅 1 token 就被上游 400)。
-        # 32768 对任何 step-* 请求都足够,且保证 input+output 永不越窗。
+        # 输出预算钳制+注入:客户端可能带得过大(钳掉),也可能干脆不带——
+        # 后者更阴险:plan 端点对缺省请求自己默认 64000,984K 输入的线程
+        # 直接爆窗(实测 400 "requested 64000")。 responses 路径注入
+        # max_output_tokens、chat 路径注入 max_tokens,统一 32768。
         for key in ("max_output_tokens", "max_tokens", "max_completion_tokens"):
             v = payload.get(key)
             if isinstance(v, int) and v > 32768:
                 payload[key] = 32768
                 notes.append("%s %d->32768" % (key, v))
+        if ("/responses" in path and "max_output_tokens" not in payload):
+            payload["max_output_tokens"] = 32768
+            notes.append("max_output_tokens=32768 injected")
+        elif ("/chat/completions" in path and "max_tokens" not in payload
+              and "max_completion_tokens" not in payload):
+            payload["max_tokens"] = 32768
+            notes.append("max_tokens=32768 injected")
         if config.applies_to(model):
             payload, info = image_cap.cap_images(payload, config.max_images)
             if info["images"] and (info["dropped_duplicate"]
@@ -694,7 +702,7 @@ def build_app(config: Config):
         body = await request.body()
         note = None
         if body and is_cap_path("/" + path.lstrip("/")):
-            body, note = rewrite_body(body)
+            body, note = rewrite_body(body, path)
         else:
             stats.passthrough += 1
 
