@@ -21,6 +21,18 @@ writes already points at 10100. The row mirrors the claude-side FleetKit
 provider: same provider id, one more app_type, which is how this table already
 represents a provider that serves several apps.
 
+Two different addresses, and mixing them up is the mistake this replaces:
+
+  * client_url (default http://127.0.0.1:15721/v1) is what Codex talks to.
+    It is CC Switch's own proxy port. Keeping the client on it means one choke
+    point: CC Switch holds the real vendor keys, can fail a provider over, and
+    a switch in its UI takes effect for every leg at once. Measured
+    2026-10-07: POST /v1/responses at :15721 forwarded both
+    workbuddy/deepseek-v4.1-flash (to ocx) and step-5-preview (to StepFun,
+    with the key only CC Switch has).
+  * upstream (default http://127.0.0.1:10100/v1) is where CC Switch forwards
+    to. It goes into provider_endpoints.url, never into config.toml.
+
 What it does, once, idempotently:
 
   * inserts or updates the named provider row for the named app_type, and leaves
@@ -60,7 +72,16 @@ import uuid
 DEFAULT_DB = "~/.cc-switch/cc-switch.db"
 DEFAULT_APP_TYPE = "codex"
 DEFAULT_NAME = "FleetKit"
-DEFAULT_BASE_URL = "http://127.0.0.1:10100/v1"
+DEFAULT_UPSTREAM = "http://127.0.0.1:10100/v1"
+# What Codex talks to. Default: the proxy itself, no hop in between.
+#
+# Putting CC Switch's proxy port here (:15721) was tried on 2026-10-07 and does
+# not hold: a non-streaming /v1/responses forwards fine, but Codex streams, and
+# every streamed request came back 502 "CC Switch local proxy failed" -- which
+# tripped its circuit, after which even the good legs answered 503 "所有供应商已熔断".
+# So client_url stays equal to upstream by default; pass --client-url
+# http://127.0.0.1:15721/v1 to opt into the hop if that ever gets fixed.
+DEFAULT_CLIENT_URL = DEFAULT_UPSTREAM
 DEFAULT_CATALOG = "~/.codex/opencodex-catalog.json"
 DEFAULT_MODEL = "workbuddy/deepseek-v4-flash"
 BACKUP_PREFIX = "bak-before-fleetkit-provider-"
@@ -88,19 +109,21 @@ def connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def config_toml(base_url: str, catalog: str, model: str, notify: bool) -> str:
+def config_toml(client_url: str, catalog: str, model: str, notify: bool) -> str:
     """The TOML CC Switch writes into ~/.codex/config.toml for this provider.
 
-    Two provider tables on purpose. model_provider = "custom" is what every
-    other row in this database uses, and the ocx table is the one the fleet's
-    own tooling writes; both name the same base URL, so a config produced by
-    either side -- or half-overwritten by one of them -- still lands on the
-    reverse proxy instead of on a bridge that answers 404 for a foreign slug.
+    Every address in here is CC Switch's own proxy port, not the reverse proxy
+    behind it: the client talks to CC Switch, CC Switch forwards. Two provider
+    tables on purpose. model_provider = "custom" is what every other row in
+    this database uses, and the ocx table is the one the fleet's own tooling
+    writes; both name the same address, so a config produced by either side --
+    or half-overwritten by one of them -- still lands on CC Switch instead of
+    on a bridge that answers 404 for a foreign slug.
     """
     lines = [
         'model_provider = "custom"',
-        'openai_base_url = "%s"' % base_url,
-        'experimental_realtime_ws_base_url = "%s"' % base_url,
+        'openai_base_url = "%s"' % client_url,
+        'experimental_realtime_ws_base_url = "%s"' % client_url,
         'model = "%s"' % model,
         'model_reasoning_effort = "high"',
         "disable_response_storage = true",
@@ -113,7 +136,7 @@ def config_toml(base_url: str, catalog: str, model: str, notify: bool) -> str:
         "",
         "[model_providers.custom]",
         'name = "opencodex"',
-        'base_url = "%s"' % base_url,
+        'base_url = "%s"' % client_url,
         'wire_api = "responses"',
         # ocx authenticates the bridges itself; a key here would be an unknown
         # credential to it.
@@ -121,7 +144,7 @@ def config_toml(base_url: str, catalog: str, model: str, notify: bool) -> str:
         "",
         "[model_providers.opencodex]",
         'name = "FleetKit Gateway"',
-        'base_url = "%s"' % base_url,
+        'base_url = "%s"' % client_url,
         'wire_api = "responses"',
         "requires_openai_auth = false",
         "",
@@ -168,10 +191,11 @@ def backup_once(db_path: str, dry_run: bool) -> str:
     return target
 
 
-def register(db_path: str, name: str, app_type: str, base_url: str,
+def register(db_path: str, name: str, app_type: str, upstream: str,
              catalog: str, model: str, provider_id: str = "",
-             set_current: bool = True, notify: bool = True,
-             dry_run: bool = False, backup: bool = True) -> tuple[bool, str]:
+             client_url: str = DEFAULT_CLIENT_URL, set_current: bool = True,
+             notify: bool = True, dry_run: bool = False,
+             backup: bool = True) -> tuple[bool, str]:
     """Insert or refresh the provider row. Returns (changed, detail)."""
     # sqlite3.connect creates the file it is handed, so a typo in --db would
     # otherwise register into a fresh empty database and report success.
@@ -189,18 +213,19 @@ def register(db_path: str, name: str, app_type: str, base_url: str,
         exists = conn.execute(
             "select 1 from providers where id = ? and app_type = ?",
             (pid, app_type)).fetchone() is not None
-        toml = config_toml(base_url, expand_catalog(catalog), model, notify)
+        toml = config_toml(client_url, expand_catalog(catalog), model, notify)
         settings = json.dumps({"auth": {"OPENAI_API_KEY": "dummy"},
                                "config": toml}, ensure_ascii=False)
         meta = json.dumps({"commonConfigEnabled": True,
                            "endpointAutoSelect": True,
                            "apiFormat": "openai_responses"}, ensure_ascii=False)
-        notes = "FleetKit opencodex reverse proxy %s -> fleet bridges" % base_url
+        notes = ("client -> %s (CC Switch) -> %s -> fleet bridges"
+                 % (client_url, upstream))
         if dry_run:
             return (not exists or True,
-                    "would %s %s/%s (id %s) at %s"
+                    "would %s %s/%s (id %s): client %s, upstream %s"
                     % ("update" if exists else "insert", name, app_type, pid,
-                       base_url))
+                       client_url, upstream))
         saved = backup_once(db_path, dry_run) if backup else ""
         now = int(time.time() * 1000)
         if exists:
@@ -228,16 +253,17 @@ def register(db_path: str, name: str, app_type: str, base_url: str,
                      " and app_type = ?", (pid, app_type))
         conn.execute("insert into provider_endpoints (provider_id, app_type,"
                      " url, added_at) values (?,?,?,?)",
-                     (pid, app_type, base_url, now))
+                     (pid, app_type, upstream, now))
         if set_current:
             conn.execute("update providers set is_current = 0"
                          " where app_type = ? and id != ?", (app_type, pid))
             conn.execute("update providers set is_current = 1"
                          " where app_type = ? and id = ?", (app_type, pid))
         conn.commit()
-        detail = ("%s %s/%s (id %s) at %s; endpoint row written%s%s"
+        detail = ("%s %s/%s (id %s): client -> %s, upstream %s; endpoint row"
+                  " written%s%s"
                   % ("updated" if exists else "inserted", name, app_type, pid,
-                     base_url,
+                     client_url, upstream,
                      "; set as the current provider" if set_current else "",
                      "; backup %s" % os.path.basename(saved) if saved else ""))
         return True, detail
@@ -262,7 +288,12 @@ def parse_args(argv=None):
                    help="reuse this id instead of resolving one (default:"
                         " the existing row's, else the same provider's other"
                         " app, else a new uuid)")
-    p.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    p.add_argument("--base-url", dest="upstream", default=DEFAULT_UPSTREAM,
+                   help="where CC Switch forwards to (default %s)"
+                        % DEFAULT_UPSTREAM)
+    p.add_argument("--client-url", default=DEFAULT_CLIENT_URL,
+                   help="address written into config.toml, i.e. CC Switch's"
+                        " own proxy port (default %s)" % DEFAULT_CLIENT_URL)
     p.add_argument("--catalog", default=DEFAULT_CATALOG)
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("--no-set-current", action="store_true",
@@ -277,8 +308,9 @@ def parse_args(argv=None):
 def main(argv=None) -> int:
     args = parse_args(argv)
     changed, detail = register(
-        expand(args.db), args.name, args.app_type, args.base_url,
+        expand(args.db), args.name, args.app_type, args.upstream,
         args.catalog, args.model, provider_id=args.provider_id,
+        client_url=args.client_url,
         set_current=not args.no_set_current, notify=not args.no_notify,
         dry_run=args.dry_run, backup=not args.no_backup)
     print("%s %s" % ("[dry-run] would change:" if args.dry_run

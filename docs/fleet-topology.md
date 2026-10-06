@@ -1,7 +1,7 @@
 # FleetKit 舰队拓扑
 
 > 由 `kit/docs/fleet-topology.json` 生成（`python3 tools/topology.py all`）。
-> 改拓扑改 JSON，不要手改本文件。实测：2026-10-07 00:05:32
+> 改拓扑改 JSON，不要手改本文件。实测：2026-10-07 00:16:37
 
 ```mermaid
 flowchart LR
@@ -47,8 +47,8 @@ flowchart LR
   br8802["8802 kimi"]
   br8803["8803 minimax"]
   br8805["8805 doubao"]
-  codex -->|model_provider=custom → :10100（CC Switch 的 FleetKit 供应商写入）| ocx
-  zcode -->|短别名 qdr/qwen3.8-fl → qoder/Qwen3.8-Flash| ocx
+  codex -->|直连 :10100（CC Switch 只写配置，不承载流式请求，实测 2026-10-07）| ocx
+  zcode -->|短别名 qdr/qwen3.8-fl → qoder/Qwen3.8-Flash（同样直连，不走 CC Switch）| ocx
   claude -->|ANTHROPIC_BASE_URL=:15721，PROXY_MANAGED token| ccswitch
   ccswitch -->|CC Switch claude 当前项 = FleetKit(8801)| gw8801
   agent -->|统一密钥 + 端点 :3001/v1| freellm
@@ -75,7 +75,7 @@ flowchart LR
 
 | 组件 | 端口 | 状态 | 模型 |
 |---|---|---|---|
-| opencodex 反代理 :10100 | 10100 | 在听 | None |
+| opencodex 反代理 :10100 | 10100 | 在听 | 242 |
 | CC Switch :15721 | 15721 | 在听 | — |
 | FleetKit Anthropic 网关 :8801 | 8801 | 在听 | 283 |
 | FreeLLMAPI :3001 | 3001 | 在听 | — |

@@ -149,7 +149,9 @@
    ],
    "facts": {
     "注意": "DB 缓存内存，改库须重启 app 才可见",
-    "已知问题": "claude failover 队列为空 → 下游一抖就报「所有供应商已熔断」"
+    "已知问题": "claude failover 队列为空 → 下游一抖就报「所有供应商已熔断」",
+    "承载范围": "写 codex/claude 两份配置；代理 Claude 的 Anthropic 口（:15721）",
+    "不承载": "Codex 的 /v1/responses 流式请求——实测 2026-10-07：非流式转发正常，流式一律 502「CC Switch local proxy failed」，随即触发熔断，连正常腿也变 503「所有供应商已熔断」"
    }
   },
   {
@@ -339,13 +341,13 @@
    "from": "codex",
    "to": "ocx",
    "kind": "main",
-   "note": "model_provider=custom → :10100（CC Switch 的 FleetKit 供应商写入）"
+   "note": "直连 :10100（CC Switch 只写配置，不承载流式请求，实测 2026-10-07）"
   },
   {
    "from": "zcode",
    "to": "ocx",
    "kind": "main",
-   "note": "短别名 qdr/qwen3.8-fl → qoder/Qwen3.8-Flash"
+   "note": "短别名 qdr/qwen3.8-fl → qoder/Qwen3.8-Flash（同样直连，不走 CC Switch）"
   },
   {
    "from": "claude",
@@ -590,11 +592,11 @@
   }
  ],
  "live": {
-  "measured_at": "2026-10-07 00:05:32",
+  "measured_at": "2026-10-07 00:16:37",
   "ports": {
    "10100": {
     "listening": true,
-    "models": null
+    "models": 242
    },
    "15721": {
     "listening": true

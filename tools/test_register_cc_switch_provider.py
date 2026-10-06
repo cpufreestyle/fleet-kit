@@ -34,7 +34,8 @@ sys.path.insert(0, os.path.join(KIT, "tools"))
 
 import register_cc_switch_provider as reg  # noqa: E402  (path set up above)
 
-BASE = "http://127.0.0.1:10100/v1"
+BASE = "http://127.0.0.1:10100/v1"        # 转发目标：CC Switch 往哪儿发
+CLIENT = "http://127.0.0.1:15721/v1"      # 写进 config.toml 的地址：CC Switch 代理口
 CATALOG = "/tmp/fleet-catalog.json"
 MODEL = "workbuddy/deepseek-v4-flash"
 FLEETKIT_ID = "fc41d7fa-8fba-4739-9cc4-1502ae29a6fe"
@@ -119,17 +120,18 @@ class RegisterDatabase(unittest.TestCase):
     def embedded(self, row):
         return json.loads(row[2])["config"]
 
-    def register(self, base_url=BASE, **kwargs):
+    def register(self, base_url=BASE, client_url=CLIENT, **kwargs):
         kwargs.setdefault("backup", False)
         return reg.register(self.db, "FleetKit", "codex", base_url, CATALOG,
-                            MODEL, **kwargs)
+                            MODEL, client_url=client_url, **kwargs)
 
     def test_a_run_creates_the_row_the_endpoint_and_the_embedded_base_url(self):
         changed, detail = self.register()
         self.assertTrue(changed, detail)
         rows = self.rows()
         self.assertEqual(1, len(rows))
-        self.assertIn(BASE, self.embedded(rows[0]))
+        # config.toml 里必须是 CC Switch 的地址，转发目标只在端点行里
+        self.assertIn(CLIENT, self.embedded(rows[0]))
         self.assertEqual([(BASE,)], self.endpoints())
         self.assertIn(BASE, detail)
 
@@ -147,21 +149,33 @@ class RegisterDatabase(unittest.TestCase):
         # the claude row is still there and untouched
         self.assertEqual(1, len(self.rows(app_type="claude")))
 
-    def test_the_written_config_points_both_provider_tables_at_the_proxy(self):
+    def test_the_written_config_sends_the_client_to_cc_switch(self):
         self.register()
         config = self.embedded(self.rows()[0])
         self.assertIn('model_provider = "custom"', config)
-        self.assertEqual(4, config.count(BASE),
-                         "every route in the config must name the proxy")
+        self.assertEqual(4, config.count(CLIENT),
+                         "every route in config.toml must name CC Switch")
         self.assertIn("[model_providers.custom]", config)
         self.assertIn("[model_providers.opencodex]", config)
-        # the regression this guards: one table pointing at the StepFun shim
+        # the two regressions this guards: a table pointing at the StepFun
+        # shim, and a client that bypasses CC Switch for the proxy
         self.assertNotIn("15722", config)
+        self.assertNotIn("10100", config)
         self.assertIn(MODEL, config)
         self.assertIn(CATALOG, config)
 
+    def test_the_default_sends_the_client_straight_to_the_proxy(self):
+        """默认不再绕 CC Switch：它承载不了流式请求（实测 2026-10-07）。"""
+        self.assertEqual(reg.DEFAULT_UPSTREAM, reg.DEFAULT_CLIENT_URL)
+
+    def test_the_endpoint_row_holds_the_upstream_not_the_client_address(self):
+        self.register()
+        urls = [row[0] for row in self.endpoints()]
+        self.assertEqual([BASE], urls)
+        self.assertNotIn(CLIENT, urls)
+
     def test_a_refresh_rewrites_a_row_that_pointed_somewhere_else(self):
-        self.register(base_url=SHIM)
+        self.register(client_url=SHIM)
         self.register()
         self.assertNotIn(SHIM, self.embedded(self.rows()[0]))
 
