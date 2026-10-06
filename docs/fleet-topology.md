@@ -1,7 +1,7 @@
 # FleetKit 舰队拓扑
 
 > 由 `kit/docs/fleet-topology.json` 生成（`python3 tools/topology.py all`）。
-> 改拓扑改 JSON，不要手改本文件。实测：2026-10-07 00:16:37
+> 改拓扑改 JSON，不要手改本文件。实测：2026-10-07 00:45:27
 
 ```mermaid
 flowchart LR
@@ -84,12 +84,14 @@ flowchart LR
 
 ## 订阅积分桥
 
+> 状态列由 `refresh` 从 `fleet_probe` 快照同步（2026-10-07T00:17:04+08:00）；免费/限额标签是人工标注，不会被覆盖。
+
 | 端口 | 桥 | 来源 | 状态 | 免费/限额 | 在听 |
 |---|---|---|---|---|---|
 | 8787 | workbuddy | WorkBuddy 国内版 | 通 | LIMITED 免费档 | 是 |
-| 8788 | workbuddy-gpt | 海外版 | 通 | — | 是 |
+| 8788 | workbuddy-gpt | 海外版 | 不通 | — | 是 |
 | 8789 | qoder | Qoder CN | 通 | TRIAL 2 周 / 已补 tools 支持 | 是 |
-| 8790 | codely | 团结 AI | 不通 | QUOTA 月度点数 | 是 |
+| 8790 | codely | 团结 AI | 通 | QUOTA 月度点数 | 是 |
 | 8791 | trae | Trae CN | 通 | limit 限速 | 是 |
 | 8792 | lingxi | 灵犀 | 通 | QUOTA 灵力 | 是 |
 | 8793 | xhx | 商汤小浣熊 | 通 | — | 是 |
@@ -97,13 +99,13 @@ flowchart LR
 | 8795 | catpaw | CatPawAI | 不通 | — | 是 |
 | 8797 | antigravity | Google Antigravity | 不通 | — | 是 |
 | 8798 | qwen | 阿里 Qwen | 不通 | — | 是 |
-| 8799 | cline | Cline 免费池 | 通 | 12× FREE | 是 |
+| 8799 | cline | Cline 免费池 | 不通 | 12× FREE | 是 |
 | 8800 | zcode | ZCode / 阿里云 | 不通 | — | 是 |
-| 8802 | kimi | Kimi Code | 未测 | — | 是 |
-| 8803 | minimax | MiniMax | 未测 | — | 是 |
-| 8805 | doubao | 豆包 seed-main | 未测 | — | 是 |
+| 8802 | kimi | Kimi Code | 不通 | — | 是 |
+| 8803 | minimax | MiniMax | 不通 | — | 是 |
+| 8805 | doubao | 豆包 seed-main | 不通 | — | 是 |
 
-## fleet_probe 快照（2026-10-06T23:40:00+08:00）
+## fleet_probe 快照（2026-10-07T00:17:04+08:00）
 
-- 可达：codely, lingxi, qoder, stepfun, trae
-- 不可达：antigravity, catpaw, cline, doubao, gemini, kimi-code, minimax, qwen, tokendance, workbuddy, workbuddy-gpt, xhx
+- 可达：codely, lingxi, qoder, stepfun, trae, workbuddy, xhx
+- 不可达：antigravity, catpaw, cline, doubao, gemini, kimi-code, minimax, qwen, tokendance, workbuddy-gpt

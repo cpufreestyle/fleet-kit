@@ -478,7 +478,7 @@
    "port": 8788,
    "name": "workbuddy-gpt",
    "label": "海外版",
-   "state": "ok",
+   "state": "bad",
    "tags": []
   },
   {
@@ -495,7 +495,7 @@
    "port": 8790,
    "name": "codely",
    "label": "团结 AI",
-   "state": "bad",
+   "state": "ok",
    "tags": [
     "QUOTA 月度点数"
    ]
@@ -557,7 +557,7 @@
    "port": 8799,
    "name": "cline",
    "label": "Cline 免费池",
-   "state": "ok",
+   "state": "bad",
    "tags": [
     "12× FREE"
    ]
@@ -573,26 +573,27 @@
    "port": 8802,
    "name": "kimi",
    "label": "Kimi Code",
-   "state": "unk",
-   "tags": []
+   "state": "bad",
+   "tags": [],
+   "probe_name": "kimi-code"
   },
   {
    "port": 8803,
    "name": "minimax",
    "label": "MiniMax",
-   "state": "unk",
+   "state": "bad",
    "tags": []
   },
   {
    "port": 8805,
    "name": "doubao",
    "label": "豆包 seed-main",
-   "state": "unk",
+   "state": "bad",
    "tags": []
   }
  ],
  "live": {
-  "measured_at": "2026-10-07 00:16:37",
+  "measured_at": "2026-10-07 00:45:27",
   "ports": {
    "10100": {
     "listening": true,
@@ -688,14 +689,17 @@
    "zcode": 2,
    "spacebunny": 1
   },
+  "state_from": "2026-10-07T00:17:04+08:00",
   "fleet_reach": {
-   "measured_at": "2026-10-06T23:40:00+08:00",
+   "measured_at": "2026-10-07T00:17:04+08:00",
    "reachable": [
     "codely",
     "lingxi",
     "qoder",
     "stepfun",
-    "trae"
+    "trae",
+    "workbuddy",
+    "xhx"
    ],
    "unreachable": [
     "antigravity",
@@ -707,9 +711,7 @@
     "minimax",
     "qwen",
     "tokendance",
-    "workbuddy",
-    "workbuddy-gpt",
-    "xhx"
+    "workbuddy-gpt"
    ],
    "agentic_text_only": []
   },
@@ -724,7 +726,7 @@
    },
    "qoder": {
     "agentic": true,
-    "why": "tool_calls: echo_nonce({\"nonce\": \"\"})"
+    "why": "tool_calls: echo_nonce({\"nonce\": \"E2E-1783739895-9e4643\"})"
    },
    "stepfun": {
     "agentic": true,
@@ -733,6 +735,14 @@
    "trae": {
     "agentic": true,
     "why": "tool_calls: echo_nonce()"
+   },
+   "workbuddy": {
+    "agentic": true,
+    "why": "tool_calls: echo_nonce({\"nonce\": \"E2E_OK\"})"
+   },
+   "xhx": {
+    "agentic": true,
+    "why": "tool_calls: echo_nonce({\"nonce\":\"E2E_OK\"})"
    }
   }
  }

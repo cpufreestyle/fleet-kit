@@ -158,6 +158,18 @@ def refresh(data, quiet=False):
 
     reach = load_reach() or {}
     if reach:
+        # Bridge state is a measurement, not an opinion: take it from the last
+        # fleet_probe sweep so the picture can never disagree with the probe.
+        # Curated annotations (free tiers, notes) are hand-set and stay.
+        good = set(reach.get("reachable") or [])
+        bad = set(reach.get("unreachable") or [])
+        for br in data.get("bridges", []):
+            name = br.get("probe_name") or br.get("name")
+            if name in good:
+                br["state"] = "ok"
+            elif name in bad:
+                br["state"] = "bad"
+        live["state_from"] = reach.get("measured_at")
         live["fleet_reach"] = {
             "measured_at": reach.get("measured_at"),
             "reachable": reach.get("reachable"),
@@ -492,6 +504,10 @@ def render_md(data, path=MD_OUT):
     lines.append("")
 
     lines.append("## 订阅积分桥")
+    lines.append("")
+    lines.append("> 状态列由 `refresh` 从 `fleet_probe` 快照同步（%s）；"
+                 "免费/限额标签是人工标注，不会被覆盖。"
+                 % (live.get("state_from") or "—"))
     lines.append("")
     lines.append("| 端口 | 桥 | 来源 | 状态 | 免费/限额 | 在听 |")
     lines.append("|---|---|---|---|---|---|")
