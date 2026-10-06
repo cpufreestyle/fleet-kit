@@ -175,12 +175,12 @@ def route_alias(slug, tier):
 # floats the strongest rows to the front (catalog_sort.py), so these follow
 # whatever is strongest on the day rather than a name written down once.
 CLAUDE_ALIASES = {
-    "claude-opus-5": "workbuddy-gpt/hy4-preview",
+    "claude-opus-5": "workbuddy/hy4-preview",
     "claude-sonnet-5": "trae/seed-code-pro-0430",
     "claude-haiku-4-5": "workbuddy/glm-5.2",
-    "claude-fable-5": "workbuddy-gpt/gpt-5.6-luna",
+    "claude-fable-5": "gpt-5.6-luna",
     # slots older Claude Code builds still ask for
-    "claude-opus-4-8": "workbuddy-gpt/hy4-preview",
+    "claude-opus-4-8": "workbuddy/hy4-preview",
     "claude-sonnet-4-5": "trae/seed-code-pro-0430",
     "claude-3-5-sonnet-latest": "trae/seed-code-pro-0430",
     "claude-3-5-haiku-latest": "workbuddy/glm-5.2",

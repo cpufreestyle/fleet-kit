@@ -740,6 +740,12 @@ def build_app(config: Config):
     async def proxy(request: Request, path: str):
         stats.requests += 1
         body = await request.body()
+        # 取原始模型名，必须在 rewrite_body() 之前：它会剥掉 provider 前缀
+        # (workbuddy/deepseek-v4.1-flash -> deepseek-v4.1-flash)，剥完就没有
+        # 斜杠可判，分流会把它当 StepFun 原生 id 转给上游（实测 2026-10-06
+        # 回到 401 Incorrect API key）。
+        raw_model = body_model(body) if body else ""
+        raw_body = body
         note = None
         if body and is_cap_path("/" + path.lstrip("/")):
             body, note = rewrite_body(body, path)
@@ -751,8 +757,12 @@ def build_app(config: Config):
         # A fleet model arriving here is a client still pinned at this port,
         # not a StepFun model that vanished: send it to the fleet gateway
         # instead of letting StepFun answer 404 (see Config.upstream_for).
-        upstream = config.upstream_for(body_model(body) if body else "")
+        upstream = config.upstream_for(raw_model)
         if upstream != config.upstream:
+            # 队内网关按 provider 前缀选路，所以这一跳要发改写前的原始 body：
+            # rewrite_body() 剥掉前缀后 10100 会回 404「model does not exist」
+            # （实测 2026-10-06）。图片去重是 StepFun 那条路的补偿，队内不需要。
+            body = raw_body
             # The fleet gateway authenticates the bridges itself, so the key a
             # StepFun-pinned client sends must not ride along: forwarded, it is
             # an unknown credential and the gateway answers 503 upstream_error

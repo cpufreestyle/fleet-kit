@@ -39,7 +39,17 @@ Each write drops a .bak-<timestamp> next to the catalog and, when rows are
 mirrored into models_cache.json, next to that cache as well. Older backups
 are pruned down to --keep-backups (default 5), since the 5 minute timers
 would otherwise accumulate them without bound.
+--pin FILE restricts the catalog to a whitelist of slugs. An ocx sync
+rediscovers models from whatever keys are configured, and a dead or
+half-provisioned key can add dozens of junk rows in one pass; the
+whitelist drops every provider-prefixed row the operator did not list, so
+a sync can reorder the picker but not re-expand it. Native Codex rows carry
+no provider prefix and are never dropped by the pin, so a new built-in model
+still shows up. Default: real-models.json next to this script, or
+$FLEET_PIN_FILE; disable with --no-pin. A missing or unreadable file
+disables the pin instead of emptying the catalog.
 """
+
 import argparse
 import datetime
 import json
@@ -256,6 +266,48 @@ def provider_of(slug):
     return slug.split("/", 1)[0] if "/" in slug else None
 
 
+def default_pin_path():
+    """Whitelist this tool pins to unless --pin or $FLEET_PIN_FILE overrides."""
+    env = os.environ.get("FLEET_PIN_FILE")
+    if env:
+        return env
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "real-models.json")
+
+
+def load_pin(path):
+    """Slugs an operator declared REAL, or None when there is no usable pin.
+
+    An absent or unreadable file returns None and the caller then skips
+    pinning: a lost whitelist must not be able to empty the catalog, which
+    is the one outcome worse than a few junk rows in the picker.
+    """
+    if not path or not os.path.exists(path):
+        print("fleet-sort: no pin file at %s; pinning disabled" % path,
+              file=sys.stderr)
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        print("fleet-sort: pin file unreadable: %s; pinning disabled" % exc,
+              file=sys.stderr)
+        return None
+    if isinstance(data, dict):
+        raw = data.get("models") or data.get("slugs") or []
+    elif isinstance(data, list):
+        raw = data
+    else:
+        print("fleet-sort: pin file is %s, expected a list of slugs"
+              % type(data).__name__, file=sys.stderr)
+        return None
+    if not isinstance(raw, list) or not all(isinstance(s, str) for s in raw):
+        print("fleet-sort: pin file holds no list of slugs; pinning disabled",
+              file=sys.stderr)
+        return None
+    return {s.strip() for s in raw if s.strip()}
+
+
 def bridged_providers():
     """Providers a bridge can answer for, from the shared platform table.
 
@@ -383,6 +435,12 @@ def main():
                          "(default: 5, negative keeps all)")
     ap.add_argument("--strict-coverage", action="store_true",
                     help="fail instead of warn when the snapshot misses providers")
+    ap.add_argument("--pin", metavar="FILE", default="",
+                    help="drop provider-prefixed rows whose slug is not "
+                         "listed in FILE (default: %s)"
+                         % default_pin_path())
+    ap.add_argument("--no-pin", action="store_true",
+                    help="keep every reachable row, ignoring the whitelist")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-backup", action="store_true")
     args = ap.parse_args()
@@ -492,16 +550,42 @@ def main():
     order = [p.strip() for p in args.order.split(",") if p.strip()]
     families = tuple(f.strip().lower() for f in args.families.split(",")
                      if f.strip())
+    pin = None
+    if args.no_pin:
+        print("fleet-sort: --no-pin given; every reachable row is kept",
+              file=sys.stderr)
+    else:
+        pin = load_pin(args.pin or default_pin_path())
 
     path = args.catalog or catalog_path()
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
     models = data.get("models") or []
+    # The whitelist runs before anything else. A row it rejects is gone
+    # before any verdict is consulted, so its provider never has to be
+    # covered by the snapshot: a sync that wrote an unprobed provider
+    # (kimi, tokendance, ...) must not be able to block the reorder.
+    on_disk = data.get("models") or []
+    catalog_slugs = {m.get("slug") or m.get("id") or "" for m in on_disk}
+    pinned_out = []
+    models = on_disk
+    if pin is not None:
+        survivors = []
+        for model in on_disk:
+            slug = model.get("slug") or model.get("id") or ""
+            prov = provider_of(slug)
+            # A provider row nobody ever verified REAL leaves again, even
+            # when it would otherwise sort first.
+            if prov is not None and slug not in pin:
+                pinned_out.append(slug)
+            else:
+                survivors.append(model)
+        models = survivors
     # A truncated probe run (killed mid-sweep) leaves most bridges unmeasured,
     # and those silently become "unknown" and sink below known-good rows.
     # Require the snapshot to cover the providers actually in the catalog.
     catalog_providers = {provider_of(m.get("slug") or m.get("id") or "")
-                         for m in (data.get("models") or [])}
+                         for m in models}
     catalog_providers.discard(None)
     # A provider the probe deliberately skips (zcode needs a per-call captcha)
     # is accounted for, not unmeasured: without this every strict sort refuses
@@ -571,7 +655,7 @@ def main():
 
     summary = {
         "catalog": path,
-        "before": len(models),
+        "before": len(on_disk),
         "after": len(kept),
         "reach_file": reach_file,
         "measured_at": reach.get("measured_at"),
@@ -584,8 +668,29 @@ def main():
         "dropped_providers": sorted(drop_providers),
         "reordered_not_dropped": sorted(bad & (bridged or set())),
         "dropped_by_provider": {k: len(v) for k, v in sorted(dropped.items())},
+        "pin_file": None if pin is None else (args.pin or default_pin_path()),
+        "pin_slugs": len(pin) if pin is not None else 0,
+        "dropped_by_pin": len(pinned_out),
+        "pin_missing_from_catalog": sorted(
+            s for s in (pin or set()) if provider_of(s) is not None
+            and s not in catalog_slugs),
         "first20": [m.get("slug") or m.get("id") for m in kept[:20]],
     }
+    if pinned_out:
+        # Say it out loud, not only in the JSON: the wrapper discards stdout,
+        # and a silent cull is indistinguishable from a broken sorter.
+        print("fleet-sort: pin removed %d rows across %d providers"
+              % (len(pinned_out),
+                 len({provider_of(s) for s in pinned_out if provider_of(s)})),
+              file=sys.stderr)
+    if summary["pin_missing_from_catalog"]:
+        # A sync can write a degraded set: these rows are not junk, they are
+        # simply absent, and only a fresh sync brings them back.
+        print("fleet-sort: %d whitelisted rows are missing from the catalog: %s%s"
+              % (len(summary["pin_missing_from_catalog"]),
+                 ", ".join(summary["pin_missing_from_catalog"][:12]),
+                 " ..." if len(summary["pin_missing_from_catalog"]) > 12 else ""),
+              file=sys.stderr)
 
     # The picker sorts on priority, so prove reachable rows really sort first.
     slug_of = lambda m: m.get("slug") or m.get("id") or ""

@@ -105,6 +105,17 @@ auth JSON 丢进各自 `auths/` 目录，然后运行 `bash "<项目目录>/runt
 Windows 需要 **Git Bash** 或 **PowerShell 7** 提供 `bash`（脚本本身是 bash），
 并且 `schtasks` 必须可用（Windows 自带）。Linux 只需 `bash` + `python3` + `pkill`。
 
+**Windows 与 macOS/Linux 必须分开部署**：每台机器、每个平台各自持有独立的安装根
+（各自的 `runtime/`）和各自的服务后端（launchd / schtasks / supervisor），三者互不共用。
+一个平台的 `runtime/` 里有该机器的登录态、账号池、日志和本机路径，把它共享或云同步到
+另一个平台只会把两边都弄坏。正确做法：
+
+- 跨平台部署只分发 `kit/` 源码（git 仓库就一个，不按平台分叉）；
+- 到目标机器后用该平台自己的后端单独安装：
+  `bash "<kit 路径>/install.sh" --home <该平台的安装根>`（各自 `--home`，各自服务目录）；
+- 之后每次代码修复也分平台各自同步：`bash "<kit 路径>/install.sh --sync-only --home <该平台的安装根>"`，
+  然后由各平台自己的 timer 后端（而非别的机器的 launchd）来跑看门狗。
+
 平台相关的上游标识（`"platform": "darwin"`、`platform=darwin-arm64` 之类）默认仍发
 darwin，因为部分上游按客户端标识做风控；要改就设环境变量：
 

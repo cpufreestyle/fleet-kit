@@ -10,6 +10,13 @@ pin therefore has to be surgical in both directions:
   * it restores the fleet route -- the catalog declaration, the gateway
     base_url, the opencodex provider table and the top-level model_provider --
     so a fresh Codex session reaches the gateway instead of the foreign host;
+  * it restores the provider table even when every root key is still healthy.
+    A thread whose rollout records model_provider resolves that name against
+    this file at every turn, so a config that lost only the table refuses to
+    load with "Model provider 'opencodex' not found" while looking otherwise
+    pinned. Restoring it never rewrites the root model_provider, which an
+    operator is free to leave unset -- Codex then opens on its built-in
+    provider, and the gateway base_url still answers;
   * it leaves the foreign sections alone. [model_providers.custom] is what
     every already-open session resolves its provider against, so repointing it
     would break a live StepFun session while fixing the route;
@@ -80,6 +87,37 @@ name = "OpenCodex Proxy"
 base_url = "GATEWAY"
 wire_api = "responses"
 requires_openai_auth = false
+'''
+
+
+TABLES_STRIPPED = '''model = "trae/trae-Doubao-Seed-2.1-Pro"
+model_reasoning_effort = "high"
+model_catalog_json = "CATALOG"
+openai_base_url = "GATEWAY"
+experimental_realtime_ws_base_url = "GATEWAY"
+
+[model_providers.custom]
+name = "stepfun"
+base_url = "http://127.0.0.1:15721/v1"
+wire_api = "responses"
+requires_openai_auth = true
+'''
+
+
+TABLE_PRESENT = '''model = "trae/trae-Doubao-Seed-2.1-Pro"
+model_catalog_json = "CATALOG"
+openai_base_url = "GATEWAY"
+experimental_realtime_ws_base_url = "GATEWAY"
+
+[model_providers.opencodex]
+name = "FleetKit Gateway"
+base_url = "GATEWAY"
+wire_api = "responses"
+requires_openai_auth = false
+
+[model_providers.custom]
+name = "stepfun"
+base_url = "http://127.0.0.1:15721/v1"
 '''
 
 
@@ -333,6 +371,79 @@ class FleetRoutePin(unittest.TestCase):
         self.assertTrue(changed, detail)
         self.assertIn('model_provider = "custom"', self._read())
         self.assertIn('openai_base_url = "%s"' % GATEWAY, self._read())
+
+    # -- the case that unloaded a live thread ------------------------------- #
+
+    def test_a_config_that_lost_only_the_provider_table_gets_it_back(self):
+        """Every root key healthy, [model_providers.opencodex] gone.
+
+        Measured 2026-10-03: the switcher rewrote the config and dropped the
+        table along with the root model_provider. Codex then refused to load
+        three threads whose rollouts record model_provider = "opencodex" with
+        "Model provider 'opencodex' not found", because it resolves that name
+        against this file at every turn. The pin has to repair the table even
+        though nothing at the root level looks wrong.
+        """
+        self._write(TABLES_STRIPPED)
+        changed, detail = self._pin()
+        self.assertTrue(changed, detail)
+        text = self._read()
+        self.assertIn("[model_providers.opencodex]", text)
+        self.assertIn("model_providers.opencodex (added)", detail)
+        self.assertIn(
+            "\n\n[model_providers.opencodex]\n", text,
+            "the appended table is separated from the table above it")
+        self.assertIn('base_url = "%s"' % GATEWAY, text)
+        self.assertEqual(
+            text.count("[model_providers.opencodex]"), 1,
+            "the table is appended once, not on every run")
+
+    def test_restoring_the_table_does_not_force_a_root_provider(self):
+        """An operator is allowed to leave model_provider unset.
+
+        Codex then opens fresh sessions on its built-in provider, and those
+        sessions work because the gateway base_url overrides the endpoint.
+        Appending a table must not quietly redirect every new session onto
+        opencodex as a side effect.
+        """
+        self._write(TABLES_STRIPPED)
+        self._pin()
+        text = self._read()
+        for line in text.splitlines():
+            self.assertFalse(line.startswith("model_provider"),
+                             "the root provider was invented: %r" % line)
+
+    def test_a_restored_table_leaves_the_foreign_section_alone(self):
+        self._write(TABLES_STRIPPED)
+        self._pin()
+        text = self._read()
+        self.assertIn("[model_providers.custom]", text)
+        self.assertIn('base_url = "http://127.0.0.1:15721/v1"', text)
+        self.assertIn('wire_api = "responses"', text)
+        self.assertIn("requires_openai_auth = true", text)
+        self.assertIn(
+            'model = "trae/trae-Doubao-Seed-2.1-Pro"', text,
+            "a served model must be kept while the table is restored")
+
+    def test_a_restored_table_is_a_no_op_the_second_time(self):
+        self._write(TABLES_STRIPPED)
+        self._pin()
+        before = self._read()
+        again, detail = self._pin()
+        self.assertFalse(again, detail)
+        self.assertEqual(self._read(), before)
+
+    def test_a_config_with_the_table_and_no_root_provider_is_untouched(self):
+        """Missing model_provider is not on its own a reason to write.
+
+        With the table present the route is fully declared, so a timer that
+        fires on this shape would rewrite a config nobody asked it to.
+        """
+        self._write(TABLE_PRESENT)
+        before = self._read()
+        changed, detail = self._pin()
+        self.assertFalse(changed, detail)
+        self.assertEqual(self._read(), before)
 
     def test_pin_once_reports_a_decision_not_a_log_line(self):
         self._write(SWITCHED)
