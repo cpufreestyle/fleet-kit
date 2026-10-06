@@ -1,0 +1,737 @@
+{
+ "version": 1,
+ "generated_by": "kit/tools/topology.py",
+ "updated": "2026-10-07",
+ "note": "唯一真相源。改拓扑=改这个文件，然后 python3 topology.py all。node.id 唯一，edge 必须引用已存在的 id。",
+ "layers": [
+  {
+   "id": "client",
+   "title": "① 客户端"
+  },
+  {
+   "id": "entry",
+   "title": "② 本地入口"
+  },
+  {
+   "id": "tier",
+   "title": "③ 档位 / 产能"
+  },
+  {
+   "id": "upstream",
+   "title": "④ 上游"
+  }
+ ],
+ "legend": [
+  {
+   "kind": "main",
+   "label": "主路径"
+  },
+  {
+   "kind": "fall",
+   "label": "回落 / 降级"
+  },
+  {
+   "kind": "free",
+   "label": "免费 / 限额档"
+  },
+  {
+   "kind": "fix",
+   "label": "本轮修复"
+  },
+  {
+   "kind": "bad",
+   "label": "实测不通"
+  }
+ ],
+ "nodes": [
+  {
+   "id": "codex",
+   "layer": "client",
+   "title": "Codex CLI / 桌面",
+   "sub": "~/.codex/config.toml（CC Switch 写）",
+   "tags": [
+    {
+     "t": "当前 provider: FleetKit",
+     "k": "dim"
+    }
+   ],
+   "facts": {
+    "配置": "~/.codex/config.toml",
+    "当前供应商": "FleetKit（注册脚本写入，指向 :10100）",
+    "目录": "~/.codex/opencodex-catalog.json（约 242 模型）",
+    "默认模型": "workbuddy/deepseek-v4-flash"
+   }
+  },
+  {
+   "id": "claude",
+   "layer": "client",
+   "title": "Claude Code",
+   "sub": "ANTHROPIC_BASE_URL = :15721",
+   "tags": [
+    {
+     "t": "CC Switch 代理托管",
+     "k": "dim"
+    }
+   ],
+   "facts": {
+    "配置": "~/.claude/settings.json（CC Switch 托管）",
+    "BASE_URL": "http://127.0.0.1:15721",
+    "注意": "8801 的 sonnet 别名映射指向 trae(502)，已绕开"
+   }
+  },
+  {
+   "id": "agent",
+   "layer": "client",
+   "title": "其他 agent 客户端",
+   "sub": "FreeLLMAPI :3001 · auto 链",
+   "tags": [
+    {
+     "t": "priority 降级",
+     "k": "warn"
+    }
+   ],
+   "facts": {
+    "端点": "http://127.0.0.1:3001/v1",
+    "策略": "priority：月配额 → 订阅积分 → OpenRouter 免费",
+    "坑": ":free 原始 ID 会被拒，必须用 canonical ID"
+   }
+  },
+  {
+   "id": "zcode",
+   "layer": "client",
+   "title": "ZCode（goal 模式）",
+   "sub": "走 ocx 目录里的短别名",
+   "tags": [
+    {
+     "t": "agentic：按 tool_calls 驱动",
+     "k": "warn"
+    }
+   ],
+   "facts": {
+    "示例模型": "qdr/qwen3.8-fl = qoder/Qwen3.8-Flash 的短别名",
+    "已修": "qoder 桥此前丢掉 tools，循环卡在 Thinking（2026-10-06 修复）"
+   }
+  },
+  {
+   "id": "ocx",
+   "layer": "entry",
+   "title": "opencodex 反代理 :10100",
+   "sub": "bun · com.opencodex.proxy",
+   "probe": {
+    "port": 10100,
+    "models": true
+   },
+   "tags": [
+    {
+     "t": "舰队原生入口",
+     "k": "dim"
+    }
+   ],
+   "facts": {
+    "服务": "com.opencodex.proxy",
+    "路由": "按 slug 前缀选桥",
+    "默认档": "defaultProvider=stepfun"
+   }
+  },
+  {
+   "id": "ccswitch",
+   "layer": "entry",
+   "title": "CC Switch :15721",
+   "sub": "app（非 launchd）· 写两份配置",
+   "probe": {
+    "port": 15721
+   },
+   "tags": [
+    {
+     "t": "客户端侧 failover",
+     "k": "dim"
+    }
+   ],
+   "facts": {
+    "注意": "DB 缓存内存，改库须重启 app 才可见",
+    "已知问题": "claude failover 队列为空 → 下游一抖就报「所有供应商已熔断」"
+   }
+  },
+  {
+   "id": "gw8801",
+   "layer": "entry",
+   "title": "FleetKit Anthropic 网关 :8801",
+   "sub": "协议转码 + route_for(slug)",
+   "probe": {
+    "port": 8801,
+    "models": true
+   },
+   "facts": {
+    "服务": "com.local.fleet-anthropic",
+    "分支": "step* 直连月配额 / 有桥走桥 / 其余回落 ocx"
+   }
+  },
+  {
+   "id": "freellm",
+   "layer": "entry",
+   "title": "FreeLLMAPI :3001",
+   "sub": "node · 17 把 key · auto 链",
+   "probe": {
+    "port": 3001
+   },
+   "tags": [
+    {
+     "t": "跨档降级",
+     "k": "warn"
+    }
+   ],
+   "facts": {
+    "数据": "freeapi.db（api_keys 17 / profile_models 193）"
+   }
+  },
+  {
+   "id": "shim",
+   "layer": "entry",
+   "title": "StepFun 图片 shim :15722",
+   "sub": "图像去重/截断 + 双路分流",
+   "probe": {
+    "port": 15722
+   },
+   "tags": [
+    {
+     "t": "本轮新增分流",
+     "k": "fix"
+    }
+   ],
+   "facts": {
+    "服务": "com.local.stepfun-image-cap（带 watchdog）",
+    "分流": "带 / 的舰队 slug → :10100（剥掉 Authorization）；step* 原生 id → StepFun",
+    "坑": "判前缀必须在 rewrite_body() 剥前缀之前；队内那一跳要发原始 body"
+   }
+  },
+  {
+   "id": "ui",
+   "layer": "entry",
+   "title": "状态面板 :8796",
+   "sub": "桥健康 / 模型标注",
+   "probe": {
+    "port": 8796
+   },
+   "tags": [
+    {
+     "t": "观测",
+     "k": "dim"
+    }
+   ],
+   "facts": {
+    "服务": "com.local.fleet-ui",
+    "权威源": "/api/status 的 verify.real（不是 bridges[].probe.ok）"
+   }
+  },
+  {
+   "id": "tier0",
+   "layer": "tier",
+   "title": "档 0 · StepFun 月配额",
+   "sub": "第一调度，三条客户端共用",
+   "tags": [
+    {
+     "t": "在跑",
+     "k": "ok"
+    }
+   ],
+   "facts": {
+    "计量": "月配额，~/ .codex/auth.json 的 64 位 key"
+   }
+  },
+  {
+   "id": "tier1",
+   "layer": "tier",
+   "title": "档 1 · 订阅积分桥",
+   "sub": "17 个端口在听（8787-8803 + 8805；8804 空）",
+   "facts": {
+    "可达": "workbuddy / workbuddy-gpt / trae / lingxi / xhx / cline / spacebunny",
+    "不可达": "qoder 曾 502、codely 402、gemini·antigravity timeout、qwen·zcode 503 ESA、catpaw 需内网"
+   }
+  },
+  {
+   "id": "tier2",
+   "layer": "tier",
+   "title": "档 2 · OpenRouter 免费档",
+   "sub": "链尾兜底，:free 随时转付费",
+   "tags": [
+    {
+     "t": "FREE",
+     "k": "free"
+    },
+    {
+     "t": "需 canonical ID",
+     "k": "warn"
+    }
+   ],
+   "facts": {
+    "风险": ":free 随时转付费；别手改，重跑 register-openrouter-free.mjs"
+   }
+  },
+  {
+   "id": "stepfun",
+   "layer": "upstream",
+   "title": "api.stepfun.com/step_plan/v1",
+   "sub": "月配额 key（64 位）",
+   "tags": [
+    {
+     "t": "实测 200",
+     "k": "ok"
+    }
+   ]
+  },
+  {
+   "id": "subs",
+   "layer": "upstream",
+   "title": "各家客户端订阅积分",
+   "sub": "WorkBuddy / Trae / Kimi / MiniMax / 商汤 / 灵犀 …",
+   "tags": [
+    {
+     "t": "按桥可达性定",
+     "k": "warn"
+    }
+   ],
+   "facts": {
+    "注意": "余额只在各家 App 账上，外部网关统计不到"
+   }
+  },
+  {
+   "id": "or",
+   "layer": "upstream",
+   "title": "openrouter.ai :free",
+   "sub": "9 个在用模型挂链尾",
+   "tags": [
+    {
+     "t": "FREE",
+     "k": "free"
+    }
+   ]
+  },
+  {
+   "id": "tokend",
+   "layer": "upstream",
+   "title": "tokendance（目录里占比最大）",
+   "sub": "401 key invalid · 不可用",
+   "tags": [
+    {
+     "t": "不可达",
+     "k": "bad"
+    }
+   ]
+  },
+  {
+   "id": "hub",
+   "layer": "upstream",
+   "title": "Cline hub daemon（:25463 WS）",
+   "sub": "需本机开过 Cline App",
+   "tags": [
+    {
+     "t": "依赖 GUI",
+     "k": "warn"
+    }
+   ],
+   "facts": {
+    "说明": "cline 免费池 FREE 模型的必经之路"
+   }
+  }
+ ],
+ "edges": [
+  {
+   "from": "codex",
+   "to": "ocx",
+   "kind": "main",
+   "note": "model_provider=custom → :10100（CC Switch 的 FleetKit 供应商写入）"
+  },
+  {
+   "from": "zcode",
+   "to": "ocx",
+   "kind": "main",
+   "note": "短别名 qdr/qwen3.8-fl → qoder/Qwen3.8-Flash"
+  },
+  {
+   "from": "claude",
+   "to": "ccswitch",
+   "kind": "main",
+   "note": "ANTHROPIC_BASE_URL=:15721，PROXY_MANAGED token"
+  },
+  {
+   "from": "ccswitch",
+   "to": "gw8801",
+   "kind": "main",
+   "note": "CC Switch claude 当前项 = FleetKit(8801)"
+  },
+  {
+   "from": "agent",
+   "to": "freellm",
+   "kind": "main",
+   "note": "统一密钥 + 端点 :3001/v1"
+  },
+  {
+   "from": "shim",
+   "to": "ocx",
+   "kind": "fix",
+   "note": "带 / 的舰队 slug → :10100（剥掉 Authorization）"
+  },
+  {
+   "from": "shim",
+   "to": "stepfun",
+   "kind": "main",
+   "note": "step* 原生 id 照旧"
+  },
+  {
+   "from": "ocx",
+   "to": "tier0",
+   "kind": "main",
+   "note": "defaultProvider=stepfun"
+  },
+  {
+   "from": "ocx",
+   "to": "tier1",
+   "kind": "main",
+   "note": "按 slug 前缀路由到各桥"
+  },
+  {
+   "from": "freellm",
+   "to": "tier0",
+   "kind": "fall",
+   "note": "priority 1-4 月配额优先"
+  },
+  {
+   "from": "freellm",
+   "to": "tier1",
+   "kind": "fall",
+   "note": "priority 5-185 订阅积分"
+  },
+  {
+   "from": "freellm",
+   "to": "tier2",
+   "kind": "fall",
+   "note": "priority 188-199 兜底"
+  },
+  {
+   "from": "gw8801",
+   "to": "tier0",
+   "kind": "main",
+   "note": "step* 直连官方月配额"
+  },
+  {
+   "from": "gw8801",
+   "to": "tier1",
+   "kind": "main",
+   "note": "有桥的 provider 走桥"
+  },
+  {
+   "from": "gw8801",
+   "to": "ocx",
+   "kind": "fall",
+   "note": "其余回落 opencodex"
+  },
+  {
+   "from": "tier0",
+   "to": "stepfun",
+   "kind": "main",
+   "note": ""
+  },
+  {
+   "from": "tier1",
+   "to": "subs",
+   "kind": "main",
+   "note": ""
+  },
+  {
+   "from": "tier1",
+   "to": "tokend",
+   "kind": "main",
+   "note": "tokendance 98 模型（401，不可用）"
+  },
+  {
+   "from": "tier1",
+   "to": "hub",
+   "kind": "main",
+   "note": "cline 免费池经 hub daemon"
+  },
+  {
+   "from": "tier2",
+   "to": "or",
+   "kind": "fall",
+   "note": ""
+  },
+  {
+   "from": "ui",
+   "to": "tier1",
+   "kind": "main",
+   "note": "观测：/api/status"
+  }
+ ],
+ "bridges": [
+  {
+   "port": 8787,
+   "name": "workbuddy",
+   "label": "WorkBuddy 国内版",
+   "state": "ok",
+   "tags": [
+    "LIMITED 免费档"
+   ]
+  },
+  {
+   "port": 8788,
+   "name": "workbuddy-gpt",
+   "label": "海外版",
+   "state": "ok",
+   "tags": []
+  },
+  {
+   "port": 8789,
+   "name": "qoder",
+   "label": "Qoder CN",
+   "state": "ok",
+   "tags": [
+    "TRIAL 2 周",
+    "已补 tools 支持"
+   ]
+  },
+  {
+   "port": 8790,
+   "name": "codely",
+   "label": "团结 AI",
+   "state": "bad",
+   "tags": [
+    "QUOTA 月度点数"
+   ]
+  },
+  {
+   "port": 8791,
+   "name": "trae",
+   "label": "Trae CN",
+   "state": "ok",
+   "tags": [
+    "limit 限速"
+   ]
+  },
+  {
+   "port": 8792,
+   "name": "lingxi",
+   "label": "灵犀",
+   "state": "ok",
+   "tags": [
+    "QUOTA 灵力"
+   ]
+  },
+  {
+   "port": 8793,
+   "name": "xhx",
+   "label": "商汤小浣熊",
+   "state": "ok",
+   "tags": []
+  },
+  {
+   "port": 8794,
+   "name": "gemini",
+   "label": "Google Gemini",
+   "state": "bad",
+   "tags": []
+  },
+  {
+   "port": 8795,
+   "name": "catpaw",
+   "label": "CatPawAI",
+   "state": "bad",
+   "tags": []
+  },
+  {
+   "port": 8797,
+   "name": "antigravity",
+   "label": "Google Antigravity",
+   "state": "bad",
+   "tags": []
+  },
+  {
+   "port": 8798,
+   "name": "qwen",
+   "label": "阿里 Qwen",
+   "state": "bad",
+   "tags": []
+  },
+  {
+   "port": 8799,
+   "name": "cline",
+   "label": "Cline 免费池",
+   "state": "ok",
+   "tags": [
+    "12× FREE"
+   ]
+  },
+  {
+   "port": 8800,
+   "name": "zcode",
+   "label": "ZCode / 阿里云",
+   "state": "bad",
+   "tags": []
+  },
+  {
+   "port": 8802,
+   "name": "kimi",
+   "label": "Kimi Code",
+   "state": "unk",
+   "tags": []
+  },
+  {
+   "port": 8803,
+   "name": "minimax",
+   "label": "MiniMax",
+   "state": "unk",
+   "tags": []
+  },
+  {
+   "port": 8805,
+   "name": "doubao",
+   "label": "豆包 seed-main",
+   "state": "unk",
+   "tags": []
+  }
+ ],
+ "live": {
+  "measured_at": "2026-10-07 00:05:32",
+  "ports": {
+   "10100": {
+    "listening": true,
+    "models": null
+   },
+   "15721": {
+    "listening": true
+   },
+   "8801": {
+    "listening": true,
+    "models": 283
+   },
+   "3001": {
+    "listening": true
+   },
+   "15722": {
+    "listening": true
+   },
+   "8796": {
+    "listening": true
+   }
+  },
+  "bridges": {
+   "8787": {
+    "listening": true
+   },
+   "8788": {
+    "listening": true
+   },
+   "8789": {
+    "listening": true
+   },
+   "8790": {
+    "listening": true
+   },
+   "8791": {
+    "listening": true
+   },
+   "8792": {
+    "listening": true
+   },
+   "8793": {
+    "listening": true
+   },
+   "8794": {
+    "listening": true
+   },
+   "8795": {
+    "listening": true
+   },
+   "8797": {
+    "listening": true
+   },
+   "8798": {
+    "listening": true
+   },
+   "8799": {
+    "listening": true
+   },
+   "8800": {
+    "listening": true
+   },
+   "8802": {
+    "listening": true
+   },
+   "8803": {
+    "listening": true
+   },
+   "8805": {
+    "listening": true
+   }
+  },
+  "ocx_models": 242,
+  "ocx_prefixes": {
+   "tokendance": 98,
+   "trae": 22,
+   "workbuddy": 16,
+   "workbuddy-gpt": 14,
+   "cline": 14,
+   "antigravity": 12,
+   "catpaw": 10,
+   "minimax": 9,
+   "xhx": 9,
+   "kimi": 7,
+   "(bare)": 5,
+   "stepfun": 5,
+   "codely": 5,
+   "gemini": 4,
+   "qoder": 3,
+   "doubao": 2,
+   "lingxi": 2,
+   "qwen": 2,
+   "zcode": 2,
+   "spacebunny": 1
+  },
+  "fleet_reach": {
+   "measured_at": "2026-10-06T23:40:00+08:00",
+   "reachable": [
+    "codely",
+    "lingxi",
+    "qoder",
+    "stepfun",
+    "trae"
+   ],
+   "unreachable": [
+    "antigravity",
+    "catpaw",
+    "cline",
+    "doubao",
+    "gemini",
+    "kimi-code",
+    "minimax",
+    "qwen",
+    "tokendance",
+    "workbuddy",
+    "workbuddy-gpt",
+    "xhx"
+   ],
+   "agentic_text_only": []
+  },
+  "agentic": {
+   "codely": {
+    "agentic": true,
+    "why": "tool_calls: echo_nonce({\"nonce\": \"E2E_OK\"})"
+   },
+   "lingxi": {
+    "agentic": true,
+    "why": "tool_calls: echo_nonce({\"nonce\":\"E2E_OK\"})"
+   },
+   "qoder": {
+    "agentic": true,
+    "why": "tool_calls: echo_nonce({\"nonce\": \"\"})"
+   },
+   "stepfun": {
+    "agentic": true,
+    "why": "tool_calls: echo_nonce({\"nonce\": \"E2E_OK\"})"
+   },
+   "trae": {
+    "agentic": true,
+    "why": "tool_calls: echo_nonce()"
+   }
+  }
+ }
+}

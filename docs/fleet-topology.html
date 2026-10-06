@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FleetKit 舰队拓扑 · 2026-10-07 00:05:32</title>
+<style>
+ :root{--bg:#0e1117;--panel:#161b22;--line:#30363d;--text:#e6edf3;--dim:#8b949e;
+ --ok:#3fb950;--warn:#d29922;--bad:#f85149;--main:#58a6ff;--free:#3fb950;--fix:#bc8cff}
+ *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);
+ font:13px/1.5 ui-sans-serif,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+ header{padding:18px 24px 14px;border-bottom:1px solid var(--line);display:flex;
+ gap:16px;align-items:baseline;flex-wrap:wrap}h1{font-size:17px;margin:0}
+ .stamp,.footer{color:var(--dim);font-size:12px}
+ .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--dim)}
+ .legend i{display:inline-block;width:22px;height:0;border-top:2px solid;
+ vertical-align:middle;margin-right:5px}
+ main{position:relative;padding:8px 24px 40px;overflow-x:auto}
+ #board{position:relative;min-width:1180px}
+ #wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+ .cols{display:grid;grid-template-columns:210px 250px 300px 320px;gap:34px;
+ position:relative;z-index:1}
+ .col h2{font-size:12px;color:var(--dim);letter-spacing:.08em;margin:14px 0 10px;
+ padding-bottom:6px;border-bottom:1px dashed var(--line)}
+ .stack{display:flex;flex-direction:column;gap:10px}
+ .node{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--line);
+ border-radius:7px;padding:8px 10px;cursor:pointer}
+ .node:hover,.node.on{border-color:var(--main);background:#1c2430}
+ .node .t{font-weight:600}.node .s{color:var(--dim);font-size:11.5px;margin-top:2px}
+ .tags{margin-top:5px;display:flex;gap:5px;flex-wrap:wrap}
+ .tag{font-size:10.5px;padding:1px 6px;border-radius:9px;border:1px solid}
+ .tag.ok{color:var(--ok);border-color:#245c2e}.tag.bad{color:var(--bad);border-color:#6e2b26}
+ .tag.warn{color:var(--warn);border-color:#5c4519}.tag.dim{color:var(--dim);border-color:var(--line)}
+ .tag.free{color:var(--free);border-color:#245c2e;background:#12241a}
+ .tag.fix{color:var(--fix);border-color:#4b3670;background:#1d1729}
+ .group{border:1px dashed var(--line);border-radius:8px;padding:8px 10px;background:#10151c}
+ .group>.t{font-size:12px;font-weight:600;margin-bottom:7px}
+ .grid2{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+ .bridge{font-size:11.5px;padding:5px 7px;border-radius:5px;background:var(--panel);
+ border:1px solid var(--line);border-left:3px solid var(--line);cursor:pointer}
+ .bridge.ok{border-left-color:var(--ok)}.bridge.bad{border-left-color:var(--bad)}
+ .bridge.unk{border-left-color:var(--warn)}.bridge b{font-weight:600}
+ .bridge span{color:var(--dim)}.bridge .free{color:var(--free)}
+ #panel{position:fixed;right:18px;bottom:18px;width:340px;max-height:62vh;overflow:auto;
+ background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;
+ box-shadow:0 10px 30px rgba(0,0,0,.5);display:none;z-index:5}
+ #panel h3{margin:0 0 6px;font-size:14px}#panel .kv{color:var(--dim);font-size:12px}
+ #panel .kv b{color:var(--text)}#panel ul{margin:8px 0 0;padding-left:18px;
+ color:var(--dim);font-size:12px}.close{float:right;cursor:pointer;color:var(--dim)}
+ .fade{opacity:.28}
+</style></head><body>
+<header><h1>FleetKit 舰队拓扑</h1>
+<span class="stamp">实测 2026-10-07 00:05:32 · ocx 242 模型（tokendance 98、trae 22、workbuddy 16、workbuddy-gpt 14、cline 14、antigravity 12）</span>
+<div class="legend"><span><i style="border-color:#58a6ff"></i>主路径</span><span><i style="border-color:#d29922"></i>回落 / 降级</span><span><i style="border-color:#3fb950"></i>免费 / 限额档</span><span><i style="border-color:#bc8cff"></i>本轮修复</span><span><i style="border-color:#f85149"></i>实测不通</span></div></header>
+<main><div id="board"><svg id="wires"></svg><div class="cols"><div class="col"><h2>① 客户端</h2><div class="stack"><div class="node" data-id="codex"><div class="t">Codex CLI / 桌面</div><div class="s">~/.codex/config.toml（CC Switch 写）</div><div class="tags"><span class="tag dim">当前 provider: FleetKit</span></div></div><div class="node" data-id="claude"><div class="t">Claude Code</div><div class="s">ANTHROPIC_BASE_URL = :15721</div><div class="tags"><span class="tag dim">CC Switch 代理托管</span></div></div><div class="node" data-id="agent"><div class="t">其他 agent 客户端</div><div class="s">FreeLLMAPI :3001 · auto 链</div><div class="tags"><span class="tag warn">priority 降级</span></div></div><div class="node" data-id="zcode"><div class="t">ZCode（goal 模式）</div><div class="s">走 ocx 目录里的短别名</div><div class="tags"><span class="tag warn">agentic：按 tool_calls 驱动</span></div></div></div></div><div class="col"><h2>② 本地入口</h2><div class="stack"><div class="node" data-id="ocx"><div class="t">opencodex 反代理 :10100</div><div class="s">bun · com.opencodex.proxy</div><div class="tags"><span class="tag dim">舰队原生入口</span><span class="tag ok">:10100 在听</span></div></div><div class="node" data-id="ccswitch"><div class="t">CC Switch :15721</div><div class="s">app（非 launchd）· 写两份配置</div><div class="tags"><span class="tag dim">客户端侧 failover</span><span class="tag ok">:15721 在听</span></div></div><div class="node" data-id="gw8801"><div class="t">FleetKit Anthropic 网关 :8801</div><div class="s">协议转码 + route_for(slug)</div><div class="tags"><span class="tag ok">:8801 在听 · 283 模型</span></div></div><div class="node" data-id="freellm"><div class="t">FreeLLMAPI :3001</div><div class="s">node · 17 把 key · auto 链</div><div class="tags"><span class="tag warn">跨档降级</span><span class="tag ok">:3001 在听</span></div></div><div class="node" data-id="shim"><div class="t">StepFun 图片 shim :15722</div><div class="s">图像去重/截断 + 双路分流</div><div class="tags"><span class="tag fix">本轮新增分流</span><span class="tag ok">:15722 在听</span></div></div><div class="node" data-id="ui"><div class="t">状态面板 :8796</div><div class="s">桥健康 / 模型标注</div><div class="tags"><span class="tag dim">观测</span><span class="tag ok">:8796 在听</span></div></div></div></div><div class="col"><h2>③ 档位 / 产能</h2><div class="stack"><div class="node" data-id="tier0"><div class="t">档 0 · StepFun 月配额</div><div class="s">第一调度，三条客户端共用</div><div class="tags"><span class="tag ok">在跑</span></div></div><div class="node" data-id="tier1"><div class="t">档 1 · 订阅积分桥</div><div class="s">17 个端口在听（8787-8803 + 8805；8804 空）</div><div class="tags"></div></div><div class="node" data-id="tier2"><div class="t">档 2 · OpenRouter 免费档</div><div class="s">链尾兜底，:free 随时转付费</div><div class="tags"><span class="tag free">FREE</span><span class="tag warn">需 canonical ID</span></div></div></div></div><div class="col"><h2>④ 上游</h2><div class="stack"><div class="node" data-id="stepfun"><div class="t">api.stepfun.com/step_plan/v1</div><div class="s">月配额 key（64 位）</div><div class="tags"><span class="tag ok">实测 200</span></div></div><div class="node" data-id="subs"><div class="t">各家客户端订阅积分</div><div class="s">WorkBuddy / Trae / Kimi / MiniMax / 商汤 / 灵犀 …</div><div class="tags"><span class="tag warn">按桥可达性定</span></div></div><div class="node" data-id="or"><div class="t">openrouter.ai :free</div><div class="s">9 个在用模型挂链尾</div><div class="tags"><span class="tag free">FREE</span></div></div><div class="node" data-id="tokend"><div class="t">tokendance（目录里占比最大）</div><div class="s">401 key invalid · 不可用</div><div class="tags"><span class="tag bad">不可达</span></div></div><div class="node" data-id="hub"><div class="t">Cline hub daemon（:25463 WS）</div><div class="s">需本机开过 Cline App</div><div class="tags"><span class="tag warn">依赖 GUI</span></div></div></div></div></div></div></main>
+<div id="panel"><span class="close" onclick="document.getElementById('panel').style.display='none'">✕</span>
+<h3 id="p-title"></h3><div class="kv" id="p-body"></div><ul id="p-list"></ul></div>
+<div class="footer" style="padding:0 24px 28px">
+ 由 <code>kit/docs/fleet-topology.json</code> 生成（<code>python3 tools/topology.py all</code>）。
+ 改拓扑改 JSON，不要手改本文件。当前 codely:1, lingxi:1, qoder:1, stepfun:1, trae:1
+</div>
+<script>
+const INFO={"codex": ["Codex CLI / 桌面", {"配置": "~/.codex/config.toml", "当前供应商": "FleetKit（注册脚本写入，指向 :10100）", "目录": "~/.codex/opencodex-catalog.json（约 242 模型）", "默认模型": "workbuddy/deepseek-v4-flash"}], "claude": ["Claude Code", {"配置": "~/.claude/settings.json（CC Switch 托管）", "BASE_URL": "http://127.0.0.1:15721", "注意": "8801 的 sonnet 别名映射指向 trae(502)，已绕开"}], "agent": ["其他 agent 客户端", {"端点": "http://127.0.0.1:3001/v1", "策略": "priority：月配额 → 订阅积分 → OpenRouter 免费", "坑": ":free 原始 ID 会被拒，必须用 canonical ID"}], "zcode": ["ZCode（goal 模式）", {"示例模型": "qdr/qwen3.8-fl = qoder/Qwen3.8-Flash 的短别名", "已修": "qoder 桥此前丢掉 tools，循环卡在 Thinking（2026-10-06 修复）"}], "ocx": ["opencodex 反代理 :10100", {"服务": "com.opencodex.proxy", "路由": "按 slug 前缀选桥", "默认档": "defaultProvider=stepfun"}], "ccswitch": ["CC Switch :15721", {"注意": "DB 缓存内存，改库须重启 app 才可见", "已知问题": "claude failover 队列为空 → 下游一抖就报「所有供应商已熔断」"}], "gw8801": ["FleetKit Anthropic 网关 :8801", {"服务": "com.local.fleet-anthropic", "分支": "step* 直连月配额 / 有桥走桥 / 其余回落 ocx"}], "freellm": ["FreeLLMAPI :3001", {"数据": "freeapi.db（api_keys 17 / profile_models 193）"}], "shim": ["StepFun 图片 shim :15722", {"服务": "com.local.stepfun-image-cap（带 watchdog）", "分流": "带 / 的舰队 slug → :10100（剥掉 Authorization）；step* 原生 id → StepFun", "坑": "判前缀必须在 rewrite_body() 剥前缀之前；队内那一跳要发原始 body"}], "ui": ["状态面板 :8796", {"服务": "com.local.fleet-ui", "权威源": "/api/status 的 verify.real（不是 bridges[].probe.ok）"}], "tier0": ["档 0 · StepFun 月配额", {"计量": "月配额，~/ .codex/auth.json 的 64 位 key"}], "tier1": ["档 1 · 订阅积分桥", {"可达": "workbuddy / workbuddy-gpt / trae / lingxi / xhx / cline / spacebunny", "不可达": "qoder 曾 502、codely 402、gemini·antigravity timeout、qwen·zcode 503 ESA、catpaw 需内网"}], "tier2": ["档 2 · OpenRouter 免费档", {"风险": ":free 随时转付费；别手改，重跑 register-openrouter-free.mjs"}], "stepfun": ["api.stepfun.com/step_plan/v1", {}], "subs": ["各家客户端订阅积分", {"注意": "余额只在各家 App 账上，外部网关统计不到"}], "or": ["openrouter.ai :free", {}], "tokend": ["tokendance（目录里占比最大）", {}], "hub": ["Cline hub daemon（:25463 WS）", {"说明": "cline 免费池 FREE 模型的必经之路"}], "br-8787": ["桥 8787 · workbuddy", {"端口": 8787, "名称": "workbuddy", "来源": "WorkBuddy 国内版", "可达性": "实测通", "免费/限额": "LIMITED 免费档"}], "br-8788": ["桥 8788 · workbuddy-gpt", {"端口": 8788, "名称": "workbuddy-gpt", "来源": "海外版", "可达性": "实测通", "免费/限额": "—"}], "br-8789": ["桥 8789 · qoder", {"端口": 8789, "名称": "qoder", "来源": "Qoder CN", "可达性": "实测通", "免费/限额": "TRIAL 2 周 / 已补 tools 支持"}], "br-8790": ["桥 8790 · codely", {"端口": 8790, "名称": "codely", "来源": "团结 AI", "可达性": "实测不通", "免费/限额": "QUOTA 月度点数"}], "br-8791": ["桥 8791 · trae", {"端口": 8791, "名称": "trae", "来源": "Trae CN", "可达性": "实测通", "免费/限额": "limit 限速"}], "br-8792": ["桥 8792 · lingxi", {"端口": 8792, "名称": "lingxi", "来源": "灵犀", "可达性": "实测通", "免费/限额": "QUOTA 灵力"}], "br-8793": ["桥 8793 · xhx", {"端口": 8793, "名称": "xhx", "来源": "商汤小浣熊", "可达性": "实测通", "免费/限额": "—"}], "br-8794": ["桥 8794 · gemini", {"端口": 8794, "名称": "gemini", "来源": "Google Gemini", "可达性": "实测不通", "免费/限额": "—"}], "br-8795": ["桥 8795 · catpaw", {"端口": 8795, "名称": "catpaw", "来源": "CatPawAI", "可达性": "实测不通", "免费/限额": "—"}], "br-8797": ["桥 8797 · antigravity", {"端口": 8797, "名称": "antigravity", "来源": "Google Antigravity", "可达性": "实测不通", "免费/限额": "—"}], "br-8798": ["桥 8798 · qwen", {"端口": 8798, "名称": "qwen", "来源": "阿里 Qwen", "可达性": "实测不通", "免费/限额": "—"}], "br-8799": ["桥 8799 · cline", {"端口": 8799, "名称": "cline", "来源": "Cline 免费池", "可达性": "实测通", "免费/限额": "12× FREE"}], "br-8800": ["桥 8800 · zcode", {"端口": 8800, "名称": "zcode", "来源": "ZCode / 阿里云", "可达性": "实测不通", "免费/限额": "—"}], "br-8802": ["桥 8802 · kimi", {"端口": 8802, "名称": "kimi", "来源": "Kimi Code", "可达性": "未测", "免费/限额": "—"}], "br-8803": ["桥 8803 · minimax", {"端口": 8803, "名称": "minimax", "来源": "MiniMax", "可达性": "未测", "免费/限额": "—"}], "br-8805": ["桥 8805 · doubao", {"端口": 8805, "名称": "doubao", "来源": "豆包 seed-main", "可达性": "未测", "免费/限额": "—"}]}, EDGES=[["codex", "ocx", "main", "model_provider=custom → :10100（CC Switch 的 FleetKit 供应商写入）"], ["zcode", "ocx", "main", "短别名 qdr/qwen3.8-fl → qoder/Qwen3.8-Flash"], ["claude", "ccswitch", "main", "ANTHROPIC_BASE_URL=:15721，PROXY_MANAGED token"], ["ccswitch", "gw8801", "main", "CC Switch claude 当前项 = FleetKit(8801)"], ["agent", "freellm", "main", "统一密钥 + 端点 :3001/v1"], ["shim", "ocx", "fix", "带 / 的舰队 slug → :10100（剥掉 Authorization）"], ["shim", "stepfun", "main", "step* 原生 id 照旧"], ["ocx", "tier0", "main", "defaultProvider=stepfun"], ["ocx", "tier1", "main", "按 slug 前缀路由到各桥"], ["freellm", "tier0", "fall", "priority 1-4 月配额优先"], ["freellm", "tier1", "fall", "priority 5-185 订阅积分"], ["freellm", "tier2", "fall", "priority 188-199 兜底"], ["gw8801", "tier0", "main", "step* 直连官方月配额"], ["gw8801", "tier1", "main", "有桥的 provider 走桥"], ["gw8801", "ocx", "fall", "其余回落 opencodex"], ["tier0", "stepfun", "main", ""], ["tier1", "subs", "main", ""], ["tier1", "tokend", "main", "tokendance 98 模型（401，不可用）"], ["tier1", "hub", "main", "cline 免费池经 hub daemon"], ["tier2", "or", "fall", ""], ["ui", "tier1", "main", "观测：/api/status"]];
+const board=document.getElementById('board'), wires=document.getElementById('wires');
+const NS='http://www.w3.org/2000/svg';
+function center(id){const el=board.querySelector('[data-id="'+id+'"]');if(!el)return null;
+ const b=el.getBoundingClientRect(),r=board.getBoundingClientRect();
+ return {x:b.left-r.left,y:b.top-r.top,w:b.width,h:b.height,
+  cx:b.left-r.left+b.width/2,cy:b.top-r.top+b.height/2};}
+function color(k){return k==='fix'?'#bc8cff':k==='free'?'#3fb950':k==='fall'?'#d29922':'#58a6ff';}
+function draw(){const r=board.getBoundingClientRect();
+ wires.setAttribute('viewBox','0 0 '+r.width+' '+r.height);wires.innerHTML='';
+ EDGES.forEach(function(e){const p=center(e[0]),q=center(e[1]);if(!p||!q)return;
+  const x1=p.x+p.w,y1=p.cy,x2=q.x,y2=q.cy,mx=(x1+x2)/2;
+  const d='M'+x1+','+y1+' C'+mx+','+y1+' '+mx+','+y2+' '+x2+','+y2;
+  const path=document.createElementNS(NS,'path');path.setAttribute('d',d);
+  path.setAttribute('fill','none');path.setAttribute('stroke',color(e[2]));
+  path.setAttribute('stroke-width',e[2]==='fix'?2:1.4);
+  if(e[2]==='fall')path.setAttribute('stroke-dasharray','5 4');
+  path.setAttribute('opacity',e[2]==='fix'?.95:.55);
+  path.dataset.a=e[0];path.dataset.b=e[1];wires.appendChild(path);});}
+function highlight(id){const n=new Set([id]);
+ EDGES.forEach(function(e){if(e[0]===id)n.add(e[1]);if(e[1]===id)n.add(e[0]);});
+ board.querySelectorAll('.node,.bridge,.group').forEach(function(el){
+  el.classList.toggle('fade',!n.has(el.dataset.id));});
+ wires.querySelectorAll('path').forEach(function(el){
+  el.style.opacity=(el.dataset.a===id||el.dataset.b===id)?1:.12;});}
+function clearAll(){board.querySelectorAll('.fade').forEach(function(el){
+ el.classList.remove('fade');});
+ wires.querySelectorAll('path').forEach(function(el){
+  el.style.opacity=(el.dataset.k||'');});draw();}
+function show(id){const info=INFO[id],panel=document.getElementById('panel');
+ if(!info){panel.style.display='none';return;}
+ document.getElementById('p-title').textContent=info[0];
+ document.getElementById('p-body').innerHTML=Object.keys(info[1]).map(function(k){
+  return '<div><b>'+k+'</b>：'+info[1][k]+'</div>';}).join('');
+ var up=EDGES.filter(function(e){return e[0]===id;}).map(function(e){
+  return '出 → '+(INFO[e[1]]?INFO[e[1]][0]:e[1])+(e[3]?'（'+e[3]+'）':'');});
+ var dn=EDGES.filter(function(e){return e[1]===id;}).map(function(e){
+  return '入 ← '+(INFO[e[0]]?INFO[e[0]][0]:e[0])+(e[3]?'（'+e[3]+'）':'');});
+ document.getElementById('p-list').innerHTML=up.concat(dn).map(function(x){
+  return '<li>'+x+'</li>';}).join('');
+ panel.style.display='block';highlight(id);}
+board.querySelectorAll('.node,.group,.bridge').forEach(function(el){
+ el.onclick=function(){show(el.dataset.id);};
+ el.onmouseenter=function(){highlight(el.dataset.id);};
+ el.onmouseleave=function(){clearAll();};});
+window.addEventListener('load',draw);window.addEventListener('resize',draw);
+setTimeout(draw,60);
+</script></body></html>
