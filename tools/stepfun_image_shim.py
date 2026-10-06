@@ -655,6 +655,14 @@ def build_app(config: Config):
                 payload["model"] = stripped
                 notes.append("prefix_stripped=%r" % model)
                 model = stripped
+        # 输出预算钳制:客户端对自定义 provider 会申请过大的输出(实测 Codex
+        # 64K,而线程输入已 986K,合计超 1M 窗口仅 1 token 就被上游 400)。
+        # 32768 对任何 step-* 请求都足够,且保证 input+output 永不越窗。
+        for key in ("max_output_tokens", "max_tokens", "max_completion_tokens"):
+            v = payload.get(key)
+            if isinstance(v, int) and v > 32768:
+                payload[key] = 32768
+                notes.append("%s %d->32768" % (key, v))
         if config.applies_to(model):
             payload, info = image_cap.cap_images(payload, config.max_images)
             if info["images"] and (info["dropped_duplicate"]
