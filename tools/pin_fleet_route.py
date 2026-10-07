@@ -181,8 +181,11 @@ def catalog_slugs(path):
 def missing_markers(lines, catalog_path, gateway, provider=FLEET_PROVIDER):
     """FleetKit keys the file no longer carries, or carries pointed elsewhere.
 
-    Empty means "the fleet route is still declared here", which is the one
-    state this pin refuses to touch.
+    The root keys alone are not the whole route: a config can keep every one
+    of them and still have lost the provider table they route through, which
+    is exactly how a thread pinned to that provider starts failing to load.
+    So the table is checked too. Empty means "the fleet route is still
+    declared here", which is the one state this pin refuses to touch.
     """
     missing = []
     declared = root_value(lines, "model_catalog_json")
@@ -197,14 +200,8 @@ def missing_markers(lines, catalog_path, gateway, provider=FLEET_PROVIDER):
                       ("experimental_realtime_ws_base_url", gateway)):
         if root_value(lines, key) != want:
             missing.append(key)
-    # An absent model_provider is a silent killer: ocx sync's own rewrite can
-    # drop the root key while keeping everything else (measured 2026-10-03
-    # 07:18, Codex's send button died on a config with no route to resolve),
-    # and with the markers above all satisfied this pin would refuse to act.
-    # A foreign value is already rewritten by repair(); catching absence here
-    # just gives it a trigger.
-    if root_value(lines, "model_provider") != provider:
-        missing.append("model_provider")
+    if not provider_section_present(lines, provider):
+        missing.append("model_providers.%s" % provider)
     return missing
 
 
@@ -303,7 +300,7 @@ def rewrite(text, provider=FLEET_PROVIDER, catalog_path=CATALOG_NAME,
 
     if not provider_section_present(lines, provider):
         if out and out[-1].strip():
-            out.append("")
+            out.append("\n")
         out.append("[%s]\n" % target)
         out.append("name = %s\n" % _toml_str("FleetKit Gateway"))
         for key in PROVIDER_KEYS:
@@ -352,10 +349,16 @@ def pin_once(path, codex_home=None, provider=FLEET_PROVIDER, gateway=GATEWAY,
     model_servable = bool(slugs) and model in slugs
     replacement = FALLBACK_MODEL if (slugs and FALLBACK_MODEL in slugs
                                      and not model_servable) else ""
-    touch_provider = pin_provider and (bool(missing) or not current)
+    # A missing provider table is repaired on its own, but it never drags the
+    # root model_provider along with it. absent model_provider is a legal
+    # operator choice (Codex then uses its built-in default), not evidence
+    # that the file was taken over, so only root keys justify rewriting it.
+    root_missing = [m for m in missing if not m.startswith("model_providers.")]
+    touch_provider = pin_provider and bool(root_missing)
 
     if missing:
-        # The switcher's signature: it took the file, so take the route back.
+        # The switcher's signature: something the route needs is gone or
+        # points elsewhere, so take the route back.
         pass
     elif current and current != provider:
         return False, ("no change: %s declares the fleet route and opens on %s "
