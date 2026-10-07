@@ -28,3 +28,6 @@ xhx-usage.jsonl
 # deployed runtime root and scratch dirs -- never commit
 runtime/
 .review-tmp/
+
+# macOS
+.DS_Store
