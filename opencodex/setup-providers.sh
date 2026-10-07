@@ -195,14 +195,16 @@ run ocx sync
 STEPFUN_REGISTERED=0
 
 if [ -n "${STEPFUN_PLAN_API_KEY:-}" ]; then
-  run ocx provider add stepfun --adapter openai-chat --base-url https://api.stepfun.com/step_plan/v1 --api-key "${STEPFUN_PLAN_API_KEY}" --allow-private-network --force
+  # Through the image-cap shim (127.0.0.1:15722 -> api.stepfun.com/step_plan/v1),
+  # not straight at StepFun: Codex re-sends its whole history every turn and the
+  # Plan API refuses the 71st image (README "stepfun 系走 image-cap shim 15722").
+  # The shim forwards the key byte for byte, so this registration answers
+  # exactly like the CC Switch route does.
+  run ocx provider add stepfun --adapter openai-chat --base-url http://127.0.0.1:15722/v1 --api-key "${STEPFUN_PLAN_API_KEY}" --allow-private-network --force
   # A freshly added provider only enters the routing table after a restart;
   # without it `ocx models` shows no stepfun rows at all (Windows, 2026-10-01).
   run ocx restart
   # A fixed sleep races a slow restart: under `set -e` a not-yet-up ocx would
-  # abort the whole setup mid-way. Poll instead, and only for real runs (the
-  # dry run never executed the restart). A failed poll warns and carries on --
-  # the remaining registrations matter more than this one provider's picker.
   if [ "$DRY_RUN" != "1" ]; then
     ocx_up=0
     for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -335,6 +337,25 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "  [dry-run] bash ${SHIM_SH} install-timer"
 else
   bash "$SHIM_SH" install-timer || echo "  [warn] stepfun image-cap shim install failed" >&2
+fi
+
+# The reverse proxy is only reachable from the Codex picker if CC Switch knows
+# it: the app owns ~/.codex/config.toml and rewrites it on every provider switch,
+# so with no ocx row in its own table the fleet route cannot be selected and the
+# provider that *is* selected writes back a foreign base_url -- measured
+# 2026-10-05, a workbuddy model answered 404 by the StepFun shim on 15722.
+# tools/register_cc_switch_provider.py inserts that row once, idempotently, and
+# re-runs cleanly on every setup.
+REGISTER="${KIT}/tools/register_cc_switch_provider.py"
+if [ -n "${FLEET_HOME:-}" ] && [ -f "${FLEET_HOME}/tools/register_cc_switch_provider.py" ]; then
+  REGISTER="${FLEET_HOME}/tools/register_cc_switch_provider.py"
+fi
+if [ "$DRY_RUN" = "1" ]; then
+  run python3 "$REGISTER" --dry-run
+elif [ -f "$REGISTER" ]; then
+  run python3 "$REGISTER" || echo "  [warn] CC Switch provider registration failed" >&2
+else
+  echo "  [warn] $REGISTER missing; the fleet route is not in the CC Switch list" >&2
 fi
 
 run ocx service restart

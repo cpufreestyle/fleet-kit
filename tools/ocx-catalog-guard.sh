@@ -46,13 +46,18 @@ set -euo pipefail
 
 # Resolve without dirname: a Task Scheduler action inherits the bare machine
 # PATH, which has no Git for Windows coreutils, so $(dirname) would abort the
-# script under set -e before it can log anything. The cmd wrapper passes a
-# Windows-style $0 with backslashes, which ${0%/*} cannot strip -- normalise
-# the separators first or SCRIPT_DIR degrades to the cwd and every helper
-# lookup (platform.sh, pin_fleet_route.py) silently misses.
-GUARD_ZERO="${0//\\//}"
-case "$GUARD_ZERO" in
-  */*) SCRIPT_DIR="$(cd "${GUARD_ZERO%/*}" && pwd)" ;;
+# script under set -e before it can log anything.
+# Task Scheduler hands $0 a backslashed Windows path ("D:\ai share\...\guard.sh"),
+# which matches neither */* nor the forward-slash logic below -- SCRIPT_DIR then
+# falls back to pwd and ${SCRIPT_DIR}/pin_fleet_route.py silently stops
+# existing, so route_pin bailed on every scheduled run while the same command
+# worked from an interactive shell. Fold the separators first.
+case "$0" in
+  *\\*) zero="${0//\\//}" ;;
+  *) zero="$0" ;;
+esac
+case "$zero" in
+  */*) SCRIPT_DIR="$(cd "${zero%/*}" && pwd)" ;;
   *) SCRIPT_DIR="$(pwd)" ;;
 esac
 
@@ -227,6 +232,7 @@ cmd_run() {
     if ocx sync >>"$LOG_FILE" 2>&1; then
       after="$(catalog_bridge_count || echo unknown)"
       log "heal done: $count, now $after"
+      apply_fleet_sort
     else
       log "heal FAILED: ocx sync exited non-zero"
       return 1
@@ -258,10 +264,22 @@ cmd_run() {
   if ocx sync >>"$LOG_FILE" 2>&1; then
     after="$(catalog_bridge_count || echo unknown)"
     log "heal done: $count bridge models, now $after"
+    apply_fleet_sort
   else
     log "heal FAILED: ocx sync exited non-zero"
     return 1
   fi
+}
+
+# ocx sync resets every catalog priority to 5 -- that is why
+# fleet-sort-after-sync.sh exists. Its normal install shadows the ocx command
+# with a wrapper symlink, which Windows cannot do (npm's ocx is a real file,
+# link_one refuses it), so the heal applies the reachable-first order itself.
+apply_fleet_sort() {
+  local sort="${SCRIPT_DIR}/fleet-sort-after-sync.sh"
+  [ -f "$sort" ] || return 0
+  bash "$sort" --apply-sort >>"$LOG_FILE" 2>&1 \
+    || log "fleet-sort failed after ocx sync"
 }
 
 cmd_install_timer() {

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import sys
@@ -23,6 +24,7 @@ import _common
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -51,6 +53,11 @@ FALLBACK_MODELS = [
 ]
 CALL_TIMEOUT = int(os.environ.get("QODER_CALL_TIMEOUT") or "300")
 API_KEY = os.environ.get("QODER2CODEX_KEY", "")
+# Windows 上 CreateProcess 起 .cmd 实际要过 cmd.exe，它的命令行上限是 8191
+# 字符（不是 CreateProcess 的 32767）；超过后 CLI 退出码 1，且在 stderr 写
+# ANSI 码页错误文本。prompt 一律走 stdin，这里只决定系统提示还能不能留在
+# argv，留足余量给 flag 和附件路径。
+_MAX_ARGV = 5000
 
 app = _common.make_app("qoder2codex", BRIDGE_VERSION)
 
@@ -77,31 +84,15 @@ def _cli() -> str:
 
 
 def _run_cli(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
+    # encoding/errors 必须显式:CLI 的 stdout 是 UTF-8,但 stderr 走 ANSI
+    # 码页(zh-CN 主机上是 GBK)。text=True 在 UTF-8 模式下严格解码,读到
+    # GBK 字节会让读取线程 UnicodeDecodeError 崩掉——错误文本全吞,只剩
+    # 一个光秃秃的退出码。
     return subprocess.run([_cli()] + args, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace",
                           timeout=timeout, cwd=str(Path.home()))
 
 
-# Windows CreateProcess caps one command line at 32767 chars, and Codex
-# resends its whole conversation every turn -- past the limit the CLI never
-# starts (WinError 206) and the stream dies mid-turn. The CLI reads the
-# prompt from stdin when the positional argument is omitted, so past a safe
-# margin it travels there instead. Measured 2026-10-04 on a >32k history.
-ARGV_SAFE = 24000
-
-
-def _cli_argv(args: list[str], body: str) -> tuple[list[str], "str | None"]:
-    """(argv, stdin_text): the prompt rides argv while it fits, stdin after."""
-    if body and sum(len(a) for a in args) + len(body) + 256 > ARGV_SAFE:
-        trimmed = [a for a in args]
-        if sum(len(a) for a in trimmed) + 256 > ARGV_SAFE:
-            # A huge --append-system-prompt can overflow on its own; a lost
-            # system prompt degrades the reply, a crashed stream loses it.
-            for i, a in enumerate(trimmed):
-                if a == "--append-system-prompt":
-                    trimmed = trimmed[:i] + trimmed[i + 2:]
-                    break
-        return trimmed, body
-    return args + [body], None
 
 
 def _auth_state() -> dict:
@@ -179,7 +170,13 @@ def _refresh_models(force: bool = False) -> list[dict]:
 
 
 def _messages_to_prompt(messages: list) -> tuple[str, str]:
-    """返回 (system_prompt, 对话正文)。"""
+    """返回 (system_prompt, 对话正文)。
+
+    tool 消息与 assistant 的 tool_calls 也要进正文：agentic 客户端（ZCode
+    这类）的多轮循环里，模型必须看到自己上一轮调了什么、工具回了什么，
+    否则同一调用会被反复发起。渲染成与工具协议一致的 <tool_call> 形式，
+    模型认得自己上轮的输出格式。
+    """
     system_parts: list[str] = []
     turns: list[str] = []
     for msg in messages:
@@ -193,15 +190,123 @@ def _messages_to_prompt(messages: list) -> tuple[str, str]:
                 for part in content
             )
         content = str(content or "").strip()
+        if role in ("system", "developer"):
+            if content:
+                system_parts.append(content)
+            continue
+        if role == "assistant":
+            calls = msg.get("tool_calls")
+            block = ""
+            if isinstance(calls, list) and calls:
+                rendered = []
+                for tc in calls:
+                    fn = (tc or {}).get("function") or {}
+                    args = fn.get("arguments")
+                    if not (isinstance(args, str) and args.strip()):
+                        args = json.dumps(args or {}, ensure_ascii=False)
+                    rendered.append('<tool_call>{"name": "%s", "arguments": %s}</tool_call>'
+                                    % (fn.get("name") or "", args))
+                block = "\n".join(rendered)
+            if content and block:
+                turns.append(f"Assistant: {content}\n{block}")
+            elif block:
+                turns.append(f"Assistant: {block}")
+            elif content:
+                turns.append(f"Assistant: {content}")
+            continue
+        if role == "tool":
+            tid = str(msg.get("tool_call_id") or "call")
+            turns.append(f"Tool result for {tid}:\n{content}")
+            continue
         if not content:
             continue
-        if role in ("system", "developer"):
-            system_parts.append(content)
-        elif role == "assistant":
-            turns.append(f"Assistant: {content}")
-        else:
-            turns.append(f"User: {content}")
+        turns.append(f"User: {content}")
     return "\n\n".join(system_parts), "\n\n".join(turns)
+
+
+_IMAGE_EXT_BY_MIME = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+}
+
+
+def _extract_image_attachments(messages: list) -> tuple[list[str], Optional[str]]:
+    """把 OpenAI 视觉消息里的图片落成临时文件，返回 (附件路径, 临时目录)。
+
+    qoderclicn 只接受 --attachment 文件路径，所以 base64/URL 图片必须先落盘。
+    同一张图片（按内容哈希）只附一次，避免多轮对话重复塞同一张图。
+    """
+    import hashlib
+    import urllib.request
+
+    seen: set[str] = set()
+    paths: list[str] = []
+    tmp_dir: Optional[str] = None
+
+    def _save(raw: bytes, mime: str) -> None:
+        nonlocal tmp_dir
+        digest = hashlib.sha256(raw).hexdigest()
+        if digest in seen:
+            return
+        seen.add(digest)
+        if tmp_dir is None:
+            tmp_dir = tempfile.mkdtemp(prefix="qoder_img_")
+        path = os.path.join(tmp_dir, f"img_{len(paths)}{_IMAGE_EXT_BY_MIME.get(mime, '.png')}")
+        with open(path, "wb") as fh:
+            fh.write(raw)
+        paths.append(path)
+
+    def _from_url(url: str) -> None:
+        if url.startswith("data:"):
+            header, _, data = url.partition(",")
+            mime = header[5:].split(";")[0]
+            if "base64" not in header:
+                return
+            try:
+                _save(base64.b64decode(data), mime)
+            except Exception:
+                pass
+        elif url.startswith("http://") or url.startswith("https://"):
+            try:
+                with urllib.request.urlopen(url, timeout=20) as resp:
+                    _save(resp.read(), resp.headers.get("Content-Type", ""))
+            except Exception:
+                pass
+
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            ptype = str(part.get("type") or "").lower()
+            if ptype in ("image_url", "image"):
+                node = part.get("image_url") or part.get("image") or {}
+                url = node.get("url", "") if isinstance(node, dict) else str(node)
+                if url:
+                    _from_url(str(url))
+            elif ptype == "input_image":
+                source = part.get("source") or {}
+                if isinstance(source, dict):
+                    data = str(source.get("data") or source.get("base64") or "")
+                    if data:
+                        try:
+                            _save(base64.b64decode(data), str(source.get("media_type") or ""))
+                        except Exception:
+                            pass
+    return paths, tmp_dir
+
+
+def _cleanup_tmp(tmp_dir: Optional[str]) -> None:
+    if tmp_dir:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _extract_text(payload: dict) -> str:
@@ -238,6 +343,117 @@ def _extract_usage(payload: dict) -> Optional[dict]:
         return None
     return {"prompt_tokens": prompt, "completion_tokens": completion,
             "total_tokens": prompt + completion}
+
+
+# ---- agentic 工具调用（文本级协议）----
+# 上游是 qoderclicn 的文本问答（--tools "" 禁了内置工具），OpenAI 的 tools
+# 参数到不了模型。agentic 客户端（ZCode 等）却按 tool_calls 驱动循环：不补
+# 这层，模型只能把调用写成正文文本，客户端看到 <tool_call> 原文，循环卡在
+# Thinking（实测 2026-10-06，qdr/qwen3.8-fl 在 ZCode 的 goal 模式里）。
+
+_TOOL_PROTOCOL = (
+    "\n\n# Tool use protocol\n"
+    "You can invoke tools. Available tools:\n{schemas}\n"
+    "To invoke one, emit a block exactly like:\n"
+    '<tool_call>{"name": "tool_name", "arguments": {"key": "value"}}</tool_call>\n'
+    "Rules: the block content must be valid JSON, one call per block, multiple"
+    " blocks for multiple calls, no prose inside a block. When no tool is"
+    " needed, answer in plain text with no <tool_call> block at all."
+)
+
+_TOOLCALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.S | re.I)
+_FUNCTION_RE = re.compile(r"<function\s*=\s*([\w.\-]+)\s*>(.*?)</function>", re.S | re.I)
+_PARAMETER_RE = re.compile(r"<parameter\s*=\s*([\w.\-]+)\s*>(.*?)</parameter>", re.S | re.I)
+_TAG_RE = re.compile(r"</?tool_call>", re.I)
+
+
+def _tool_arguments(value) -> str:
+    """OpenAI 的 arguments 恒为 JSON 字符串；容忍上游给对象或纯文本。"""
+    if value is None:
+        return "{}"
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return "{}"
+        try:
+            json.loads(s)
+            return s
+        except Exception:
+            return json.dumps({"input": s}, ensure_ascii=False)
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _parse_tool_block(inner: str):
+    """一个 <tool_call> 块 → (name, arguments)；认不出返回 None。
+
+    两种形态都收：Qwen 的 JSON 风格，和客户端历史里出现过的
+    <function=exec><parameter=cmd>…</parameter></function> XML 风格。
+    """
+    inner = inner.strip()
+    if not inner:
+        return None
+    try:
+        obj = json.loads(inner)
+        if isinstance(obj, dict) and obj.get("name"):
+            return str(obj["name"]), obj.get("arguments")
+    except Exception:
+        pass
+    fn = _FUNCTION_RE.search(inner)
+    if not fn:
+        return None
+    name, body = fn.group(1), fn.group(2)
+    args: dict = {}
+    for pm in _PARAMETER_RE.finditer(body):
+        key, val = pm.group(1), pm.group(2).strip()
+        try:
+            args[key] = json.loads(val)
+        except Exception:
+            args[key] = val
+    return name, args
+
+
+def _parse_tool_calls(text: str):
+    """从回答里摘出工具调用 → (剩余正文, [(name, arguments)])。"""
+    calls: list = []
+    spans: list = []
+    for m in _TOOLCALL_RE.finditer(text):
+        parsed = _parse_tool_block(m.group(1))
+        if parsed:
+            spans.append(m.span())
+            calls.append(parsed)
+    if not calls:
+        # 有的模型不包 <tool_call> 外壳，直接吐 <function=...> 块
+        for m in _FUNCTION_RE.finditer(text):
+            parsed = _parse_tool_block(m.group(0))
+            if parsed:
+                spans.append(m.span())
+                calls.append(parsed)
+    if not calls:
+        return text, None
+    parts, last = [], 0
+    for s, e in spans:
+        parts.append(text[last:s])
+        last = e
+    parts.append(text[last:])
+    content = _TAG_RE.sub("", "".join(parts)).strip()
+    return content, calls
+
+
+def _tool_call_entries(calls) -> list:
+    entries = []
+    for name, args in calls:
+        entries.append({
+            "id": "call_" + os.urandom(6).hex(),
+            "type": "function",
+            "function": {"name": str(name)[:128],
+                         "arguments": _tool_arguments(args)},
+        })
+    return entries
+
+
+def _tool_system_patch(tools: list) -> str:
+    schemas = "\n".join(json.dumps(t, ensure_ascii=False) for t in tools[:64])
+    return _TOOL_PROTOCOL.replace("{schemas}", schemas)
 
 
 # "auto"/"default" (and an empty model) fall back to DEFAULT_MODEL; anything
@@ -286,8 +502,17 @@ async def chat_completions(request: Request,
     model = _clean_model(str(payload.get("model") or ""))
     wants_stream = bool(payload.get("stream"))
     system_prompt, body = _messages_to_prompt(messages)
+    attachments, tmp_dir = _extract_image_attachments(messages)
     if not body.strip():
-        raise HTTPException(status_code=400, detail={"error": {"message": "empty prompt"}})
+        if attachments:
+            body = "请描述附件图片的内容。"  # 纯图片请求（无文字）也放行
+        else:
+            raise HTTPException(status_code=400, detail={"error": {"message": "empty prompt"}})
+
+    tools = payload.get("tools") if isinstance(payload.get("tools"), list) else None
+    if tools:
+        system_prompt = (system_prompt + _tool_system_patch(tools)) if system_prompt \
+            else _tool_system_patch(tools).lstrip()
 
     base_args = [
         "-p",
@@ -299,21 +524,33 @@ async def chat_completions(request: Request,
         "--max-output-tokens", str(min(int(payload.get("max_tokens") or 4096), 32000)),
     ]
     if system_prompt:
-        base_args += ["--append-system-prompt", system_prompt]
+        # 系统提示塞不进 argv(临近 32767 上限)时折进 stdin 正文，
+        # 长会话(AGENTS.md、长指令)也不会再把 CreateProcess 撑爆。
+        if sum(len(a) for a in base_args) + len(system_prompt) + 32 <= _MAX_ARGV:
+            base_args += ["--append-system-prompt", system_prompt]
+        else:
+            body = f"<system>\n{system_prompt}\n</system>\n\n{body}"
+    for path in attachments:
+        base_args += ["--attachment", path]
 
     if wants_stream:
-        return StreamingResponse(_stream(body, base_args, model, payload),
+        return StreamingResponse(_stream(body, base_args, model, payload, tmp_dir),
                                  media_type="text/event-stream")
-    return JSONResponse(content=await _collect(body, base_args, model, payload))
+    try:
+        return JSONResponse(content=await _collect(body, base_args, model, payload))
+    finally:
+        _cleanup_tmp(tmp_dir)
 
 
 async def _collect(body: str, base_args: list[str], model: str, payload: dict) -> dict:
+    # prompt 走 stdin:argv 只放 flag,避开 Windows 32767 字符上限
     args = base_args + ["--output-format", "json"]
-    argv, stdin_text = _cli_argv(args, body)
     try:
         proc = await asyncio.to_thread(
-            subprocess.run, [_cli()] + argv,
-            input=stdin_text, capture_output=True, text=True, timeout=CALL_TIMEOUT, cwd=str(Path.home()))
+            lambda: subprocess.run([_cli()] + args,
+                                   input=body, capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace",
+                                   timeout=CALL_TIMEOUT, cwd=str(Path.home())))
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail={"error": {
             "message": f"qoderclicn 超时（{CALL_TIMEOUT}s）", "type": "upstream_timeout"}})
@@ -334,17 +571,28 @@ async def _collect(body: str, base_args: list[str], model: str, payload: dict) -
     text = _extract_text(parsed)
     if not text.strip():
         text = (proc.stdout or "").strip()
-    if not text.strip():
+
+    tools_on = isinstance(payload.get("tools"), list) and bool(payload["tools"])
+    calls = None
+    if tools_on:
+        text, calls = _parse_tool_calls(text)
+    if not text.strip() and not calls:
         raise HTTPException(status_code=502, detail={"error": {
             "message": "Qoder 未返回内容", "type": "upstream_error"}})
+
+    message: dict = {"role": "assistant", "content": text or None}
+    finish = "stop"
+    if calls:
+        message["tool_calls"] = _tool_call_entries(calls)
+        finish = "tool_calls"
 
     response = {
         "id": "chatcmpl-" + os.urandom(8).hex(),
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
-                     "finish_reason": "stop"}],
+        "choices": [{"index": 0, "message": message,
+                     "finish_reason": finish}],
     }
     usage = _extract_usage(parsed)
     if usage:
@@ -352,7 +600,7 @@ async def _collect(body: str, base_args: list[str], model: str, payload: dict) -
     return response
 
 
-async def _stream(body: str, base_args: list[str], model: str, payload: dict):
+async def _stream(body: str, base_args: list[str], model: str, payload: dict, tmp_dir=None):
     """把 qoderclicn 的 stream-json 事件转成 OpenAI SSE。"""
     chat_id = "chatcmpl-" + os.urandom(8).hex()
     created = int(time.time())
@@ -363,42 +611,116 @@ async def _stream(body: str, base_args: list[str], model: str, payload: dict):
                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-    yield chunk({"role": "assistant"})
+    try:
+        yield chunk({"role": "assistant"})
 
-    args = base_args + ["--output-format", "stream-json"]
-    argv, stdin_text = _cli_argv(args, body)
-    proc = await asyncio.create_subprocess_exec(
-        _cli(), *argv, cwd=str(Path.home()),
-        stdin=asyncio.subprocess.PIPE if stdin_text else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    if stdin_text:
+        # 带 tools 的请求走缓冲模式：工具调用要在全文上解析，流到一半的
+        # <tool_call> 没法收回，客户端会把原文渲染出来（就是本次的 bug 形态）。
+        tools_on = isinstance(payload.get("tools"), list) and bool(payload["tools"])
+        buffered: list[str] = []
+        finish = "stop"
+
+        args = base_args + ["--output-format", "stream-json"]
+        proc = await asyncio.create_subprocess_exec(
+            _cli(), *args, cwd=str(Path.home()),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+
+        # prompt 走 stdin(argv 只放 flag);stdin 无长度限制,drain() 处理
+        # 大 prompt 的背压,写完立即 close 给 CLI 送 EOF。
         assert proc.stdin is not None
-        proc.stdin.write(stdin_text.encode("utf-8"))
-        await proc.stdin.wait_closed()
-
-    assert proc.stdout is not None
-    async for raw in proc.stdout:
-        line = raw.decode("utf-8", "replace").strip()
-        if not line or not line.startswith("{"):
-            continue
         try:
-            event = json.loads(line)
-        except Exception:
-            continue
-        etype = event.get("type")
-        if etype == "assistant":
-            message = event.get("message") or {}
-            blocks = message.get("content") or []
-            for block in blocks if isinstance(blocks, list) else []:
-                if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
-                    yield chunk({"content": block["text"]})
-        elif etype == "result":
-            if event.get("is_error"):
-                yield chunk({"content": f"[qoder error] {event.get('result', '')}"})
-            break
-    await proc.wait()
-    yield chunk({}, "stop")
-    yield "data: [DONE]\n\n"
+            proc.stdin.write(body.encode("utf-8"))
+            await proc.stdin.drain()
+            proc.stdin.close()
+        except (BrokenPipeError, ConnectionResetError):
+            # CLI 可能在读 stdin 之前就退出(典型:当日配额耗尽/登录态失效时
+            # 直接退)。裸的 WinError 109 毫无信息量——等它退出并取 stderr,
+            # 把真实原因交给调用方。
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10)
+            except Exception:
+                proc.kill()
+            err_tail = b""
+            if proc.stderr is not None:
+                try:
+                    err_tail = await asyncio.wait_for(proc.stderr.read(), timeout=3)
+                except Exception:
+                    pass
+            reason = err_tail.decode("utf-8", "replace").strip()[:400] or "CLI 未给出说明"
+            yield chunk({"content": f"[qoder error] CLI 提前退出(退出码 {proc.returncode}): {reason}"})
+            yield chunk({}, "stop")
+            yield "data: [DONE]\n\n"
+            return
+
+        # stderr 必须持续抽干：管道缓冲写满后 CLI 会阻塞在 write 上，整个流
+        # 跟着挂死；抽干的同时留住文本，进程异常退出时回报给调用方。
+        stderr_buf = bytearray()
+
+        async def _drain_stderr():
+            assert proc.stderr is not None
+            async for raw in proc.stderr:
+                stderr_buf.extend(raw)
+
+        pump = asyncio.ensure_future(_drain_stderr())
+        errored = False    # result.is_error 已发过带前缀的错误块
+        explained = False  # 正文里已出现人话原因(如配额耗尽提示)
+        try:
+            assert proc.stdout is not None
+            async for raw in proc.stdout:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line or not line.startswith("{"):
+                    continue
+                try:
+                    event = json.loads(line)
+                except Exception:
+                    continue
+                etype = event.get("type")
+                if etype == "assistant":
+                    message = event.get("message") or {}
+                    blocks = message.get("content") or []
+                    for block in blocks if isinstance(blocks, list) else []:
+                        if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                            explained = True
+                            if tools_on:
+                                buffered.append(block["text"])
+                            else:
+                                yield chunk({"content": block["text"]})
+                elif etype == "result":
+                    if event.get("is_error") and event.get("result"):
+                        errored = True
+                        yield chunk({"content": f"[qoder error] {event.get('result', '')}"})
+                    break
+            await proc.wait()
+            if proc.returncode != 0:
+                detail = stderr_buf.decode("utf-8", "replace").strip()[:400]
+                # 正文通常已带原因;只在没有任何解释时才补退出码行,免得
+                # 客户端看到 "[qoder error] " + "[qoder error] 退出码 1: " 连环噪音。
+                if detail or not (errored or explained):
+                    yield chunk({"content": f"[qoder error] 退出码 {proc.returncode}: {detail}"})
+        finally:
+            pump.cancel()
+
+        if tools_on:
+            # 缓冲模式下正文还没发给客户端：解析后要么发正文，要么发工具调用。
+            text, calls = _parse_tool_calls("".join(buffered))
+            if calls:
+                for i, entry in enumerate(_tool_call_entries(calls)):
+                    yield chunk({"tool_calls": [{**entry, "index": i}]})
+                finish = "tool_calls"
+            elif text:
+                yield chunk({"content": text})
+        yield chunk({}, finish)
+        yield "data: [DONE]\n\n"
+    except Exception as exc:
+        # 流一旦开始，HTTP 状态码就无法改了；此时让异常把连接裸断掉，客户端
+        # 只会看到 "socket closed unexpectedly"（且无从判断发生了什么）。
+        # 把错误当成最后一个内容块推完，再正常收尾，客户端至少能拿到真相。
+        yield chunk({"content": f"[bridge error] {type(exc).__name__}: {exc}"})
+        yield chunk({}, "stop")
+        yield "data: [DONE]\n\n"
+    finally:
+        _cleanup_tmp(tmp_dir)
 
 
 def main():

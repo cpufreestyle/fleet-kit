@@ -157,12 +157,28 @@ def _login_name() -> str:
     return os.environ.get("USERNAME") or os.environ.get("USER") or ""
 
 
+def _candidate_secrets() -> list:
+    """Fallback-key secrets, most likely first.
+
+    The encrypting side is Node, whose os.platform() says `win32` on Windows
+    while python's platform.system().lower() says `windows` — a mismatch that
+    yields a different sha256 key and an unfathomable "未登录". macOS/linux
+    agree (`darwin`/`linux`), which is why only Windows boxes hit this.
+    """
+    if os.environ.get("ZCODE_CREDENTIAL_SECRET"):
+        return [os.environ["ZCODE_CREDENTIAL_SECRET"]]
+    home = str(Path.home())
+    user = _login_name()
+    node_platform = {"win32": "win32", "darwin": "darwin", "linux": "linux"}.get(
+        sys.platform, platform.system().lower())
+    py_platform = platform.system().lower()
+    secrets = ["zcode-credential-fallback:%s:%s:%s" % (pl, home, user)
+               for pl in dict.fromkeys([node_platform, py_platform])]
+    return secrets
+
+
 def _safe_storage_key() -> bytes:
-    secret = os.environ.get("ZCODE_CREDENTIAL_SECRET") or (
-        "zcode-credential-fallback:%s:%s:%s" % (
-            platform.system().lower(), str(Path.home()),
-            _login_name()))
-    return hashlib.sha256(secret.encode("utf-8")).digest()
+    return hashlib.sha256(_candidate_secrets()[0].encode("utf-8")).digest()
 
 
 def _decrypt(value: str) -> str:
@@ -175,7 +191,14 @@ def _decrypt(value: str) -> str:
         ct = base64.urlsafe_b64decode(_pad(ct_b64))
     except Exception as exc:
         raise RuntimeError("bad ciphertext layout: %s" % exc)
-    return _aes_gcm_decrypt(_safe_storage_key(), iv, tag, ct)
+    last_exc: Exception = RuntimeError("no candidate key")
+    for secret in _candidate_secrets():
+        key = hashlib.sha256(secret.encode("utf-8")).digest()
+        try:
+            return _aes_gcm_decrypt(key, iv, tag, ct)
+        except Exception as exc:
+            last_exc = exc
+    raise last_exc
 
 
 def _pad(s: str) -> str:
@@ -312,6 +335,9 @@ CAPTCHA_MAX_AGE = float(os.environ.get("ZCODE_CAPTCHA_MAX_AGE") or "600")
 # 分钟级的旧票必 3007，所以发请求前用这个更严的门槛把关。
 CAPTCHA_MAX_FRESH = float(os.environ.get("ZCODE_CAPTCHA_MAX_FRESH") or "75")
 CAPTCHA_RETRIES = int(os.environ.get("ZCODE_CAPTCHA_RETRIES") or "3")
+# 自动验证总闸：0 时桥不再现场 mint（不跑阿里云无感验证），
+# 没票就按缺票路径向人要一张人工票。后台补票 keeper 另见 captcha-keeper.sh。
+CAPTCHA_AUTOMINT = os.environ.get("ZCODE_CAPTCHA_AUTOMINT", "1").strip().lower() not in ("0", "false", "no", "off")
 MINT_TIMEOUT = float(os.environ.get("ZCODE_MINT_TIMEOUT") or "60")
 
 
@@ -359,6 +385,11 @@ def read_captcha() -> str:
 def _mint_now() -> str:
     """Ask captcha-mint.py for one fresh ticket (blocking, seconds)."""
     if not MINTER.exists():
+        return ""
+    if not CAPTCHA_AUTOMINT:
+        # 用户关掉了自动验证：这里不再启动 Chrome 跑无感验证，
+        # 让上层落到「缺票，请人工换一张」的提示上。
+        log("auto-mint disabled (ZCODE_CAPTCHA_AUTOMINT=0)")
         return ""
     import subprocess
     try:

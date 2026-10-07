@@ -18,6 +18,23 @@ fleet_os() {
     printf '%s\n' "$FLEET_OS"
     return 0
   fi
+  # A home records the backend install.sh chose, so every consumer agrees
+  # with the wrappers already on disk instead of re-sniffing the host.
+  local envfile="${FLEET_ENV_FILE:-}" line=""
+  if [ -z "$envfile" ] && [ -n "${FLEET_HOME:-}" ]; then
+    envfile="${FLEET_HOME%/}/fleet.env"
+  fi
+  if [ -n "$envfile" ] && [ -f "$envfile" ]; then
+    line="$(grep -E '^[[:space:]]*(export[[:space:]]+)?FLEET_OS=' "$envfile" 2>/dev/null | tail -n 1)"
+    line="${line%%$'\r'}"
+    line="${line#*=}"
+    line="${line//\"/}"
+    line="${line//\'/}"
+    line="${line// /}"
+    case "$line" in
+      macos|windows|linux) printf '%s\n' "$line"; return 0 ;;
+    esac
+  fi
   case "${OSTYPE:-$(uname -s 2>/dev/null || true)}" in
     darwin*|Darwin*) echo macos; return 0 ;;
     msys*|MSYS*|MINGW*|cygwin*|CYGWIN*|Windows_NT*) echo windows; return 0 ;;
@@ -79,30 +96,95 @@ fleet_system_python() {
 
 # venv layout differs: posix uses .venv/bin/python, windows .venv/Scripts/python.exe
 fleet_venv_python() {
-  local root="$1"
-  if fleet_is_windows; then
-    if [ -x "${root}/.venv/Scripts/python.exe" ]; then printf '%s\n' "${root}/.venv/Scripts/python.exe"; return 0; fi
-  else
-    if [ -x "${root}/.venv/bin/python" ]; then printf '%s\n' "${root}/.venv/bin/python"; return 0; fi
-    if [ -x "${root}/.venv/bin/python3" ]; then printf '%s\n' "${root}/.venv/bin/python3"; return 0; fi
+  local root="${1:-}"
+  if [ -z "$root" ]; then root="${FLEET_HOME:-}"; fi
+  if [ -z "$root" ]; then
+    # platform.sh lives in <kit>/tools, the venv sits in <kit>/../runtime.
+    # An unset positional under set -u aborts the caller inside a command
+    # substitution even with || true, so always resolve a default root.
+    root="$(cd "$(dirname "${BASH_SOURCE[0]}")"/../.. && pwd)/runtime"
   fi
+  # Layout before host: a Windows venv under a linux backend holds
+  # Scripts/python.exe while fleet_os() answers linux, and probing both is
+  # cheaper than handing the caller a python that cannot import fastapi.
+  if [ -x "${root}/.venv/Scripts/python.exe" ]; then printf '%s\n' "${root}/.venv/Scripts/python.exe"; return 0; fi
+  if [ -x "${root}/.venv/bin/python" ]; then printf '%s\n' "${root}/.venv/bin/python"; return 0; fi
+  if [ -x "${root}/.venv/bin/python3" ]; then printf '%s\n' "${root}/.venv/bin/python3"; return 0; fi
   fleet_system_python
 }
 
+_fleet_cygpath() {
+  local candidate
+  if command -v cygpath >/dev/null 2>&1; then printf '%s\n' cygpath; return 0; fi
+  for candidate in /usr/bin/cygpath /bin/cygpath /mingw64/bin/cygpath; do
+    if [ -x "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+  done
+  return 1
+}
+
+# The inherited PATH as one POSIX entry per line.  ':' and ';' both separate
+# entries, except the ':' of a drive letter: msys keeps a 'C:\...' entry it
+# cannot map raw, and splitting on that ':' would shred it into 'C' + '\foo'.
+_fleet_path_split() {
+  local raw="${PATH:-}" entry="" ch i
+  for ((i = 0; i < ${#raw}; i++)); do
+    ch="${raw:i:1}"
+    if [ "$ch" = ":" ] && [ "${#entry}" -eq 1 ]; then
+      case "$entry" in [A-Za-z]) entry="${entry}:" ; continue ;; esac
+    fi
+    case "$ch" in
+      ';'|':')
+        if [ -n "$entry" ]; then printf '%s\n' "$entry"; fi
+        entry=""
+        ;;
+      *) entry="${entry}${ch}" ;;
+    esac
+  done
+  [ -n "$entry" ] && printf '%s\n' "$entry"
+  return 0
+}
+
 fleet_detect_path() {
-  local value="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  local conv entry out="" value="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   local nodebin=""
   if fleet_is_macos; then
     [ -d /opt/homebrew/bin ] && value="/opt/homebrew/bin:${value}"
   fi
-  if fleet_is_windows; then
-    value="${PATH:-}"
-    [ -n "${SYSTEMROOT:-}" ] && value="${SYSTEMROOT}/System32:${value}"
-  else
+  conv="$(_fleet_cygpath || true)"
+  if [ -z "$conv" ]; then
     nodebin="$(command -v node || true)"
     [ -n "$nodebin" ] && value="$(dirname "$nodebin"):${value}"
+    # The supervisor inherits the installing shell's PATH; keep it so npm/user
+    # binaries (qoderclicn, git, ...) resolve next to the standard dirs.
+    [ -n "${PATH:-}" ] && value="${value}:${PATH}"
+    printf '%s\n' "$value"
+    return 0
   fi
-  printf '%s\n' "$value"
+  # Three spellings reach a wrapper: a plain ':' list, the native ';' list an
+  # older wrapper exported (msys keeps it verbatim), and raw 'C:\...' entries.
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    entry="$("$conv" -u -- "$entry" 2>/dev/null || printf '%s' "$entry")"
+    [ -n "$entry" ] || continue
+    out="${out:+${out}:}${entry}"
+  done <<EOF
+$(_fleet_path_split)
+EOF
+  [ -n "$out" ] || out="/usr/local/bin:/usr/bin:/bin"
+  printf '%s\n' "$out"
+}
+
+# HOME as native Windows services see it (bridges stat it directly); msys
+# bash exposes /c/Users/..., which a native process cannot resolve.
+fleet_home_win() {
+  # Convert only where a cygwin/msys runtime exists: those are the only hosts
+  # whose HOME can be a /c/... path a native service process cannot resolve.
+  if command -v cygpath >/dev/null 2>&1; then
+    case "${HOME}" in
+      /*) cygpath -m "${HOME}" 2>/dev/null || printf '%s\n' "${HOME}"; return 0 ;;
+    esac
+  fi
+  printf '%s\n' "${HOME}"
 }
 
 # ---------- ports ----------
@@ -178,9 +260,19 @@ _fleet_win_path() {
 # converts every absolute-path token of a string (arg lists) to Windows form
 _fleet_win_tokens() {
   local s="$1" out="" tok
-  for tok in $s; do
+  # Plain word splitting tears "d:/ai share/runtime" into two tokens, and cmd.exe
+  # then hands status_ui.py an extra positional argument ("unrecognized
+  # arguments: share/repo/..."). eval keeps the caller's own quoting intact
+  # through the split; any token that still holds a space is re-quoted so
+  # cmd.exe passes it on as a single argument.
+  local toks=()
+  eval "toks=($s)"
+  for tok in "${toks[@]}"; do
     case "$tok" in
       /*) tok="$(_fleet_win_path "$tok")" ;;
+    esac
+    case "$tok" in
+      *" "*) tok="\"$tok\"" ;;
     esac
     out="${out}${out:+ }${tok}"
   done
@@ -317,6 +409,11 @@ _fleet_write_ps_supervisor() {
 \$childPid  = '$childpid'
 \$wrapper   = '$wrapper'
 \$restartIn = $wait
+# The LogonTrigger boot task can fire while a supervisor from the session
+# that ran the install is still alive; the recorded super pid decides who
+# stays, so a logon never doubles a running service onto its own port.
+\$running = Get-Content -Path \$superPid -ErrorAction SilentlyContinue
+if (\$running -and \$running -ne "\$PID" -and (Get-Process -Id \$running -ErrorAction SilentlyContinue)) { exit 0 }
 Set-Content -Path \$superPid -Value \$PID -Force
 while (\$true) {
   \$child = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', \$wrapper -PassThru -WindowStyle Hidden
@@ -327,6 +424,36 @@ while (\$true) {
   Start-Sleep -Seconds \$restartIn
 }
 PS
+}
+
+# Boot persistence for a Windows service: launchd's RunAtLoad has no automatic
+# counterpart on this backend -- the supervisor spawned at install time dies
+# with its session, and a reboot used to leave every service down until a
+# manual reinstall (measured 2026-10-02: a reboot took down 15 services while
+# every timer survived, because only timers got real scheduled tasks). A
+# LogonTrigger task under "<label>-boot" re-spawns the supervisor at logon;
+# the supervisor's own pid check keeps a live copy from being doubled.
+# Deliberately stopping a service keeps the boot task -- "stop" means stop
+# now, not disable forever -- so only fleet_service_remove deletes it.
+_fleet_install_boot_task() {
+  local label="$1" supervisor="$2" logdir="$3"
+  local dir bootlabel bootcmd bootlog bootlauncher
+  dir="$(fleet_service_dir)"
+  bootlabel="${label}-boot"
+  bootlog="${logdir}/${bootlabel}.log"
+  bootcmd="$(_fleet_win_path "${dir}/${bootlabel}.cmd")"
+  {
+    echo '@echo off'
+    echo 'setlocal'
+    printf '"%s" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%s" >> "%s" 2>&1\n' \
+      "$(_fleet_win_path "$(_fleet_win_powershell)")" \
+      "$(_fleet_win_path "$supervisor")" \
+      "$(_fleet_win_path "$bootlog")"
+    printf 'endlocal\n'
+  } | sed 's/$/\r/' > "$bootcmd"
+  bootlauncher="$(fleet_write_hidden_launcher "$bootlabel" "${dir}/${bootlabel}.cmd")"
+  fleet_task_install "$bootlabel" "true" "" "" \
+    "wscript.exe" "/B /NOLOGO \"${bootlauncher}\"" "$(_fleet_win_path "$(pwd)")"
 }
 
 # writes <service-dir>/<label>.cmd that sets the env then runs the bridge
@@ -485,12 +612,20 @@ _fleet_write_sh_wrapper() {
       printf 'export %s=%s\n' "$k" "$(printf '%s' "$v" | sed "s/'/'\\\\''/g; s/^/'/; s/\$/'/")"
     done
     IFS="$oifs"
+    # The POSIX ':' list stays the shell's own: msys rewrites it per native
+    # child, so a bash wrapper holds the msys spelling, not a native one.
+    printf 'export PATH=%s\n' "$(printf '%s' "$(fleet_detect_path)" | sed "s/'/'\\''/g; s/^/'/; s/\$/'/")"
     printf 'cd "%s" || exit 1\n' "$workdir"
     printf 'while true; do\n'
     printf '  "%s" "%s"' "$interpreter" "$script"
     [ -n "$extra" ] && printf ' %s' "$extra"
     [ -n "$logfile" ] && printf ' >> "%s" 2>&1' "$logfile"
-    printf '\n  sleep 2\ndone\n'
+    # background + wait: a TERM to the supervisor must reach the bridge,
+    # otherwise stopping a .sh service orphans the process holding the port
+    printf '\n  child=$!\n'
+    printf "  trap 'kill \"\$child\" 2>/dev/null; exit 0' TERM INT\n"
+    printf '  wait "$child"\n'
+    printf '  sleep 2\ndone\n'
   } > "$path"
   chmod +x "$path"
 }
@@ -655,11 +790,12 @@ fleet_service_install() {
     supervisor="${dir}/${label}-super.ps1"
     _fleet_write_ps_supervisor "$supervisor" "$label" "$wrapper"
     _fleet_win_spawn "$(_fleet_win_powershell)" "$(_fleet_win_path "$supervisor")" || return 1
+    _fleet_install_boot_task "$label" "$supervisor" "$logdir"
   else
     local wrapper="${dir}/${label}.sh"
     _fleet_write_sh_wrapper "$wrapper" "$workdir" "$interpreter" "$script" "$extra" "$envpairs" "$logfile"
-    pkill -f "$wrapper" >/dev/null 2>&1 || true
-    setsid nohup bash "$wrapper" >/dev/null 2>&1 &
+    _fleet_service_kill "$wrapper"
+    _fleet_start_wrapper "$wrapper"
   fi
 }
 
@@ -727,6 +863,66 @@ PLIST
   launchctl kickstart -k "gui/$(id -u)/${label}" >/dev/null 2>&1 || true
 }
 
+# Wrapper pids for a service, plus every descendant so a stop also takes the
+# supervised process with it.  pgrep/pkill are missing from a bare msys
+# install (git-for-windows ships ps but not procps), and matching through
+# awk would match the awk process itself, so the table is walked in shell.
+# C:/x, /c/x and C:\x are one and the same wrapper spelled three ways, so
+# matching has to fold them: install.sh leaves the msys spelling behind
+# while a restart driven from python hands bash a native one.
+_fleet_canon() {
+  # tr folds case -- sed's own y/A-Z/a-z/ is unreliable in a git-for-windows
+  # build -- and the sed pass folds the drive root afterwards
+  printf '%s\n' "$1" |
+    tr '\\' '/' |
+    tr 'A-Z' 'a-z' |
+    sed -E 's#(^|[^0-9a-z])/([a-z])/#\1\2:/#g'
+}
+
+_fleet_service_pids() {
+  local pattern="$1"
+  local table ctable cneedle pids pass uid pid ppid cmd
+  table="$(ps -ef 2>/dev/null || true)"
+  [ -n "$table" ] || return 0
+  cneedle="$(_fleet_canon "$pattern")"
+  ctable="$(_fleet_canon "$table")"
+  pids=""
+  while read -r uid pid ppid cmd; do
+    case "$cmd" in *"$cneedle"*) pids="$pids$pid " ;; esac
+  done <<<"$ctable"
+  case "$pids" in *[!\ \ ]*) ;; *) return 0 ;; esac
+  # leading space so the membership tests below cannot match a prefix
+  pids=" $pids"
+  # three passes cover wrapper -> child -> grandchild
+  for pass in 1 2 3; do
+    while read -r uid pid ppid cmd; do
+      [ -n "$pid" ] || continue
+      case "$pids" in *" $pid "*) continue ;; esac
+      case "$pids" in *" $ppid "*) pids="$pids$pid " ;; esac
+    done <<<"$ctable"
+  done
+  printf '%s\n' $pids
+}
+
+_fleet_service_kill() {
+  local pattern="$1" pid
+  # unquoted on purpose: one word per pid, never one multiline argument
+  for pid in $(_fleet_service_pids "$pattern"); do
+    kill "$pid" >/dev/null 2>&1 || true
+  done
+}
+
+# Detach a .sh wrapper in the background.  setsid is missing from git-for-
+# windows, and a supervisor that cannot start must not look like success.
+_fleet_start_wrapper() {
+  local wrapper="$1"
+  if command -v setsid >/dev/null 2>&1; then
+    setsid nohup bash "$wrapper" >/dev/null 2>&1 &
+  else
+    nohup bash "$wrapper" >/dev/null 2>&1 &
+  fi
+}
+
 fleet_service_start() {
   local label="$1"
   if fleet_is_macos; then
@@ -741,10 +937,15 @@ fleet_service_start() {
     _fleet_win_stop_service "$label"
     _fleet_win_spawn "$(_fleet_win_powershell)" "$(_fleet_win_path "$supervisor")" || return 1
   else
-    local wrapper
+    local wrapper i
     wrapper="$(fleet_service_dir)/${label}.sh"
     [ -f "$wrapper" ] || return 1
-    setsid nohup bash "$wrapper" >/dev/null 2>&1 &
+    _fleet_start_wrapper "$wrapper"
+    for i in 1 2 3; do
+      [ -n "$(_fleet_service_pids "$wrapper")" ] && return 0
+      sleep 1
+    done
+    return 1
   fi
   return 0
 }
@@ -757,7 +958,7 @@ fleet_service_stop() {
   elif fleet_is_windows; then
     _fleet_win_stop_service "$label"
   else
-    pkill -f "$(fleet_service_dir)/${label}.sh" >/dev/null 2>&1 || true
+    _fleet_service_kill "$(fleet_service_dir)/${label}.sh"
   fi
   return 0
 }
@@ -784,15 +985,18 @@ fleet_service_remove() {
     _fleet_win_stop_service "$label"
     local tdir
     tdir="$(_fleet_timer_dir)"
+    fleet_task_delete "${label}-boot" >/dev/null 2>&1 || true
     rm -f "$(fleet_service_dir)/${label}.cmd" "$(fleet_service_dir)/${label}.vbs" \
           "${tdir}/${label}.cmd" "${tdir}/${label}.launcher.vbs" \
           "$(_fleet_platform_dir)/${label}.launcher.vbs" \
           "$(fleet_service_dir)/${label}.task.xml" \
           "$(fleet_service_dir)/${label}-super.ps1" \
-          "$(fleet_service_dir)/${label}.super.pid" "$(fleet_service_dir)/${label}.child.pid"
+          "$(fleet_service_dir)/${label}.super.pid" "$(fleet_service_dir)/${label}.child.pid" \
+          "$(fleet_service_dir)/${label}-boot.cmd" "$(fleet_service_dir)/${label}-boot.task.xml" \
+          "${tdir}/${label}-boot.launcher.vbs" "$(_fleet_platform_dir)/${label}-boot.launcher.vbs"
     return 0
   else
-    pkill -f "$(fleet_service_dir)/${label}.sh" >/dev/null 2>&1 || true
+    _fleet_service_kill "$(fleet_service_dir)/${label}.sh"
     rm -f "$(fleet_service_dir)/${label}.sh"
     return 0
   fi
@@ -831,7 +1035,7 @@ fleet_service_status() {
     echo ready
   else
     [ -f "$(fleet_service_dir)/${label}.sh" ] || { echo missing; return 1; }
-    if pgrep -f "$(fleet_service_dir)/${label}.sh" >/dev/null 2>&1; then echo running; else echo ready; fi
+    if [ -n "$(_fleet_service_pids "$(fleet_service_dir)/${label}.sh")" ]; then echo running; else echo ready; fi
   fi
 }
 
@@ -879,6 +1083,13 @@ PLIST
     launchctl bootstrap "gui/$(id -u)" "${dir}/${label}.plist" >/dev/null 2>&1 || true
   elif fleet_is_windows; then
     local wrapper launcher tdir
+    # Task Scheduler rejects a repetition interval under one minute
+    # ((11,27):Interval:PT30S, swallowed by fleet_task_install), and the shim
+    # watchdog's 30s macOS-flavoured default never registered. Floor it here;
+    # the shim's in-process watchdog keeps the sub-minute reaction time.
+    if [ -n "$interval" ] && [ "$interval" -lt 60 ] 2>/dev/null; then
+      interval=60
+    fi
     tdir="$(_fleet_timer_dir)"
     wrapper="$(_fleet_win_path "${tdir}/${label}.cmd")"
     # HOME must travel with the wrapper: a Task Scheduler action runs without
@@ -889,11 +1100,12 @@ PLIST
     fleet_task_install "$label" "false" "$interval" "" "wscript.exe" "/B /NOLOGO \"${launcher}\"" "$(_fleet_win_path "$(pwd)")"
   else
     local wrapper="${dir}/${label}.sh"
-    printf '#!/usr/bin/env bash\nwhile true; do\n  "%s" "%s" %s >> "%s" 2>&1\n  sleep %s\ndone\n' \
+    # background + wait so a TERM to the timer reaches the run it started
+    printf '#!/usr/bin/env bash\nwhile true; do\n  "%s" "%s" %s >> "%s" 2>&1 &\n  child=$!\n  trap '\''kill "$child" 2>/dev/null; exit 0'\'' TERM INT\n  wait "$child"\n  sleep %s\ndone\n' \
       "$interpreter" "$script" "$extra" "$logfile" "$interval" > "$wrapper"
     chmod +x "$wrapper"
-    pkill -f "$wrapper" >/dev/null 2>&1 || true
-    setsid nohup bash "$wrapper" >/dev/null 2>&1 &
+    _fleet_service_kill "$wrapper"
+    _fleet_start_wrapper "$wrapper"
   fi
 }
 

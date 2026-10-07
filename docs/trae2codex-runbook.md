@@ -100,3 +100,4 @@ cp kit/bridges/trae/trae_bridge.py runtime/bridges/trae/ 再 cd runtime/bridges 
 - CN 账号 22 个模型配额耗尽（账号级，非代码问题）：502 里 cn 那条就是「配额耗尽」。
 - 国际账号 Q Micheal 的网关 coresg-normal.trae.ai 本机不可达：本机系统代理（MacPacket :1082）没有国际出口，
   Tunnel connection failed: 503 Service Unavailable。这不是账号问题，修出口或给桥配代理后才轮得到它。
+- 2026-10-03 续期一次：access token 从 2026-10-09 续到 2026-10-17，refresh token 轮换到 2027-04-01（备份 ~/.trae2codex/creds.json.bak-20261003-172845）。续期命令 `runtime/.venv/bin/python3 kit/tools/trae_renew.py`（默认 access 剩 7 天内才续，--refresh 强制，--json 机器可读）；桥自身仍只在会话末尾 5 分钟内自动刷新

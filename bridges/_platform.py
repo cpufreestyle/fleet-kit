@@ -100,6 +100,51 @@ def app_support_dirs(*parts):
     return out
 
 
+def native_os():
+    """Host OS as Python sees it, ignoring the FLEET_OS routing hint.
+
+    FLEET_OS is a deployment hint (it selects the .sh wrapper layout), not a
+    statement about the machine, so bridges must not use it to locate a
+    desktop application's per-user data.
+    """
+    p = platform.system().lower()
+    if p.startswith("cygwin") or p.startswith("mingw") or p == "windows":
+        return "windows"
+    if p == "darwin":
+        return "macos"
+    if p == "linux":
+        return "linux"
+    return "unknown"
+
+
+def app_data_containers():
+    r"""Directories that hold per-edition application folders.
+
+    Windows: %APPDATA% / %LOCALAPPDATA%   ("Trae CN", "TRAE SOLO CN", ...)
+    macOS  : ~/Library/Application Support
+    Linux  : ~/.config / ~/.local/share
+
+    Unlike app_support_dirs() this does not append an application name, so a
+    bridge that supports several editions of one product can join the edition
+    itself and avoid inventing paths such as %APPDATA%\Trae\Trae CN.
+    """
+    out = []
+    h = home()
+    if native_os() == "macos":
+        out.append(os.path.join(h, "Library", "Application Support"))
+    elif native_os() == "windows":
+        for base in (os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA"),
+                     os.path.join(h, "AppData", "Roaming"),
+                     os.path.join(h, "AppData", "Local")):
+            if base and base not in out:
+                out.append(base)
+    else:
+        for base in (os.path.join(h, ".config"), os.path.join(h, ".local", "share")):
+            if base and base not in out:
+                out.append(base)
+    return out
+
+
 def app_bin_candidates(*parts):
     """Candidate install locations for a CLI bundled inside an app."""
     rel = os.path.join(*parts)

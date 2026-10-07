@@ -20,7 +20,7 @@ LOGIN_TIMEOUT_SECONDS = 300
 LOGIN_POLL_INTERVAL_SECONDS = 1
 QUOTA_CACHE_SECONDS = 180
 BACKEND = "https://copilot.tencent.com"
-WORKBUDDY_LOGIN_HOSTS = {"copilot.tencent.com", "www.codebuddy.cn", "codebuddy.cn"}
+WORKBUDDY_LOGIN_HOSTS = {"copilot.tencent.com", "www.codebuddy.cn", "codebuddy.cn", "www.workbuddy.ai", "workbuddy.ai"}
 USER_AGENT = "workbuddy2codex"
 
 _PACKAGE_LABELS = {
@@ -106,10 +106,12 @@ class LoginAttempt:
 class WorkBuddyAccountService:
     """Owns short-lived login attempts and cached, non-secret account quotas."""
 
-    def __init__(self, pool: Any, version: str, *, transport: httpx.AsyncBaseTransport | None = None):
+    def __init__(self, pool: Any, version: str, *, transport: httpx.AsyncBaseTransport | None = None,
+                 backend: str = BACKEND):
         self.pool = pool
         self.version = version
         self.transport = transport
+        self.backend = (backend or BACKEND).rstrip("/")
         self._attempts: dict[str, LoginAttempt] = {}
         self._quota_cache: dict[str, tuple[float, dict]] = {}
         self._lock = asyncio.Lock()
@@ -138,7 +140,7 @@ class WorkBuddyAccountService:
     async def start_login(self) -> dict:
         async with self._client() as client:
             response = await client.post(
-                f"{BACKEND}/v2/plugin/auth/state?platform=workbuddy",
+                f"{self.backend}/v2/plugin/auth/state?platform=workbuddy",
                 json={},
                 headers={"Accept": "application/json", "User-Agent": USER_AGENT},
             )
@@ -214,7 +216,7 @@ class WorkBuddyAccountService:
     async def _fetch_auth_token(self, attempt: LoginAttempt) -> dict | None:
         async with self._client() as client:
             response = await client.get(
-                f"{BACKEND}/v2/plugin/auth/token",
+                f"{self.backend}/v2/plugin/auth/token",
                 params={"state": attempt.state},
                 headers={"Accept": "application/json", "User-Agent": USER_AGENT, "X-No-Authorization": "true"},
             )
@@ -241,7 +243,7 @@ class WorkBuddyAccountService:
         }
         async with self._client() as client:
             response = await client.get(
-                f"{BACKEND}/v2/plugin/login/account",
+                f"{self.backend}/v2/plugin/login/account",
                 params={"state": attempt.state},
                 headers=headers,
             )
@@ -315,7 +317,7 @@ class WorkBuddyAccountService:
         headers = await asyncio.to_thread(manager.get_headers)
         session = await asyncio.to_thread(manager.session_snapshot)
         account = session.get("account") or {}
-        endpoint = f"{BACKEND}/v2/billing/meter/"
+        endpoint = f"{self.backend}/v2/billing/meter/"
         async with self._client() as client:
             if account.get("enterpriseId"):
                 response = await client.post(endpoint + "get-enterprise-user-usage", json={}, headers=headers)

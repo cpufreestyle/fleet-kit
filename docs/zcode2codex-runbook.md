@@ -50,7 +50,8 @@
 - **调用路径上的 mint 一律 `--headless`**：2026-10-02 修，之前每请求现场
   mint 是有头 Chrome，滑块窗直接弹到运营者脸上，40~60s 后失败再把人推去
   relay 页——验证就是这么反复跳的。无头 mint 解不了滑块，但它静默失败，
-  由调用方回落成「开一次页换一张」。
+  由调用方回落成「开一次页换一张」。2026-10-03 起默认连无头也不跑了：
+  `ZCODE_CAPTCHA_AUTOMINT=0` 时调用路径完全不 mint（见下节）。
 - minter 的 Chrome profile 落在 `bridges/zcode/captcha_profile`（不再 /tmp，
   重启即清）：profile 每次重置等于设备指纹永远冷，无感验证必然不过。
 - minter 改为**盯票池判断成功**：人工在页面存票即写池文件，minter 读池领取；
@@ -88,23 +89,26 @@ captcha 换取页：http://127.0.0.1:8910/ （launchd `com.local.zcode-captcha-r
 不同：CLI 路线（cli_client）600s 新鲜度 + 900s 寿龄，桥的直连路线 75s。
 `tools/test_zcode_captcha_flow.py` 钉住这几条契约。
 
-## 票池 keeper（2026-10-02）
+## 票池与自动验证开关（2026-10-03 起默认关）
 
-`com.local.zcode-captcha-keeper`（launchd timer，每 120s）跑
-`bridges/zcode/captcha-pool-keeper.sh`：池里可用票少于 2 张时才启动一次 mint
-（有头、屏幕外、约 5 秒），否则只做一次目录统计。调用方（桥的直连路线、CLI 路线）
-永远从池里领票，池干时才现场 mint——而现场 mint 是无头的，无感验证过不去，
-于是回落成「开一次 8910 换一张」。keeper 的存在就是把「现场 mint」这个慢路径
-变成例外。
+按用户要求「zcode 不要调自动验证」，两条自动路径都已停：
 
-    bash bridges/zcode/captcha-keeper.sh status    # 安装态 + 池内新鲜/陈旧张数
-    bash bridges/zcode/captcha-keeper.sh kick      # 立刻跑一轮
-    bash bridges/zcode/captcha-keeper.sh uninstall
+1. **后台 keeper 已卸载**——`com.local.zcode-captcha-keeper`（每 120s 一次
+   有头、屏幕外补票）已 uninstall，`~/Library/LaunchAgents` 里 plist 也已删。
+   恢复：从 **runtime 树**执行
+   `bash runtime/bridges/zcode/captcha-keeper.sh install`
+   （从 kit 装会把票补进 kit 的池、桥读不到；控制脚本向上找 platform.sh
+   定位自己的树，理由也在此）。
+2. **桥内现场 mint 默认关**——`zcode_bridge.py` 的 `ZCODE_CAPTCHA_AUTOMINT`
+   开关（默认 1，保持旧行为；`com.local.zcode2codex` 的 plist 已置 0 并重启）。
+   置 0 后 `take_captcha()` 顺序仍是「池 → captcha.txt → 现场 mint」，但现场
+   mint 直接短路返回空，不再启动 Chrome 跑无感验证；没票时按缺票路径向上一层
+   要一张人工票。
 
-安装必须从 **runtime 树**执行（`bash runtime/bridges/zcode/captcha-keeper.sh install`）：
-timer 的 ProgramArguments 记的是绝对路径，从 kit 装会上来就跑 kit 的 keeper、往 kit 的
-池里补票，而桥读的是 runtime 的池。控制脚本因此向上查找 platform.sh 定位自己的树。
- keeper 探测带 playwright 的解释器（venv 优先），裸 `python3` 没有 playwright。
+取票现在只认票池和 `captcha.txt`：打开 http://127.0.0.1:8910/ 点「开始验证」
+人工换一张即写池（桌面 `zcode验证.app` 就是拉起这个 relay 的入口）。
+
+    bash bridges/zcode/captcha-keeper.sh status    # 应为 not installed + 池内存量
 
 ## 桌面快捷方式（2026-10-03）
 
@@ -126,7 +130,7 @@ timer 的 ProgramArguments 记的是绝对路径，从 kit 装会上来就跑 ki
 末尾 rm -f 掉 Assets.car，自定义 applet.icns 才会生效；之后 ad-hoc 签名 + lsregister
 重注册。若图标仍不刷新，`killall Finder` 即可。生成的 payload（`Contents/Resources/launch.sh`）里烘焙的是 **runtime 树**的
 路径（部署的那份才接桥），端口可用 `ZCODE_CAPTCHA_RELAY_PORT` / `FLEET_UI_PORT` 覆盖。
-风格上 keeper 负责无感补票，zcode 快捷方式是人工备票的入口；panel 快捷方式比旧的
+keeper 已卸载、自动验证已关，现在票只来自人工（开一次 8910 换一张）；panel 快捷方式比旧的
 `FleetKit面板.webloc` 多了一层「先把服务拉起来」的能力。
 
 ## 凭证

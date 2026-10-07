@@ -103,6 +103,23 @@ case "$PORT_BASE" in
   ""|*[!0-9]*) echo "--port-base must be an integer" >&2; exit 1 ;;
 esac
 
+FLEET_OS_RESOLVED="${FLEET_OS:-}"
+if [ -z "$FLEET_OS_RESOLVED" ] && command -v fleet_os >/dev/null 2>&1; then
+  FLEET_OS_RESOLVED="$(fleet_os 2>/dev/null || true)"
+fi
+case "$FLEET_OS_RESOLVED" in
+  macos|windows|linux) ;;
+  *) FLEET_OS_RESOLVED="$(uname -s 2>/dev/null || true)"
+     case "$FLEET_OS_RESOLVED" in
+       Darwin*) FLEET_OS_RESOLVED=macos ;;
+       Linux*) FLEET_OS_RESOLVED=linux ;;
+       MINGW*|MSYS*|CYGWIN*|Windows_NT*) FLEET_OS_RESOLVED=windows ;;
+       *) FLEET_OS_RESOLVED=linux ;;
+     esac ;;
+esac
+export FLEET_OS_RESOLVED
+echo "  backend    : $FLEET_OS_RESOLVED"
+
 if command -v fleet_service_dir >/dev/null 2>&1; then
   LAUNCH_DIR="$(fleet_service_dir)"
   LOG_DIR="$(fleet_log_dir)"
@@ -114,6 +131,20 @@ LAUNCH_DIR="${FLEET_LAUNCH_DIR:-${LAUNCH_DIR}}"
 FLEET_SERVICE_DIR="${FLEET_SERVICE_DIR:-${LAUNCH_DIR}}"
 LABEL_PREFIX="${FLEET_LABEL_PREFIX:-com.local}"
 export FLEET_SERVICE_DIR FLEET_LOG_DIR="$LOG_DIR"
+
+# Windows services need native paths: schtasks rejects an msys-style /c/...
+# working directory and cmd.exe can neither cd into it nor write to it.
+# cygpath leaves native paths untouched, so this is idempotent.
+if command -v fleet_is_windows >/dev/null 2>&1 && fleet_is_windows \
+   && command -v cygpath >/dev/null 2>&1; then
+  case "$FLEET_HOME" in
+    /*) FLEET_HOME="$(cygpath -m "$FLEET_HOME")" ;;
+  esac
+  case "$LOG_DIR" in
+    /*) LOG_DIR="$(cygpath -m "$LOG_DIR")" ;;
+  esac
+  export FLEET_SERVICE_DIR FLEET_LOG_DIR="$LOG_DIR"
+fi
 
 info() { echo "  $*"; }
 run() {
@@ -356,6 +387,8 @@ else
   prune_shared_workbuddy "${FLEET_HOME}/bridges"
   copy_file "${KIT_DIR}/README.md" "${FLEET_HOME}/README.md"
   copy_file "${KIT_DIR}/requirements.txt" "${FLEET_HOME}/requirements.txt"
+  # tools/free_models.py reads this from the fleet home, so it must travel too
+  copy_file "${KIT_DIR}/free-windows.json" "${FLEET_HOME}/free-windows.json"
   copy_file "${KIT_DIR}/uninstall.sh" "${FLEET_HOME}/uninstall.sh"
   # install.sh sits at the kit root, outside the four synced trees, so
   # nothing ever refreshed this copy. tools/test_install_dry_run.py reads
@@ -404,11 +437,24 @@ else
     info "[dry-run] ${SYS_PYTHON} -m venv ${FLEET_HOME}/.venv ; pip install -r requirements.txt"
   else
     ${SYS_PYTHON} -m venv "${FLEET_HOME}/.venv"
-    # Drive pip through the venv interpreter, not the pip console script:
-    # modern pip refuses to upgrade itself as the console script ("ERROR: To
-    # modify pip, please run ... python -m pip install ...") and the install
-    # dies right here under set -e.
-    "$VENV_PY" -m pip install --quiet --upgrade pip
+    # FLEET_PYTHON/VENV_PIP/VENV_PY above were resolved BEFORE the venv existed,
+    # so a fresh install always fell through to the posix layout (bin/) even on
+    # Windows. Now that the layout is real, re-resolve all three: a Windows venv
+    # keeps pip/python under Scripts/, and bin/pip does not exist there.
+    if [ -x "${FLEET_HOME}/.venv/Scripts/pip.exe" ]; then
+      VENV_PIP="${FLEET_HOME}/.venv/Scripts/pip.exe"
+      VENV_PY="${FLEET_HOME}/.venv/Scripts/python.exe"
+      FLEET_PYTHON="${FLEET_HOME}/.venv/Scripts/python.exe"
+    elif [ -x "${FLEET_HOME}/.venv/bin/pip" ]; then
+      VENV_PIP="${FLEET_HOME}/.venv/bin/pip"
+      VENV_PY="${FLEET_HOME}/.venv/bin/python"
+      FLEET_PYTHON="${FLEET_HOME}/.venv/bin/python"
+    fi
+    # pip cannot overwrite its own console script on Windows ("ERROR: To modify
+    # pip, please run: python.exe -m pip install --upgrade pip"); under `set -e`
+    # that aborts the whole install. Drive it through the interpreter, and never
+    # fail here: upgrading pip is hygiene, the real dependency install is next.
+    "$VENV_PY" -m pip install --quiet --upgrade pip || true
     "$VENV_PY" -m pip install --quiet -r "${KIT_DIR}/requirements.txt"
     touch "${FLEET_HOME}/.venv/.fleet-deps-ok"
   fi
@@ -424,13 +470,11 @@ detect_venv_python() {
   if [ -n "${FLEET_VENV_PYTHON:-}" ] && python_has_fastapi "${FLEET_VENV_PYTHON}"; then
     echo "${FLEET_VENV_PYTHON}"; return 0
   fi
-  local venv_sub="bin/python"
-  if command -v fleet_is_windows >/dev/null 2>&1 && fleet_is_windows; then
-    venv_sub="Scripts/python.exe"
-  fi
-  for cand in "${HOME}"/.local/node-*/lib/node_modules/*/.venv/${venv_sub} \
-              "${HOME}"/.local/share/pnpm/global/*/node_modules/*/.venv/${venv_sub} \
-              "${FLEET_HOME}"/bridges/*/.venv/${venv_sub} \
+  for cand in "${HOME}"/.local/node-*/lib/node_modules/*/.venv/Scripts/python.exe \
+              "${HOME}"/.local/node-*/lib/node_modules/*/.venv/bin/python \
+              "${HOME}"/.local/share/pnpm/global/*/node_modules/*/.venv/Scripts/python.exe \
+              "${HOME}"/.local/share/pnpm/global/*/node_modules/*/.venv/bin/python \
+              "${FLEET_HOME}"/bridges/*/.venv/Scripts/python.exe \
               "${FLEET_HOME}"/bridges/*/.venv/bin/python; do
     [ -x "$cand" ] || continue
     if python_has_fastapi "$cand"; then echo "$cand"; return 0; fi
@@ -576,6 +620,9 @@ LAUNCH_DIR="${LAUNCH_DIR}"
 LABEL_PREFIX="${LABEL_PREFIX}"
 LOG_DIR="${LOG_DIR}"
 FLEET_PYTHON="${FLEET_PYTHON}"
+# The service backend this home was installed with. Child tools read it
+# instead of sniffing the host, so a linux backend on Windows keeps working.
+FLEET_OS="${FLEET_OS_RESOLVED}"
 CODEX_CHECKIN_HOME="${FLEET_HOME}/checkin"
 
 CODEBUDDY2OPENAI_KEY="${CODEBUDDY2OPENAI_KEY}"
@@ -638,9 +685,15 @@ service_env() {
     done
     IFS="$oifs"
   fi
-  printf '%s' "HOME=${HOME};PATH=$(fleet_detect_path);${keyenv}=${keyval};${out}"
+  # PATH is intentionally not an env pair: the wrapper writers emit it as a
+  # dedicated line, because a native Windows PATH carries ';' -- the same
+  # separator the env-pair list uses.
+  local home
+  home="$(fleet_home_win 2>/dev/null || printf '%s' "$HOME")"
+  printf '%s' "HOME=${home};${keyenv}=${keyval};${out}"
 }
 
+HOME_WIN="$(fleet_home_win 2>/dev/null || printf '%s' "$HOME")"
 echo "[4/5] installing bridge services ($(fleet_os 2>/dev/null || echo macos) backend)"
 for row in "${BRIDGES[@]}"; do
   name="$(echo "$row" | cut -d'|' -f1)"
@@ -656,8 +709,8 @@ for row in "${BRIDGES[@]}"; do
   extra="${extra//@FLEET_HOME@/$FLEET_HOME}"
   extraenv="${extraenv//@PORT@/$port}"
   extraenv="${extraenv//@FLEET_HOME@/$FLEET_HOME}"
-  extra="${extra//@HOME@/$HOME}"
-  extraenv="${extraenv//@HOME@/$HOME}"
+  extra="${extra//@HOME@/$HOME_WIN}"
+  extraenv="${extraenv//@HOME@/$HOME_WIN}"
   if [ "$name" = "antigravity" ] && [ -n "$ANTIGRAVITY_OAUTH_CLIENT_ID" ]; then
     extraenv="${extraenv};ANTIGRAVITY_OAUTH_CLIENT_ID=${ANTIGRAVITY_OAUTH_CLIENT_ID};ANTIGRAVITY_OAUTH_CLIENT_SECRET=${ANTIGRAVITY_OAUTH_CLIENT_SECRET}"
     extraenv="${extraenv};ANTIGRAVITY2CODEX_HOST=127.0.0.1"

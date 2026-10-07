@@ -230,10 +230,18 @@ class Config:
                 watchdog: bool | None = None,
                 watchdog_interval: float | None = None,
                 watchdog_timeout: float | None = None,
-                watchdog_strikes: int | None = None):
+                watchdog_strikes: int | None = None,
+                fleet_upstream: str | None = None):
         self.host = host
         self.port = port
         self.upstream = upstream.rstrip("/")
+        # Second upstream for the fleet's own models, see upstream_for(). Empty
+        # string disables the split and forwards everything to upstream.
+        self.fleet_upstream = ((
+            fleet_upstream if fleet_upstream is not None
+            else os.environ.get("IMAGE_CAP_FLEET_UPSTREAM",
+                                "http://127.0.0.1:10100/v1"))
+            or "").rstrip("/")
         self.max_images = max_images
         self.models = models
         self.repin_interval = float(
@@ -310,6 +318,23 @@ class Config:
         low = (model or "").lower()
         return any(f in low for f in filters)
 
+    def upstream_for(self, model: str) -> str:
+        """Pick the upstream this model belongs to.
+
+        Everything pinned at this port lands here, and a client whose base_url
+        was pinned to the shim keeps sending whatever model the session has --
+        including a fleet model. Those carry a bridge prefix
+        (workbuddy/deepseek-v4.1-flash), StepFun answers them 404 "model does
+        not exist", and the operator sees a dead model rather than a wrong
+        route. Measured 2026-10-05: a session resumed with
+        workbuddy/deepseek-v4.1-flash against http://127.0.0.1:15722/v1/responses.
+        StepFun's own ids have no slash, so the prefix is an exact enough test
+        and the fleet hop costs a StepFun client nothing.
+        """
+        if self.fleet_upstream and "/" in (model or ""):
+            return self.fleet_upstream
+        return self.upstream
+
 
 def parse_args(argv=None) -> Config:
     parser = argparse.ArgumentParser(
@@ -334,12 +359,17 @@ def parse_args(argv=None) -> Config:
     parser.add_argument("--retry-429", type=int, default=None,
                         help="retries with backoff on an upstream 429"
                              " (env IMAGE_CAP_429_RETRIES, default 3)")
+    parser.add_argument("--fleet-upstream", default=None,
+                        help="upstream for bridge-prefixed fleet models, empty"
+                             " to disable (env IMAGE_CAP_FLEET_UPSTREAM,"
+                             " default http://127.0.0.1:10100/v1)")
     args = parser.parse_args(argv)
     return Config(args.host, args.port, args.upstream, args.max_images,
                   args.models,
                   max_inflight=args.max_inflight,
                   queue_timeout=args.queue_timeout,
-                  retry_429=args.retry_429)
+                  retry_429=args.retry_429,
+                  fleet_upstream=args.fleet_upstream)
 
 
 def health_payload(config, stats):
@@ -636,7 +666,7 @@ def build_app(config: Config):
         timeout=httpx.Timeout(None, connect=config.connect_timeout),
         mounts=LOOPBACK_MOUNTS)
 
-    def rewrite_body(raw: bytes):
+    def rewrite_body(raw: bytes, path: str = ""):
         """Return (bytes to forward, log line or None). Never raises."""
         try:
             payload = json.loads(raw.decode("utf-8"))
@@ -645,22 +675,61 @@ def build_app(config: Config):
         if not isinstance(payload, dict):
             return raw, None
         model = payload.get("model") or ""
-        if not config.applies_to(model):
+        notes = []
+        # ocx/Codex 发来的限定名(如 "stepfun/step-5-preview")上游不认,原样
+        # 转发只会得到 404 "does not exist"——剥掉 provider 前缀再转发,
+        # 规则与 workbuddy 桥的 _resolve_route_model 一致。
+        if isinstance(model, str) and "/" in model:
+            stripped = model.rsplit("/", 1)[-1]
+            if stripped and stripped != model:
+                payload["model"] = stripped
+                notes.append("prefix_stripped=%r" % model)
+                model = stripped
+        # 输出预算钳制+注入:客户端可能带得过大(钳掉),也可能干脆不带——
+        # 后者更阴险:plan 端点对缺省请求自己默认 64000,984K 输入的线程
+        # 直接爆窗(实测 400 "requested 64000")。 responses 路径注入
+        # max_output_tokens、chat 路径注入 max_tokens,统一 32768。
+        for key in ("max_output_tokens", "max_tokens", "max_completion_tokens"):
+            v = payload.get(key)
+            if isinstance(v, int) and v > 32768:
+                payload[key] = 32768
+                notes.append("%s %d->32768" % (key, v))
+        if ("/responses" in path and "max_output_tokens" not in payload):
+            payload["max_output_tokens"] = 32768
+            notes.append("max_output_tokens=32768 injected")
+        elif ("/chat/completions" in path and "max_tokens" not in payload
+              and "max_completion_tokens" not in payload):
+            payload["max_tokens"] = 32768
+            notes.append("max_tokens=32768 injected")
+        if config.applies_to(model):
+            payload, info = image_cap.cap_images(payload, config.max_images)
+            if info["images"] and (info["dropped_duplicate"]
+                                   or info["dropped_cap"]):
+                stats.rewritten += 1
+                stats.images_seen += info["images"]
+                stats.images_kept += info["kept"]
+                notes.append("images=%d unique=%d kept=%d dup_dropped=%d "
+                             "cap_dropped=%d" % (info["images"], info["unique"],
+                                                 info["kept"],
+                                                 info["dropped_duplicate"],
+                                                 info["dropped_cap"]))
+        if not notes:
             return raw, None
-        payload, info = image_cap.cap_images(payload, config.max_images)
-        if not info["images"] or (info["dropped_duplicate"] == 0
-                                   and info["dropped_cap"] == 0):
-            return raw, None
-        stats.rewritten += 1
-        stats.images_seen += info["images"]
-        stats.images_kept += info["kept"]
         return json.dumps(payload, ensure_ascii=False).encode("utf-8"), (
-            "model=%s images=%d unique=%d kept=%d dup_dropped=%d cap_dropped=%d"
-            % (model, info["images"], info["unique"], info["kept"],
-               info["dropped_duplicate"], info["dropped_cap"]))
+            "model=%s %s" % (model, " ".join(notes)))
 
     def is_cap_path(path: str) -> bool:
         return any(path.endswith(suffix) for suffix in CAP_PATH_SUFFIXES)
+
+    def body_model(raw: bytes) -> str:
+        """The model id a JSON body asks for, "" when it has none."""
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception:
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        return payload.get("model") or ""
 
     @app.get(HEALTH_PATH)
     async def health():
@@ -671,17 +740,37 @@ def build_app(config: Config):
     async def proxy(request: Request, path: str):
         stats.requests += 1
         body = await request.body()
+        # 取原始模型名，必须在 rewrite_body() 之前：它会剥掉 provider 前缀
+        # (workbuddy/deepseek-v4.1-flash -> deepseek-v4.1-flash)，剥完就没有
+        # 斜杠可判，分流会把它当 StepFun 原生 id 转给上游（实测 2026-10-06
+        # 回到 401 Incorrect API key）。
+        raw_model = body_model(body) if body else ""
+        raw_body = body
         note = None
         if body and is_cap_path("/" + path.lstrip("/")):
-            body, note = rewrite_body(body)
+            body, note = rewrite_body(body, path)
         else:
             stats.passthrough += 1
 
         headers = {name: value for name, value in request.headers.items()
                    if name.lower() not in HOP_REQUEST_HEADERS}
-        joined = "%s/%s" % (config.upstream,
-                            forward_path(config.upstream, path))
-        url = joined.rstrip("/") or config.upstream
+        # A fleet model arriving here is a client still pinned at this port,
+        # not a StepFun model that vanished: send it to the fleet gateway
+        # instead of letting StepFun answer 404 (see Config.upstream_for).
+        upstream = config.upstream_for(raw_model)
+        if upstream != config.upstream:
+            # 队内网关按 provider 前缀选路，所以这一跳要发改写前的原始 body：
+            # rewrite_body() 剥掉前缀后 10100 会回 404「model does not exist」
+            # （实测 2026-10-06）。图片去重是 StepFun 那条路的补偿，队内不需要。
+            body = raw_body
+            # The fleet gateway authenticates the bridges itself, so the key a
+            # StepFun-pinned client sends must not ride along: forwarded, it is
+            # an unknown credential and the gateway answers 503 upstream_error
+            # for a model it otherwise serves (measured 2026-10-05).
+            headers = {name: value for name, value in headers.items()
+                       if name.lower() != "authorization"}
+        joined = "%s/%s" % (upstream, forward_path(upstream, path))
+        url = joined.rstrip("/") or upstream
         if request.url.query:
             url += "?" + request.url.query
 

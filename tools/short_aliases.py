@@ -275,7 +275,12 @@ def main(argv=None):
           % (len(rows), sum(1 for r in rows if r["alias"]), len(failures)))
     for f in failures[:10]:
         print("  [warn]", f)
-    return 1 if failures else 0
+    # Per-provider failures are upstream state (a bridge whose service is
+    # down, README 已知问题) that the reachability probe owns: the aliases
+    # for the healthy bridges still land and a rerun picks up the rest.
+    # Only a run that applied no alias at all is a real failure.
+    aliased = sum(1 for r in rows if r["alias"])
+    return 0 if aliased else 1
 
 
 if __name__ == "__main__":

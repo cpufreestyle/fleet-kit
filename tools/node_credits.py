@@ -171,6 +171,21 @@ def _pretty(value):
     return "{:,}".format(value) if isinstance(value, int) else str(value)
 
 
+def _date_text(epoch_seconds):
+    """The UTC+8 date of an epoch value, for a plan that carries an expiry.
+
+    Trae answers expires_at_ms on /health; a timestamp the user cannot read
+    is not an answer, so the plan row shows the date along with the name.
+    """
+    import datetime
+    try:
+        moment = datetime.datetime.fromtimestamp(
+            float(epoch_seconds), datetime.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return str(epoch_seconds)
+    return (moment + datetime.timedelta(hours=8)).strftime("%Y-%m-%d")
+
+
 def _pick(payload, keys):
     for key in keys:
         if isinstance(payload, dict) and payload.get(key) not in (None, ""):
@@ -639,6 +654,11 @@ def _pool_accounts_row(name, row):
     row["credits_unit"] = (primary.get("points_unit")
                            or ("points" if priced else ""))
     row["credits_source"] = "bridge /health account_pool"
+    # The pool row carries the plan name the platform reported next to the
+    # points (measured 2026-10-03: kimi-code answers points_plan Free on a
+    # lapsed plan), and a lapsed plan is exactly when the row must still
+    # say which plan it is instead of going blank.
+    row["plan"] = str(primary.get("points_plan") or "")[:60]
     plan = PLAN_ACCOUNTS[name]["plan"]
     detail = " / ".join(label(item) for item in accounts)
     if plan == "kimi":
@@ -823,6 +843,10 @@ def read_node(name):
         account_from = "credential file" if row["account"] else "health"
     row["plan"] = _plan_of(health)[:60]
     row["logged_in"] = _login_of(health)
+    # A plan name is only half an answer when it expires: trae publishes
+    # expires_at_ms on /health, and the row used to show the edition while
+    # the expiry stayed invisible until the token died mid-session.
+    expiry = _num(health.get("expires_at_ms") or health.get("expires_at"))
     row["detail"] = "health %s v%s" % (health.get("__path"),
                                        health.get("version") or "?")
     if account_from == "credential file":
@@ -842,6 +866,9 @@ def read_node(name):
             row["credits_unit"] = "tokens"
             row["credits_source"] = "bridge /entitlements"
             row["credits_note"] = "，".join(plans) or "ZCode plan"
+            # /health has no plan field, so the entitlement plan name is the
+            # only one this node has (measured: ZCode Trust Build).
+            row["plan"] = ("，".join(plans))[:60]
             row["logged_in"] = bool(health.get("logged_in", True)) and active
             row["detail"] += "；plan %s" % "，".join(plans)
         else:
@@ -900,6 +927,12 @@ def read_node(name):
 
     row["credits_note"] = NO_BALANCE_NOTE
     row["checkin"] = NO_CHECKIN_NOTE
+    # The plan name may be the only half the bridge published: trae's login
+    # token expires on a date, and the row must say when before the token
+    # dies mid-session.
+    if expiry:
+        seconds = expiry / 1000.0 if expiry > 1e11 else expiry
+        row["credits_note"] += "；套餐登录 %s 到期" % _date_text(seconds)
     return row
 
 
@@ -909,15 +942,16 @@ def read_all(names=None):
 
 
 def render(rows):
-    head = "%-13s %-4s %-22s %-6s %-11s %-14s %s" % (
-        "节点", "状态", "账号", "登录", "积分口径", "积分/额度", "来源")
+    head = "%-13s %-4s %-22s %-16s %-6s %-11s %-14s %s" % (
+        "节点", "状态", "账号", "套餐 plan", "登录", "积分口径", "积分/额度", "来源")
     lines = [head, "-" * len(head)]
     for row in rows:
         credits = ("%s %s" % (_pretty(row["credits_value"]), row["credits_unit"])
                    if row["credits_value"] is not None else "-")
-        lines.append("%-13s %-4s %-22s %-6s %-11s %-14s %s" % (
+        lines.append("%-13s %-4s %-22s %-16s %-6s %-11s %-14s %s" % (
             row["node"], "up" if row["up"] else "down",
             (row["account"] or "-")[:22],
+            (row["plan"] or "-")[:16],
             {True: "是", False: "否", None: "?"}[row["logged_in"]],
             row["credits_kind"], credits.strip()[:14],
             row["credits_source"] or "-"))

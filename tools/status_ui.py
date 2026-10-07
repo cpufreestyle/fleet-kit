@@ -44,6 +44,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -124,10 +125,22 @@ def _short(text, limit=140):
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+# Console-less parents (pythonw) would otherwise make every child console app
+# — schtasks, netstat, ocx — pop a visible console window, once per refresh.
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
 def run(cmd, timeout=10.0):
     """Run a command and return (returncode, combined output). Never raises."""
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        # encoding="utf-8" + errors="replace": text=True alone would decode
+        # with the ambient code page (GBK on a zh-CN host) -- ocx prints emoji,
+        # and tools like netstat emit GBK -- either way a strict reader dies
+        # and the whole capture comes back empty. NO_WINDOW keeps the
+        # console-less panel from spawning console flashes per child.
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                              encoding="utf-8", errors="replace",
+                              creationflags=NO_WINDOW)
     except FileNotFoundError:
         return 127, "command not found: %s" % cmd[0]
     except subprocess.TimeoutExpired:
@@ -202,7 +215,33 @@ def resolve_python(keys):
 # collectors
 # --------------------------------------------------------------------------- #
 
-def launchd_info(label, name=None, log_dir=None):
+def _pid_alive(pid):
+    """Is a pid live? os.kill probing on POSIX, OpenProcess on Windows."""
+    if not pid:
+        return False
+    try:
+        if os.name == "nt":
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            k32 = ctypes.windll.kernel32
+            handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+            if not handle:
+                return False
+            try:
+                exit_code = ctypes.c_ulong()
+                if k32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return exit_code.value == STILL_ACTIVE
+                return True
+            finally:
+                k32.CloseHandle(handle)
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def launchd_info(label, port=None):
     """Service state for a label: launchd on macOS, schtasks on Windows,
     pgrep on Linux. Kept under the old name so callers do not change.
 
@@ -213,6 +252,31 @@ def launchd_info(label, name=None, log_dir=None):
         code, out = run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), label)], timeout=6.0)
         if code != 0:
             return {"loaded": False, "state": "not loaded", "pid": None, "last_exit": None}
+    elif fleet_platform.is_windows():
+        state = fleet_platform.service_status(label)
+        pid = None
+        if state == "missing":
+            # No scheduled task carries the label: this install supervises the
+            # bridges with plain .cmd wrappers plus *super.ps1 keepalives, so
+            # fall back to the pid files those wrappers leave in service_dir.
+            # The keepalive may have rotated the child since, so a port that
+            # still answers is the last word on "running".
+            for stem in (label + ".child.pid", label + ".super.pid"):
+                try:
+                    with open(os.path.join(fleet_platform.service_dir(), stem)) as handle:
+                        candidate = int((handle.read() or "").strip() or 0)
+                except (OSError, ValueError):
+                    continue
+                if _pid_alive(candidate):
+                    state, pid = "running", candidate
+                    break
+            # A foreign app squatting on the port would fool a bare TCP
+            # check, so a live probe result is the last word instead.
+            if state == "missing" and port and fleet_platform.port_open(port):
+                state = "listening"
+        if state == "missing":
+            return {"loaded": False, "state": "not loaded", "pid": None, "last_exit": None}
+        out = "state = %s" % state + ("\npid = %d" % pid if pid else "")
     else:
         state = fleet_platform.service_status(label)
         if state == "missing":
@@ -258,20 +322,34 @@ def windows_pidfile_alive(log_dir, name):
 
 
 def listen_info(port):
+    """Is something answering on the port, and with which pid.
+
+    lsof only exists on macOS/Linux; on Windows netstat -ano names the
+    owning pid, and a plain connect is the fallback when it does not.
+    """
     if fleet_platform.is_windows():
-        # lsof does not exist on Windows; a loopback connect is the honest
-        # listener probe there (the pid is not worth another spawn).
-        return {"ok": fleet_platform.port_open(port), "pid": None}
-    code, out = run(["lsof", "-nP", "-iTCP:%d" % port, "-sTCP:LISTEN"], timeout=6.0)
-    if code != 0 or not out.strip():
+        code, out = run(["netstat", "-ano", "-p", "tcp"], timeout=6.0)
+        if code == 0:
+            for line in out.splitlines():
+                parts = line.split()
+                if (len(parts) >= 5 and parts[3].upper() == "LISTENING"
+                        and parts[1].endswith(":%d" % port)):
+                    return {"ok": True, "pid": int(parts[4])}
+        if fleet_platform.port_open(port):
+            return {"ok": True, "pid": None}
         return {"ok": False, "pid": None}
-    pid = None
-    for line in out.splitlines()[1:]:
-        parts = line.split()
-        if len(parts) > 1 and parts[1].isdigit():
-            pid = int(parts[1])
-            break
-    return {"ok": True, "pid": pid}
+    code, out = run(["lsof", "-nP", "-iTCP:%d" % port, "-sTCP:LISTEN"], timeout=6.0)
+    if code == 0 and out.strip():
+        pid = None
+        for line in out.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) > 1 and parts[1].isdigit():
+                pid = int(parts[1])
+                break
+        return {"ok": True, "pid": pid}
+    if fleet_platform.port_open(port):
+        return {"ok": True, "pid": None}
+    return {"ok": False, "pid": None}
 
 
 def probe_bridge(port, key, timeout=PROBE_TIMEOUT):
@@ -300,25 +378,19 @@ def probe_bridge(port, key, timeout=PROBE_TIMEOUT):
 
 
 def plist_path(launch_dir, label):
+    """The service wrapper for a label, whichever extension the backend wrote."""
+    for ext in (".plist", ".cmd", ".sh"):
+        candidate = os.path.join(launch_dir, label + ext)
+        if os.path.isfile(candidate):
+            return candidate
     return os.path.join(launch_dir, label + ".plist")
 
 
-def service_artifact_present(cfg, label, name):
-    """Whether this bridge has *some* service that starts it.
+def log_paths_from_plist(plist, log_dir, suffix, label=None):
+    """Log candidates: whatever the launchd plist declares, then common names.
 
-    macOS: the launchd plist. Windows: a per-bridge task.xml, or the shared
-    bridges launcher in the fleet home (start-bridges.cmd, which the logon
-    task runs) -- a plist check itself is meaningless there.
-    """
-    if not fleet_platform.is_windows():
-        return os.path.isfile(plist_path(cfg["launch_dir"], label))
-    if os.path.isfile(os.path.join(cfg["launch_dir"], label + ".task.xml")):
-        return True
-    return os.path.isfile(os.path.join(cfg["home"], "start-bridges.cmd"))
-
-
-def log_paths_from_plist(plist, log_dir, suffix):
-    """Log candidates: whatever the launchd plist declares, then common names."""
+    On Windows the wrappers log as <label>.log (full com.local.* name), so the
+    label spelling is probed too when the caller has it."""
     paths = []
     if os.path.isfile(plist):
         try:
@@ -331,9 +403,10 @@ def log_paths_from_plist(plist, log_dir, suffix):
         except Exception:
             pass
     for candidate in (os.path.join(log_dir, suffix + ".log"),
+                      os.path.join(log_dir, label + ".log") if label else None,
                       os.path.join(log_dir, suffix + "-bridge.log"),
                       "/tmp/%s-bridge.log" % suffix):
-        if candidate not in paths:
+        if candidate and candidate not in paths:
             paths.append(candidate)
     return paths
 
@@ -361,7 +434,7 @@ def ocx_status(ttl=OCX_TTL_SECONDS):
         cached = _OCX_CACHE["value"]
         if cached is not None and (time.time() - _OCX_CACHE["at"]) < ttl:
             return cached
-    code, out = run(["ocx", "status"], timeout=25.0)
+    code, out = run([fleet_platform.ocx_exe(), "status"], timeout=25.0)
     if code == 127:
         return {"available": False, "text": "ocx not installed", "healthz": None}
     text = "\n".join(out.strip().splitlines()[:40])
@@ -455,15 +528,15 @@ def collect_bridge(cfg, spec):
     port = cfg["port_base"] + offset
     label = cfg["label_prefix"] + "." + suffix
     key = cfg["keys"].get(keyenv) or None
-    paths = log_paths_from_plist(plist_path(cfg["launch_dir"], label), cfg["log_dir"], suffix)
+    paths = log_paths_from_plist(plist_path(cfg["launch_dir"], label), cfg["log_dir"], suffix,
+                                 label=label)
     log = None
     for path in paths:
         log = tail_file(path, 5)
         if log:
             break
     return {"name": name, "port": port, "label": label,
-            "agent": launchd_info(label, name=name, log_dir=cfg["log_dir"]),
-            "listen": listen_info(port),
+            "agent": launchd_info(label, port=port), "listen": listen_info(port),
             "probe": probe_bridge(port, key),
             "key": {"env": keyenv, "md5": md5_short(key), "set": bool(key)},
             "logs": paths, "log": log}
@@ -493,8 +566,9 @@ def collect(cfg):
                 and cfg["env_found"]):
             warnings.append("%s: HTTP %d 且 key 未读取到 - 登录后执行 bash %s/bridges/finish.sh %s"
                             % (bridge["name"], bridge["probe"]["http"], cfg["home"], bridge["name"]))
-        if not service_artifact_present(cfg, bridge["label"], bridge["name"]):
-            warnings.append("%s: 服务未安装 %s" % (bridge["name"], bridge["label"]))
+        if not (fleet_platform.service_kind(bridge["label"])
+                or os.path.isfile(os.path.join(cfg["home"], "start-bridges.cmd"))):
+            warnings.append("%s: 服务定义缺失 %s" % (bridge["name"], bridge["label"]))
 
     summary = {
         "bridges": len(bridges),
@@ -543,7 +617,8 @@ def free_models():
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "free_models.py")
     try:
         out = subprocess.run([sys.executable, script, "--json"],
-                             capture_output=True, timeout=FREE_SUBPROCESS_TIMEOUT)
+                             capture_output=True, timeout=FREE_SUBPROCESS_TIMEOUT,
+                             creationflags=NO_WINDOW)
         value = json.loads(out.stdout.decode("utf-8", "ignore"))
         value["available"] = True
     except Exception as exc:
@@ -590,7 +665,8 @@ def node_credits(cfg):
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "node_credits.py")
     try:
         out = subprocess.run([cfg["python"] or sys.executable, script, "--json"],
-                             capture_output=True, timeout=NODE_CREDITS_SUBPROCESS_TIMEOUT)
+                             capture_output=True, timeout=NODE_CREDITS_SUBPROCESS_TIMEOUT,
+                             creationflags=NO_WINDOW)
         value = json.loads(out.stdout.decode("utf-8", "ignore"))
         value["available"] = True
     except Exception as exc:
@@ -886,7 +962,7 @@ def _checkin_worker(cfg, force):
     started = ACTIONS["checkin"]["started_at"]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, env=env)
+                                text=True, env=env, creationflags=NO_WINDOW)
     except OSError as exc:
         with ACTIONS_LOCK:
             ACTIONS["checkin"] = {"running": False, "started_at": started, "force": force,
@@ -928,7 +1004,8 @@ def _verify_worker(cfg):
     cmd = [sys.executable, script, "--json", "--port-base", str(cfg["port_base"])]
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True)
+                                stderr=subprocess.STDOUT, text=True,
+                                creationflags=NO_WINDOW)
     except OSError as exc:
         with ACTIONS_LOCK:
             ACTIONS["verify"] = {"running": False, "started_at": started,
@@ -1011,6 +1088,9 @@ class Handler(BaseHTTPRequestHandler):
         route = parsed.path
         if route in ("/", "/index.html"):
             self._send(render_page(self.server.cfg), "text/html; charset=utf-8")
+        elif route == "/api/page-version":
+            self._send({"version": PAGE_VERSION},
+                       "application/json; charset=utf-8")
         elif route == "/api/status":
             self._send(collect_cached(self.server.cfg), "application/json; charset=utf-8")
         elif route.startswith("/api/logs/"):
@@ -1067,7 +1147,7 @@ class FleetUIServer(ThreadingHTTPServer):
         lines = max(10, min(lines, 2000))
         label = self.cfg["label_prefix"] + "." + spec[1]
         candidates = log_paths_from_plist(plist_path(self.cfg["launch_dir"], label),
-                                         self.cfg["log_dir"], spec[1])
+                                         self.cfg["log_dir"], spec[1], label=label)
         for path in candidates:
             found = tail_file(path, lines)
             if found:
@@ -1094,19 +1174,19 @@ PAGE = r"""<!doctype html>
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);
 font:14px/1.5 -apple-system,BlinkMacSystemFont,"SF Mono",Menlo,Consolas,monospace}
-header{padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel);
+header{padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel);
 position:sticky;top:0;z-index:5}
 h1{margin:0;font-size:16px;font-weight:600}
 .meta{color:var(--dim);font-size:12px;word-break:break-all}
-main{padding:16px 20px;max-width:1500px;margin:0 auto}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:14px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+main{padding:10px 14px;max-width:none}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-bottom:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
 .card .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
 .card .v{font-size:22px;font-weight:600;margin-top:2px}
 .card .s{color:var(--dim);font-size:11px}
 table{width:100%;border-collapse:collapse;background:var(--panel);
 border:1px solid var(--line);border-radius:8px;overflow:hidden}
-th,td{padding:7px 10px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th,td{padding:5px 8px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
 th{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em;background:#14171d}
 tr:last-child td{border-bottom:none}
 .pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;font-weight:600}
@@ -1117,11 +1197,14 @@ tr:last-child td{border-bottom:none}
 .chips{display:flex;flex-wrap:wrap;gap:4px;max-width:330px}
 .chip{background:var(--chip);border:1px solid var(--line);border-radius:4px;
 padding:0 5px;font-size:11px;color:#c8cfdb}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
 @media(max-width:980px){.grid2{grid-template-columns:1fr}}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:12px}
-.panel h2{margin:0 0 8px;font-size:13px;color:var(--dim);
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;margin-top:10px}
+.panel h2{margin:0 0 6px;font-size:13px;color:var(--dim);
 text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+details summary{cursor:pointer;color:var(--dim);font-size:12px;font-weight:600;
+list-style-position:inside;margin-bottom:4px}
+details summary::-webkit-details-marker{color:var(--dim)}
 pre{margin:0;white-space:pre-wrap;word-break:break-all;font-size:12px;color:#c8cfdb;
 max-height:280px;overflow:auto}
 button{background:#22262f;color:var(--fg);border:1px solid var(--line);
@@ -1132,8 +1215,14 @@ button.primary{background:rgba(88,166,255,.14);border-color:rgba(88,166,255,.4);
 select{background:#14171d;color:var(--fg);border:1px solid var(--line);
 border-radius:6px;padding:5px 8px;font:inherit;font-size:12px}
 .warnbox{background:rgba(210,153,34,.12);border:1px solid rgba(210,153,34,.35);
-color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12px}
+color:#e3b341;border-radius:6px;padding:6px 9px;margin-bottom:10px;font-size:12px}
 .dim{color:var(--dim)}
+.num{font-size:15px;font-weight:700;color:var(--fg);white-space:nowrap}
+.num .u{font-weight:500;color:var(--dim);font-size:11px;margin-left:3px}
+.p-client{background:rgba(63,185,80,.15);color:var(--ok)}
+.p-limit{background:rgba(88,166,255,.15);color:var(--accent)}
+.p-own{background:rgba(210,153,34,.18);color:var(--warn)}
+.p-sub{background:rgba(188,140,255,.15);color:#bc8cff}
 </style>
 </head>
 <body>
@@ -1146,17 +1235,29 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
   <div class="cards" id="cards"></div>
   <table>
     <thead><tr>
-      <th>桥</th><th>端口</th><th>key md5</th><th>launchd</th><th>监听</th>
+      <th>桥</th><th>端口</th><th>key md5</th><th>服务</th><th>监听</th>
       <th>/v1/models</th><th>模型</th><th>真实调用</th><th></th>
     </tr></thead>
     <tbody id="rows"></tbody>
   </table>
+  <div class="panel">
+    <div class="row">
+      <h2 style="margin:0">节点积分 / 套餐余额</h2>
+      <label class="meta" style="cursor:pointer"><input type="checkbox" id="nc-only-values" onchange="renderNc()"> 只看有剩余数值</label>
+      <span class="meta" id="nc-note"></span>
+    </div>
+    <table><thead><tr><th>节点</th><th>剩余积分</th><th>口径</th><th>套餐 plan</th>
+    <th>账号</th><th>状态</th><th>登录</th><th>签到</th><th>来源 / 备注</th></tr></thead>
+    <tbody id="nc-rows"></tbody></table>
+    <pre id="nc-out" style="margin-top:8px"></pre>
+  </div>
   <div class="grid2">
     <div class="panel">
       <h2>opencodex</h2>
       <div class="row"><span id="ocx-pill" class="pill p-idle">...</span>
       <span class="meta" id="ocx-health"></span></div>
-      <pre id="ocx-text"></pre>
+      <details open><summary>status 原文</summary>
+      <pre id="ocx-text" style="max-height:200px"></pre></details>
     </div>
     <div class="panel">
       <h2>签到</h2>
@@ -1169,15 +1270,6 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
       <tbody id="ck-rows"></tbody></table>
       <pre id="ck-out" style="margin-top:8px"></pre>
     </div>
-    <div class="panel">
-      <h2>节点积分 / 账号（15 个节点）</h2>
-      <div class="row"><span class="meta" id="nc-note"></span></div>
-      <table><thead><tr><th>节点</th><th>状态</th><th>账号</th><th>登录</th>
-        <th>积分口径</th><th>积分 / 额度</th><th>来源</th><th>签到</th></tr></thead>
-      <tbody id="nc-rows"></tbody></table>
-      <pre id="nc-out" style="margin-top:8px"></pre>
-    </div>
-
     <div class="panel">
       <h2>小浣熊用量（本地计数，llm/v2 不结算积分）</h2>
       <div class="row"><span class="meta" id="xhx-path"></span></div>
@@ -1201,6 +1293,7 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
     <h2>模型标注：免费状态 + 是否走客户端积分（官网信息，更新于 <span id="free-updated">?</span>）</h2>
     <label class="meta" style="font-weight:400;margin-left:10px"><input type="checkbox" id="free-hide" checked onchange="renderFree()"> 隐藏不可用</label>
     <label class="meta" style="font-weight:400;margin-left:10px"><input type="checkbox" id="free-credits-only" onchange="renderFree()"> 只看走客户端积分</label>
+    <label class="meta" style="font-weight:400;margin-left:10px" title="展开 credits=仅限额 的全部模型（含未单独实测的）"><input type="checkbox" id="free-include-limit" onchange="renderFree()"> 含限额免费</label>
     <span class="meta" id="free-hidden"></span>
     <div class="row"><span class="meta" id="free-meta"></span></div>
     <div class="row"><span class="meta" id="free-credits-legend"></span></div>
@@ -1225,6 +1318,7 @@ color:#e3b341;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:12
 </main>
 <script>
 var REFRESH = __REFRESH__;
+var PAGE_VERSION = "__PAGE_VERSION__";
 var SNAP = null;
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){
   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
@@ -1291,25 +1385,57 @@ function render(){
   var nc=s.credits||{};
   document.getElementById('nc-out').textContent = nc.available
     ? '' : ('读取失败：'+(nc.error||'node_credits.py 不可用'));
-  var ncrows=(nc.nodes||[]).map(function(n){
-    var cred = n.credits_value==null ? '-'
-      : esc(n.credits_value)+' '+(n.credits_unit||'');
-    var login = n.logged_in===true ? pill('ok','是')
-      : (n.logged_in===false ? pill('bad','否') : pill('warn','?'));
-    var vendor = n.vendor ? '<div class=dim>'+esc(n.vendor)+'</div>' : '';
-    return '<tr><td><b>'+esc(n.node)+'</b>'+vendor+'</td>'
-      +(n.up?pill('ok','up'):pill('bad','down'))
-      +'<td>'+esc(n.account||'-')
-      +(n.credits_accounts
-        ? '<div class=dim style="font-size:11px">'+esc(n.credits_accounts)+'</div>' : '')
-      +'</td><td>'+login
-      +'<td>'+esc(n.credits_kind)+'</td><td>'+cred.trim()
-      +'<td class=dim>'+esc(n.credits_source||'-')+'</td>'
-      +'<td class=dim>'+esc(n.checkin||'-')+'</td></tr>';}).join('');
-  document.getElementById('nc-rows').innerHTML = ncrows
-    || '<tr><td colspan=8 class=dim>暂无数据</td></tr>';
-  document.getElementById('nc-note').textContent =
-    '来源：各桥 /health · /health account_pool（小浣熊多账号积分）· /ui/checkin（Buddy 加油站）· /entitlements（ZCode 额度）· 官方余额；口径见 free-windows.json';
+  // 口径覆盖：与免费模型表同一套口径（free.models 逐模型标注），徽章旁标
+  // N/M——全平台=该平台所有模型同一口径；本模型=只覆盖部分模型。
+  var NC_FK={};((SNAP&&SNAP.free&&SNAP.free.models)||[]).forEach(function(m){
+    if(!NC_FK[m.provider]){NC_FK[m.provider]={};}
+    NC_FK[m.provider][m.credits]=(NC_FK[m.provider][m.credits]||0)+1;});
+  function ncCover(n){
+    var key=n.node,d=NC_FK[key];
+    if(!d&&key.slice(-5)==='-code'){d=NC_FK[key.slice(0,-5)];}
+    if(!d){return '';}
+    var tot=0;for(var k in d){tot+=d[k];}
+    var v=d[n.credits_kind]||0;
+    if(!v){return '';}
+    return ' <span style="font-size:11px">'+(v===tot?'全平台 ':'本模型 ')+v+'/'+tot+'</span>';}
+  var NC_KIND={client:['走客户端积分','p-client'],limit:['限额免费','p-limit'],
+    own:['平台自有','p-own'],subscription:['订阅','p-sub'],unknown:['未知','p-idle']};
+  var ncAll=(nc.nodes||[]).slice().sort(function(a,b){
+    var av=a.credits_value==null?0:1, bv=b.credits_value==null?0:1;
+    if(av!==bv) return bv-av;
+    return (b.up?1:0)-(a.up?1:0);
+  });
+  var ncHasValue=ncAll.filter(function(n){return n.credits_value!=null}).length;
+  function fmtNum(v){return typeof v==='number'?v.toLocaleString('en-US'):esc(v);}
+  function renderNc(){
+    var only=document.getElementById('nc-only-values').checked;
+    var list=only?ncAll.filter(function(n){return n.credits_value!=null}):ncAll;
+    document.getElementById('nc-rows').innerHTML=list.map(function(n){
+      var cred=n.credits_value==null?'<span class=dim>-</span>'
+        :'<span class=num>'+fmtNum(n.credits_value)
+        +'<span class=u>'+esc(n.credits_unit||'')+'</span></span>';
+      var kd=NC_KIND[n.credits_kind]||[esc(n.credits_kind||'-'),'p-idle'];
+      var login=n.logged_in===true?pill('ok','是')
+        :(n.logged_in===false?pill('bad','否'):pill('warn','?'));
+      var vendor=n.vendor?'<div class=dim style="font-size:11px">'+esc(n.vendor)+'</div>':'';
+      return '<tr><td><b>'+esc(n.node)+'</b>'+vendor+'</td>'
+        +'<td>'+cred+'</td>'
+        +'<td><span class="pill '+kd[1]+'">'+kd[0]+'</span>'+ncCover(n)+'</td>'
+        +'<td>'+(n.plan?esc(n.plan):'<span class=dim>-</span>')+'</td>'
+        +'<td>'+esc(n.account||'-')
+        +(n.credits_accounts?'<div class=dim style="font-size:11px">'+esc(n.credits_accounts)+'</div>':'')
+        +'</td>'+(n.up?pill('ok','up'):pill('bad','down'))
+        +'<td>'+login+'</td>'
+        +'<td class=dim>'+esc(n.checkin||'-')+'</td>'
+        +'<td class=dim>'+esc(n.credits_source||'-')
+        +(n.credits_note?'<div class=dim style="font-size:11px">'+esc(n.credits_note)+'</div>':'')
+        +'</td></tr>';
+    }).join('')||'<tr><td colspan=9 class=dim>没有符合条件的数据</td></tr>';
+  }
+  window.renderNc = renderNc;
+  renderNc();
+  document.getElementById('nc-note').textContent=
+    '共 '+ncAll.length+' 节点 · '+ncHasValue+' 家有剩余数值 · 其余未从上游取到数值｜口径徽章旁 N/M = 该平台走此口径的模型数（全平台=整平台一致，本模型=部分覆盖）｜来源：各桥 /health · account_pool · /ui/checkin · /entitlements · 官方余额；口径见 free-windows.json';
   var xu=s.xhx_usage||{};
   document.getElementById('xhx-path').textContent = xu.path||'';
   document.getElementById('xhx-note').textContent = xu.note||'';
@@ -1383,15 +1509,30 @@ function renderFree(){
   var ccode=[];for(var c2 in (f.code_counts||{})){ccode.push(f.code_counts[c2]+' '+(CODE_BADGE_UI[c2]||c2));}
  var clg=document.getElementById('free-credits-legend');
   if(clg){clg.textContent='客户端积分口径：'+(f.legend&&f.legend.credits?Object.keys(f.legend.credits).map(function(k){
-   return (CREDITS_BADGE[k]||k)+'='+f.legend.credits[k];}).join('  ·  '):'');}
+  return (CREDITS_BADGE[k]||k)+'='+f.legend.credits[k];}).join('  ·  '):'');}
+  if(clg){clg.textContent+='；口径为逐模型标注：徽章旁 N/M = 该平台走此口径的模型数，「全平台」即整平台一致（如限额免费），「本模型」即只覆盖部分';}
+  if(clg){clg.textContent+='｜「仅限额」徽章即平台限额免费口径（全平台 N/N）；勾选「含限额免费」可逐个看到这类平台的模型';}
   var klg=document.getElementById('free-code-legend');
   if(klg){klg.textContent='写代码口径：两个真实编码任务的实测判定（code_model_bench snapshot）：全过=全分 · 部分=未全过 · NO_RUN=只出文本 · 断桥=不可达 · ?=无实测；超过 '+(f.code_stale_after_days||7)+' 天标 stale';}
  var co=document.getElementById('free-credits-only');
   var creditsOnly=!!(co&&co.checked);
   var hide=document.getElementById('free-hide');
   var hiding=!!(hide&&hide.checked);
+  var ilEl=document.getElementById('free-include-limit');
+  var incLimit=!!(ilEl&&ilEl.checked);
+  // 基线可见：进过选择器或实测免费；仅限额模型默认不展开，勾选后才列出
+  function passBase(m){return m.in_picker||m.free==='free'||m.free==='free-window'||m.free==='quota'||m.free==='trial';}
+  // 口径覆盖范围：积分四档是逐模型标注的，徽章旁 N/M 表示该平台有多少模型走
+  // 同一口径——N=M 即整平台一致（如限额免费），N<M 即只覆盖部分模型。
+  var pkind={};(f.models||[]).forEach(function(m){
+    if(!pkind[m.provider]){pkind[m.provider]={};}
+    pkind[m.provider][m.credits]=(pkind[m.provider][m.credits]||0)+1;});
+  function credCover(m){
+    var d=pkind[m.provider]||{};var tot=0;for(var k in d){tot+=d[k];}
+    var n=d[m.credits]||0;
+    return '<span style="font-size:11px">'+(n===tot?'全平台 ':'本模型 ')+n+'/'+tot+'</span>';}
   var all=(f.models||[]).filter(function(m){
-    return m.in_picker||m.free==='free'||m.free==='free-window'||m.free==='quota'||m.free==='trial';});
+    return passBase(m)||(incLimit&&m.credits==='limit');});
   var list=[],hidden={},hiddenN=0;
   all.forEach(function(m){
     if(creditsOnly&&m.credits!=='client'){return;}
@@ -1404,8 +1545,8 @@ function renderFree(){
   meta.textContent='live '+live+' · 在选择器 '+pick+' · catalog '+f.catalog_total+' · '+ccnt.join(' · ')+' · '+ccode.join(' · ')+' · 显示 '+list.length+'/'+(creditsOnly?all.filter(function(m){return m.credits==='client';}).length:all.length);
   rows.innerHTML=list.length?list.map(function(m){
    return '<tr><td>'+esc(m.picker_name||m.picker_slug||m.model)+'</td>'+
-     '<td>'+pill(freeKind(m.free),m.badge)+'</td>'+
-     '<td title="'+esc(m.credits_note||'')+'">'+pill(creditsKind(m.credits),m.credits_badge||m.credits)+'</td>'+
+     '<td>'+(passBase(m)?pill(freeKind(m.free),m.badge):pill('warn','限额免费'))+'</td>'+
+    '<td title="'+esc(m.credits_note||'')+'">'+pill(creditsKind(m.credits),m.credits_badge||m.credits)+' '+credCover(m)+'</td>'+
       '<td title="'+esc(codeTip(m))+'">'+pill(codeKind(m.code_verdict),m.code_badge||'?')+'</td>'+
      '<td class="dim">'+esc(m.window)+'</td>'+
      '<td>'+(m.in_picker?pill('ok','yes'):pill('bad','no'))+'</td></tr>';}).join('')
@@ -1471,6 +1612,13 @@ function restart(name){
   if(!window.confirm('重启桥 '+name+' ?')){return;}
   post('/api/action/restart/'+encodeURIComponent(name)).then(function(){load();});}
 if(REFRESH>0){setInterval(load,REFRESH*1000);}
+// A restart changes the served page version; tabs left open on an older build
+// reload themselves instead of rendering stale markup forever.
+setInterval(function(){
+  fetch('/api/page-version').then(function(r){return r.json();}).then(function(j){
+    if(j.version && j.version !== PAGE_VERSION){ location.reload(); }
+  }).catch(function(){});
+}, 30000);
 load();
 </script>
 </body>
@@ -1478,8 +1626,14 @@ load();
 """
 
 
+# Bumped on every restart: stale tabs compare this and reload themselves.
+PAGE_VERSION = str(int(time.time()))
+
+
 def render_page(cfg):
-    return PAGE.replace("__REFRESH__", str(int(cfg["refresh"])))
+    return (PAGE
+            .replace("__REFRESH__", str(int(cfg["refresh"])))
+            .replace("__PAGE_VERSION__", PAGE_VERSION))
 
 
 # --------------------------------------------------------------------------- #

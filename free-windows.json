@@ -160,6 +160,21 @@
       "credits_note": "不走积分：个人 Google 账号自带免费档（官方 Gemini CLI 文档 60 次/分、1000 次/天），Pro/Ultra 只抬高限额",
       "last_checked": "2026-10-03 13:20:59"
     },
+    "spacebunny": {
+      "vendor": "Space Bunny Alpha（官方托管网关）",
+      "site": "https://spacebunnymodel.com/",
+      "free": "trial",
+      "window": "注册赠 $10 一次性额度；之后 $5 起按量计费；OpenRouter 隐身预览 2026-10-05 到期",
+      "facts": "OpenRouter 隐身模型 stealth/space-bunny-alpha；1M 上下文、text+image+video→text 多模态、reasoning mandatory（efforts: max/xhigh/high/medium/low，默认 max）；官方托管网关 spacebunnymodel.com/api/v1（OpenAI 兼容，model id: space-bunny-alpha，Bearer sb_live_ Key）；注册送 $10 额度，之后 $5 起按量 → 独立 Key 余额，不走客户端积分；⚠️ OpenRouter expiration 2026-10-05，隐身预览到期后可能下架。",
+      "sources": [
+        "https://spacebunnymodel.com/docs",
+        "https://openrouter.ai/stealth/space-bunny-alpha"
+      ],
+      "verified": true,
+      "credits": "own",
+      "credits_note": "不走客户端积分：spacebunnymodel.com 独立 sb_live_ Key 余额（注册赠 $10）",
+      "last_checked": "2026-10-03 19:50:00"
+    },
     "tokendance": {
       "vendor": "TokenDance 词元跳动",
       "site": "https://tokendance.space/",
@@ -291,6 +306,14 @@
       "window_why": "首发折扣与 Hy4 同一个两周窗口",
       "source": "https://www.workbuddy.ai/pricing",
       "verified": true
+    },
+    "spacebunny/space-bunny-alpha": {
+      "free": "trial",
+      "window": "注册赠 $10 一次性额度；之后 $5 起按量计费；OpenRouter 隐身预览 2026-10-05 到期",
+      "source": "https://spacebunnymodel.com/docs",
+      "verified": true,
+      "credits": "own",
+      "credits_note": "不走客户端积分：spacebunnymodel.com 独立 sb_live_ Key 余额（注册赠 $10）"
     },
     "tokendance/step-5-preview": {
       "free": "paid",
