@@ -21,6 +21,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import os as _os
+import sys as _sys
+
+_SYS_DIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), _os.pardir)
+if _SYS_DIR not in _sys.path:
+    _sys.path.insert(0, _SYS_DIR)
+import _account_pool
+
 STATE_FILE_NAME = 'pool-state.json'
 TOKEN_FILE_NAME = 'token.json'
 COOKIE_FILE_NAME = 'cookies.txt'
@@ -38,28 +46,20 @@ def _iso(value):
 
 
 def _harden(path):
+    """Owner-only for a credential directory/file; a no-op on Windows."""
     if os.name == 'nt' or not path:
         return
     try:
-        p = Path(path)
-        if p.is_dir():
-            os.chmod(p, 0o700)
-        elif p.exists():
-            os.chmod(p, 0o600)
+        return _account_pool.harden_private_path(Path(path))
     except OSError:
         pass
 
 
 def _atomic_json(path, payload):
-    path = Path(path)
-    tmp = path.with_name(path.name + '.tmp')
-    with open(str(tmp), 'w', encoding='utf-8') as f:
-        f.write(json.dumps(payload, ensure_ascii=False, indent=2))
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(str(tmp), 0o600)
-    os.replace(str(tmp), str(path))
-    _harden(path)
+    try:
+        return _account_pool.atomic_json(Path(path), payload)
+    except OSError:
+        _harden(path)
 
 
 def _token_state(token_path):

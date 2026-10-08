@@ -56,6 +56,12 @@ def _run(capsys, monkeypatch, argv):
     monkeypatch.setattr(
         fp, "probe_gateway",
         lambda *a, **k: (True, "stub -> E2E_OK", "stub-model"))
+    # main() also fires try_tool_call() for every bridge that answers, and
+    # that one is a real HTTP call. Without a stub the sweep reaches out to
+    # the machine's own bridges, so a fixture about the carry-forward
+    # verdict depends on which ports happen to be listening.
+    monkeypatch.setattr(fp, "try_tool_call",
+                        lambda *a, **k: (True, "stubbed"))
     monkeypatch.setattr(fp.subprocess, "run",
                         lambda *a, **k: type("R", (), {"stdout": "",
                                                        "stderr": ""})())

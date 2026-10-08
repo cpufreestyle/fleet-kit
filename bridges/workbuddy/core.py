@@ -67,7 +67,8 @@ if str(_BRIDGES_DIR) not in sys.path:
     sys.path.insert(0, str(_BRIDGES_DIR))
 
 import _common
-from account_pool import AccountPool, harden_private_path
+from account_pool import AccountPool
+from _account_pool import harden_private_path
 from dashboard import DASHBOARD_HTML
 from workbuddy_account_service import WorkBuddyAccountService
 from workbuddy_checkin import WorkBuddyCheckinService

@@ -241,7 +241,7 @@ async def task_workbuddy_gpt(client: httpx.AsyncClient) -> dict:
 # different thing from a failed attempt and must not read as one.
 NO_CHECKIN_NODES = ("qoder", "codely", "trae", "lingxi", "cline", "qwen",
                     "gemini", "catpaw", "antigravity", "zcode", "stepfun",
-                    "tokendance", "kimi-code", "minimax")
+                    "tokendance", "kimi-code", "minimax", "doubao")
 
 
 def _no_checkin_task(name: str) -> dict:

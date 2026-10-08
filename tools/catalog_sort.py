@@ -246,6 +246,9 @@ def interleave_reps(models, order, good=None, families=()):
             taken.add(slug)
     return reps + rest
 
+from catalog_common import prune_backups, read_json  # noqa: F401
+
+
 def catalog_path():
     home = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
     name = "cc-switch-model-catalog.json"
@@ -380,40 +383,6 @@ def snapshot_age_seconds(reach):
     if when.tzinfo is None:
         when = when.replace(tzinfo=datetime.timezone.utc)
     return max(0.0, (datetime.datetime.now(when.tzinfo) - when).total_seconds())
-
-
-def prune_backups(path, keep):
-    """Keep the newest `keep` .bak-<timestamp> files beside the catalog.
-
-    The 5 minute timers rewrite the catalog all day, and each write leaves a
-    timestamped backup. Without a bound those pile up forever (89 files,
-    99MB in one measured case), so trim to the newest few after a write.
-    """
-    if keep < 0:
-        return []
-    directory = os.path.dirname(path) or "."
-    base = os.path.basename(path) + ".bak-"
-    found = []
-    try:
-        names = os.listdir(directory)
-    except OSError:
-        return []
-    for name in names:
-        if name.startswith(base):
-            full = os.path.join(directory, name)
-            try:
-                found.append((os.path.getmtime(full), full))
-            except OSError:
-                continue
-    found.sort(reverse=True)
-    removed = []
-    for _mtime, full in found[keep:]:
-        try:
-            os.unlink(full)
-            removed.append(full)
-        except OSError:
-            continue
-    return removed
 
 
 def main():

@@ -19,6 +19,9 @@ it cannot import _common. Shared code for these services lives here, in a
 file nothing but http.server services import.
 """
 import json
+import socket
+import threading
+import time
 
 
 def install_basehttp_guard(handler_cls):
@@ -51,3 +54,74 @@ def install_basehttp_guard(handler_cls):
         setattr(handler_cls, name, wrapper)
     return handler_cls
 
+
+
+# ---------------------------------------------------------------- deadlines
+# One bridge owns a request budget in seconds and every outbound connect has
+# to stay inside it. The stdlib hands each address getaddrinfo() returns the
+# same timeout, so one blocked urlopen() costs N x timeout -- and
+# cloudcode-pa.googleapis.com resolves to 16 of them (8 IPv6 first). Measured
+# 2026-09-29 behind a VPN: a 20s timeout cost 40s on oauth2.googleapis.com's
+# two addresses, so a 60s CHAT_BUDGET still produced a 90s request.
+#
+# Walk the addresses here and cap each attempt at the time that is actually
+# left, so the total -- not just the first connect -- stays inside the budget.
+# The deadline is thread-local: each request runs in its own thread under
+# ThreadingHTTPServer, so concurrent requests cannot clobber one another.
+_tls = threading.local()
+_real_create_connection = socket.create_connection
+
+
+def arm_deadline(when):
+    """Bound this thread's connects to the epoch seconds `when`."""
+    _tls.deadline = when
+
+
+def disarm_deadline():
+    _tls.deadline = None
+
+
+def _budgeted_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                                source_address=None, **kwargs):
+    """socket.create_connection that charges every address to the deadline."""
+    deadline = getattr(_tls, "deadline", None)
+    if deadline is None:
+        return _real_create_connection(address, timeout, source_address, **kwargs)
+    host, port = address[:2]
+    try:
+        infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    except OSError:
+        infos = []
+    requested = None if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
+    last = None
+    for af, socktype, proto, _canon, sa in infos:
+        left = deadline - time.time()
+        if left <= 0:
+            last = OSError("request budget exhausted")
+            break
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            sock.settimeout(left if requested is None else min(requested, left))
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sa)
+            return sock
+        except OSError as exc:
+            if sock is not None:
+                sock.close()
+            last = exc
+    if last is not None:
+        raise last
+    # getaddrinfo itself failed; resolution surfaces immediately, so let the
+    # stdlib raise the familiar error.
+    return _real_create_connection(address, timeout, source_address, **kwargs)
+
+
+def install_budgeted_connect():
+    """Route every socket.create_connection through the deadline-aware one.
+
+    idempotent, so a bridge may call it from its entrypoint without checking.
+    """
+    if socket.create_connection is not _budgeted_create_connection:
+        socket.create_connection = _budgeted_create_connection

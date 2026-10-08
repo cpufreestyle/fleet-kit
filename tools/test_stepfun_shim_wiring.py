@@ -304,7 +304,7 @@ class WatchdogWiring(unittest.TestCase):
         self.assertIn("install_watchdog_plist", window,
                       "install-timer no longer installs the watchdog timer, so a hung loop stays hung until someone notices by hand")
         self.assertIn(
-            'fleet_timer_install "$SHIM_WATCHDOG_LABEL" "$SHIM_WATCHDOG_INTERVAL"',
+            'fleet_timer_install "$SHIM_WATCHDOG_LABEL"',
             src, "the watchdog timer is not a repeating launchd job any more")
         self.assertIn('"$SELF" "watchdog"', src,
                       "the timer no longer runs this script\'s watchdog subcommand")

@@ -88,6 +88,19 @@ def _sort(catalog, reach, *extra):
     return proc
 
 
+def _no_pin(catalog, reach, *extra):
+    """Run the sorter with the whitelist switched off.
+
+    The ordering tests assert about which providers sink, not about the
+    whitelist, so the repo's real-models.json -- a fleet-wide list that never
+    mentions a fixture's slugs -- must not decide the fixture's rows: every
+    provider-prefixed row it does not list is dropped before any verdict is
+    consulted, and a three-row fixture is left with one. --no-pin keeps the
+    assertion about ordering.
+    """
+    return _sort(catalog, reach, "--no-pin", *extra)
+
+
 def _catalog(tmp_path):
     import json
     catalog = tmp_path / "catalog.json"
@@ -128,7 +141,7 @@ def test_strict_coverage_still_refuses_a_real_gap(tmp_path):
         "skipped": {},
     }))
 
-    proc = _sort(catalog, reach, "--strict-coverage")
+    proc = _no_pin(catalog, reach, "--strict-coverage")
 
     assert proc.returncode == 4
     assert "zcode" in proc.stderr
@@ -188,7 +201,7 @@ def test_a_stale_unreachable_verdict_stops_sinking(tmp_path):
     catalog = _order_fixture(tmp_path)
     reach = _aged_reach(tmp_path, hours=96)
 
-    order, proc = _order(catalog, reach)
+    order, proc = _order(catalog, reach, "--no-pin")
 
     assert order == ["workbuddy/glm-5.2",
                      "cline/cline-free-deepseek-v4.1-flash",
@@ -203,7 +216,7 @@ def test_a_fresh_snapshot_still_sinks_an_unreachable_provider(tmp_path):
     catalog = _order_fixture(tmp_path)
     reach = _aged_reach(tmp_path, hours=0.1)
 
-    order, proc = _order(catalog, reach)
+    order, proc = _order(catalog, reach, "--no-pin")
 
     assert order == ["workbuddy/glm-5.2", "qwen/qwen3.8-max",
                      "cline/cline-free-deepseek-v4.1-flash"]

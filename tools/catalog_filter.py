@@ -72,6 +72,7 @@ NO_PROXY = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # of relying on PATH spelling (see ocx_exe's own docstring).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fleet_platform import ocx_exe
+from catalog_common import prune_backups  # noqa: F401  (re-exported for callers)
 
 BACKUP_TEMPLATE = ".bak-%Y%m%d-%H%M%S"
 STATE_FILE = ".catalog-filter-restore-state.json"
@@ -407,40 +408,6 @@ def write_state(codex_home, state):
     with os.fdopen(handle, "w", encoding="utf-8") as fh:
         json.dump(state, fh, indent=2, sort_keys=True)
     os.replace(tmp, state_path(codex_home))
-
-
-def prune_backups(path, keep):
-    """Keep the newest `keep` .bak-* files beside the catalog.
-
-    The 5 minute timer rewrites the catalog all day and every write leaves a
-    timestamped backup, so without a bound they pile up forever. `keep < 0`
-    keeps everything.
-    """
-    if keep < 0:
-        return []
-    directory = os.path.dirname(path) or "."
-    base = os.path.basename(path) + ".bak-"
-    found = []
-    try:
-        names = os.listdir(directory)
-    except OSError:
-        return []
-    for name in names:
-        if name.startswith(base):
-            full = os.path.join(directory, name)
-            try:
-                found.append((os.path.getmtime(full), full))
-            except OSError:
-                continue
-    found.sort(reverse=True)
-    removed = []
-    for _mtime, full in found[keep:]:
-        try:
-            os.unlink(full)
-            removed.append(full)
-        except OSError:
-            continue
-    return removed
 
 
 # Every writer in this chain serialises the catalog its own way: catalog_sort.py

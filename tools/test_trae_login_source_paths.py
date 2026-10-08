@@ -78,10 +78,19 @@ class TraeLoginSourcePathTest(unittest.TestCase):
         self.addCleanup(cache.stop)
         # app_support_dirs("Trae") is the only thing the bridge asks of _platform,
         # so redirecting it redirects every desktop candidate.
+        # app_data_containers() is the other one: storage_candidates() unions
+        # it with the patched root and filters by exists(), so leaving the
+        # real ~/Library/Application Support in play lets a genuine install
+        # on this machine leak the fixture's assertion (the "..." case is
+        # about a path, not about which machine produced it).
         patcher = mock.patch.object(tb._platform, "app_support_dirs",
                                      lambda *parts: [os.path.join(self.root, "Trae")])
         patcher.start()
         self.addCleanup(patcher.stop)
+        containers = mock.patch.object(tb._platform, "app_data_containers",
+                                       lambda: [self.root])
+        containers.start()
+        self.addCleanup(containers.stop)
 
     def test_app_support_root_is_not_inside_a_trae_directory(self):
         root = tb.app_support_root()

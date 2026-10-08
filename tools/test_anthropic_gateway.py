@@ -396,9 +396,15 @@ def test_alias_targets_are_models_catalog_sort_ranks_important():
 
 def test_resolve_unknown_claude_slot_lands_on_the_harbor(monkeypatch, fleet_catalog):
     monkeypatch.setattr(gw, "route_alive", lambda route, timeout=1.0: True)
+    # the harbor is a *direct* upstream, so without its key route_for() answers
+    # None and the fallback loop would pick whichever row happens to be live
+    # -- that is a different assertion, not this one
+    monkeypatch.setattr(gw, "fleet_env",
+                        lambda path=None: {"STEPFUN_PLAN_API_KEY": "sk-test"})
     _write_catalog(fleet_catalog, _FALLBACK_SLUGS)
-    slug, _note = gw.resolve("claude-sonnet-9-2030")
+    slug, _note = gw.resolve("claude-sonnet-unknown-slot-probe")
     assert slug == gw.HARBOR
+    assert _note.startswith("alias of %s" % gw.HARBOR)
 
 
 def test_resolve_refuses_an_unknown_model(fleet_catalog):

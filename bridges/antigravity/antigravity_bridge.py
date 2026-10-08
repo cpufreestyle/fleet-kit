@@ -127,68 +127,13 @@ FALLBACK_FLOOR = float(os.environ.get('ANTIGRAVITY_FALLBACK_FLOOR') or '1.0')
 
 # Same rule as the gemini bridge: urlopen() gives every address getaddrinfo()
 # returns the full timeout (cloudcode-pa.googleapis.com resolves to 16), so a
-# blackholed address family turns one 180s timeout into 16 of them. Cap each
-# connect attempt at the time left on this request's deadline. Thread-local so
-# concurrent requests under ThreadingHTTPServer stay independent.
-_tls = threading.local()
-_real_create_connection = socket.create_connection
-
-
-def _arm_deadline(when):
-    _tls.deadline = when
-
-
-def _disarm_deadline():
-    _tls.deadline = None
-
-
-def _budgeted_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
-                                source_address=None, **kwargs):
-    """socket.create_connection that charges every address to the deadline.
-
-    The stdlib hands each address getaddrinfo() returns the same timeout, so
-    one blocked urlopen() costs N x timeout -- and cloudcode-pa.googleapis.com
-    resolves to 16 of them (8 IPv6 first). Measured 2026-09-29 behind this VPN:
-    a 20s timeout cost 40s on oauth2.googleapis.com's two addresses, which is
-    how a 60s CHAT_BUDGET still produced a 90s request. Walk the addresses here
-    and cap each attempt at the time that is actually left, so the total -- not
-    just the first connect -- stays inside the budget.
-    """
-    deadline = getattr(_tls, 'deadline', None)
-    if deadline is None:
-        return _real_create_connection(address, timeout, source_address, **kwargs)
-    host, port = address[:2]
-    try:
-        infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
-    except OSError:
-        infos = []
-    requested = None if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
-    last = None
-    for af, socktype, proto, _canon, sa in infos:
-        left = deadline - time.time()
-        if left <= 0:
-            last = OSError('request budget exhausted')
-            break
-        sock = None
-        try:
-            sock = socket.socket(af, socktype, proto)
-            sock.settimeout(left if requested is None else min(requested, left))
-            if source_address:
-                sock.bind(source_address)
-            sock.connect(sa)
-            return sock
-        except OSError as exc:
-            if sock is not None:
-                sock.close()
-            last = exc
-    if last is not None:
-        raise last
-    # getaddrinfo itself failed; resolution surfaces immediately, so let the
-    # stdlib raise the familiar error.
-    return _real_create_connection(address, timeout, source_address, **kwargs)
-
-
-socket.create_connection = _budgeted_create_connection
+# Every outbound connect is charged to the request budget, so a black-holed
+# address family cannot turn one 180s timeout into sixteen of them (see
+# _basehttp for the measurement). Thread-local, so concurrent requests under
+# ThreadingHTTPServer stay independent.
+_arm_deadline = _basehttp.arm_deadline
+_disarm_deadline = _basehttp.disarm_deadline
+_basehttp.install_budgeted_connect()
 
 
 # 上游代理开关：与 gemini 桥同一用意。urllib 默认吃 macOS 系统代理，而本机

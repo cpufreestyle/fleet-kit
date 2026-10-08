@@ -70,7 +70,7 @@ except Exception:                                        # pragma: no cover
 
 NODE_ORDER = ("workbuddy", "workbuddy-gpt", "xhx", "zcode", "qoder", "codely",
               "trae", "lingxi", "cline", "qwen", "gemini", "catpaw",
-              "antigravity", "stepfun", "tokendance",
+              "antigravity", "doubao", "stepfun", "tokendance",
               "kimi-code", "minimax")
 
 VENDORS = {
@@ -91,6 +91,7 @@ VENDORS = {
     "tokendance": "TokenDance 词元跳动（ocx 原生）",
     "kimi-code": "月之暗面 Kimi Code（coding 套餐）",
     "minimax": "MiniMax（编程套餐 / Agent）",
+    "doubao": "字节跳动豆包 Doubao（网页版免费额度）",
 }
 
 # Which upstream facts each bridge reports, and where. The bridges disagree on

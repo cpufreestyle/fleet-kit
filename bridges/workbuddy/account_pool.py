@@ -2,28 +2,33 @@
 
 The pool owns copies of WorkBuddy session files under the bridge's ``auths``
 directory. It never writes to the official WorkBuddy login directory.
+
+The pool skeleton -- the state file, the lock, the cooldown bookkeeping, the
+primary/active/LRU order, mark_success/mark_failure and the summary rows --
+lives in ``_account_pool.py``, shared with xhx, plan_key_pool and gemini.
+What stays here is what only WorkBuddy has: the session-file shape, the
+forbidden official-login directories, and the uid masking the panel shows.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-import hashlib
 import json
 import os
-from pathlib import Path
-import subprocess
-import threading
-import time
+import sys
 from typing import Any, Callable
 
+# bridges/ 自己也带公共模块（_common），和上面几个共享模块同一个套路。
+_BRIDGES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)
+if _BRIDGES_DIR not in sys.path:
+    sys.path.insert(0, _BRIDGES_DIR)
 
-STATE_FILE_NAME = "pool-state.json"
+import _account_pool
+from _account_pool import STATE_FILE_NAME, account_ref, atomic_json, iso_timestamp
+
 ACCOUNT_GLOB = "workbuddy-*.json"
 
-
-def _account_ref(uid: str) -> str:
-    return hashlib.sha256(uid.encode("utf-8")).hexdigest()[:16]
+#: uid -> the pool's stable 16-hex ref (the file name and the state key)
+_account_ref = account_ref
 
 
 def _mask_uid(uid: object) -> str:
@@ -35,142 +40,63 @@ def _mask_uid(uid: object) -> str:
     return f"{text[:4]}••••{text[-4:]}"
 
 
-def _iso_timestamp(value: float | int | None) -> str | None:
-    if not value:
-        return None
-    return datetime.fromtimestamp(float(value), timezone.utc).astimezone().isoformat(timespec="seconds")
+class AccountCandidate(_account_pool.AccountCandidate):
+    """One pickable WorkBuddy session, with the manager a request goes through."""
+
+    def __init__(self, ref: str, manager: Any) -> None:
+        super().__init__(ref)
+        self.manager = manager
 
 
-def harden_private_path(path: Path) -> None:
-    """Restrict a credential directory/file to the current user and SYSTEM."""
-    if os.name != "nt":
-        os.chmod(path, 0o700 if path.is_dir() else 0o600)
-        return
-    try:
-        identity = _current_identity()
-        own_rule = f"{identity}:(OI)(CI)F" if path.is_dir() else f"{identity}:(F)"
-        system_rule = "*S-1-5-18:(OI)(CI)F" if path.is_dir() else "*S-1-5-18:(F)"
-        result = subprocess.run(
-            [_system_tool("icacls.exe"), str(path), "/inheritance:r", "/grant:r",
-             own_rule, system_rule],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=15, check=False,
-        )
-        if result.returncode != 0:
-            raise OSError(result.stderr.strip() or result.stdout.strip() or "icacls failed")
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise OSError(f"无法保护本地凭据权限：{path}") from exc
-
-
-def _system_tool(name: str) -> str:
-    """Resolve a System32 tool by absolute path.
-
-    Under Task Scheduler / cmd.exe the PATH may hold MSYS-style entries that
-    CreateProcess cannot resolve, and the bare name then fails with WinError 2.
-    """
-    root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
-    candidate = os.path.join(root, "System32", name)
-    return candidate if os.path.exists(candidate) else name
-
-
-def _current_identity() -> str:
-    """Current account as an SID when possible, else the bare account name.
-
-    The SID keeps non-ASCII account/domain names intact: a console-decoded
-    name can turn into mojibake that icacls cannot resolve.
-    """
-    whoami = _system_tool("whoami.exe")
-    try:
-        done = subprocess.run(
-            [whoami, "/user"], capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=15, check=False,
-        )
-        for token in reversed((done.stdout or "").split()):
-            if token.upper().startswith("S-1-"):
-                # icacls grant rules need the * prefix to read a raw SID
-                return f"*{token}"
-    except (OSError, subprocess.SubprocessError):
-        pass
-    identity = subprocess.check_output(
-        [whoami], text=True, encoding="utf-8", errors="replace",
-    ).strip()
-    if not identity:
-        raise OSError("无法确定当前 Windows 用户")
-    return identity
-
-
-def _atomic_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    harden_private_path(path.parent)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
-    os.replace(tmp, path)
-    harden_private_path(path)
-
-
-@dataclass(frozen=True)
-class AccountCandidate:
-    ref: str
-    manager: Any
-
-
-class AccountPool:
+class AccountPool(_account_pool.AccountPool):
     """Persisted preferred-account pool with bounded cooldown state."""
 
     def __init__(
         self,
-        auth_dir: Path,
-        manager_factory: Callable[[Path], Any],
-        official_finder: Callable[[], Path | None],
+        auth_dir,
+        manager_factory: Callable[[Any], Any],
+        official_finder: Callable[[], Any],
         *,
         auto_import: bool = True,
-        forbidden_dirs: list[Path] | None = None,
+        forbidden_dirs: list | None = None,
     ) -> None:
-        self.auth_dir = auth_dir.resolve()
+        self.auth_dir = os.path.realpath(str(auth_dir))
         for forbidden in forbidden_dirs or []:
-            resolved = forbidden.resolve()
-            if self.auth_dir == resolved or resolved in self.auth_dir.parents:
+            resolved = os.path.realpath(str(forbidden))
+            if self.auth_dir == resolved or resolved in self.auth_dir.split(os.sep):
                 raise ValueError("Bridge auths 目录不能是官方 WorkBuddy 登录目录或其子目录")
-        self.state_path = self.auth_dir / STATE_FILE_NAME
         self._manager_factory = manager_factory
         self._official_finder = official_finder
-        self._lock = threading.RLock()
-        self._managers: dict[str, Any] = {}
-        self._paths: dict[str, Path] = {}
-        self._state: dict = {"primary_ref": None, "active_ref": None, "accounts": {}}
-        self.auth_dir.mkdir(parents=True, exist_ok=True)
-        harden_private_path(self.auth_dir)
-        self._load_state()
-        self.reload()
-        if auto_import and not self._managers:
+        super().__init__(self.auth_dir)
+        if auto_import and not self._rows:
             try:
                 self.import_current()
             except (OSError, ValueError, RuntimeError):
                 pass
 
-    def _load_state(self) -> None:
-        try:
-            data = json.loads(self.state_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                accounts = data.get("accounts")
-                self._state = {
-                    "primary_ref": data.get("primary_ref"),
-                    "active_ref": data.get("active_ref"),
-                    "accounts": accounts if isinstance(accounts, dict) else {},
-                }
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return
+    # ---------------- scanning ----------------
 
-    def _save_locked(self) -> None:
-        _atomic_json(self.state_path, self._state)
+    def scan(self) -> list:
+        """Every session file in auths/, as [{ref, session, path, name}]."""
+        out = []
+        for path in sorted(self.auth_dir.glob(ACCOUNT_GLOB)):
+            try:
+                session = json.loads(path.read_text(encoding="utf-8"))
+                uid, _, _ = self._session_identity(session)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+            out.append({"ref": _account_ref(uid), "path": path,
+                        "name": _mask_uid(uid)})
+        return out
+
+    @property
+    def _managers(self) -> dict:
+        """ref -> the manager a request is served through (the session file)."""
+        return {ref: row["path"] for ref, row in self._rows.items()}
+
+    @property
+    def _paths(self) -> dict:
+        return {ref: row["path"] for ref, row in self._rows.items()}
 
     @staticmethod
     def _session_identity(session: dict) -> tuple[str, str, str]:
@@ -185,39 +111,14 @@ class AccountPool:
         enterprise = str(account.get("enterpriseName") or "").strip()
         return uid, name, enterprise
 
-    def reload(self) -> None:
-        with self._lock:
-            managers: dict[str, Any] = {}
-            paths: dict[str, Path] = {}
-            for path in sorted(self.auth_dir.glob(ACCOUNT_GLOB)):
-                try:
-                    session = json.loads(path.read_text(encoding="utf-8"))
-                    uid, _, _ = self._session_identity(session)
-                    ref = _account_ref(uid)
-                    managers[ref] = self._manager_factory(path)
-                    paths[ref] = path
-                    self._state["accounts"].setdefault(ref, {})
-                except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                    continue
-            self._managers = managers
-            self._paths = paths
-            valid = set(managers)
-            self._state["accounts"] = {
-                ref: value for ref, value in self._state["accounts"].items()
-                if ref in valid and isinstance(value, dict)
-            }
-            if self._state.get("primary_ref") not in valid:
-                self._state["primary_ref"] = next(iter(managers), None)
-            if self._state.get("active_ref") not in valid:
-                self._state["active_ref"] = None
-            self._save_locked()
+    # ---------------- import ----------------
 
     def import_current(self) -> dict:
         source = self._official_finder()
-        if source is None or not source.is_file():
+        if source is None or not os.path.isfile(str(source)):
             raise RuntimeError("未找到 WorkBuddy 当前登录凭据，请先在官方客户端登录")
         try:
-            session = json.loads(source.read_text(encoding="utf-8"))
+            session = json.loads(open(str(source), encoding="utf-8").read())
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             raise RuntimeError("无法读取 WorkBuddy 当前登录凭据") from exc
         return self.add_session(session)
@@ -227,10 +128,10 @@ class AccountPool:
         uid, _, _ = self._session_identity(session)
         ref = _account_ref(uid)
         destination = self.auth_dir / f"workbuddy-{ref}.json"
-        _atomic_json(destination, session)
+        atomic_json(destination, session)
         self.reload()
         with self._lock:
-            state = self._state["accounts"].setdefault(ref, {})
+            state = self._state_of(ref)
             state.update({"cooldown_until": 0, "reason": "", "failures": 0})
             if not self._state.get("primary_ref"):
                 self._state["primary_ref"] = ref
@@ -245,18 +146,7 @@ class AccountPool:
                 raise KeyError(ref)
             return manager
 
-    def get_account(self, ref: str) -> dict:
-        for item in self.status():
-            if item["ref"] == ref:
-                return item
-        raise KeyError(ref)
-
-    def set_primary(self, ref: str) -> None:
-        with self._lock:
-            if ref not in self._managers:
-                raise KeyError(ref)
-            self._state["primary_ref"] = ref
-            self._save_locked()
+    # ---------------- removal ----------------
 
     def remove(self, ref: str) -> None:
         with self._lock:
@@ -265,122 +155,21 @@ class AccountPool:
                 raise KeyError(ref)
             resolved = path.resolve()
             if resolved.parent != self.auth_dir:
-                raise RuntimeError("账号文件不在本地 auths 目录")
+                raise RuntimeError("account file is not inside the local auths dir")
             resolved.unlink(missing_ok=True)
-            self._state["accounts"].pop(ref, None)
-            if self._state.get("primary_ref") == ref:
-                self._state["primary_ref"] = None
-            if self._state.get("active_ref") == ref:
-                self._state["active_ref"] = None
             self.reload()
 
+    # ---------------- selection ----------------
+
     def candidates(self) -> list[AccountCandidate]:
-        now = time.time()
-        with self._lock:
-            healthy = [
-                ref for ref in self._managers
-                if float(self._state["accounts"].get(ref, {}).get("cooldown_until") or 0) <= now
-            ]
-            primary = self._state.get("primary_ref")
-            active = self._state.get("active_ref")
+        return [AccountCandidate(ref, self._managers[ref])
+                for ref in self._ready_refs()]
 
-            def rank(ref: str) -> tuple:
-                state = self._state["accounts"].get(ref, {})
-                preferred = 0 if ref == primary else 1 if ref == active else 2
-                return preferred, float(state.get("last_used") or 0), ref
+    # ---------------- views ----------------
 
-            if healthy:
-                return [AccountCandidate(ref, self._managers[ref]) for ref in sorted(healthy, key=rank)]
-
-            # 全部冷却时不要直接判池不可用：单账号池被一次 429（60s）或 5xx（30s）
-            # 打进冷却后，整个舰队会在冷却期内对每条请求回
-            # "all WorkBuddy accounts are cooling down"，真实上游原因被吞掉。
-            # 退化成按剩余冷却升序再试一次：冷却已过就直接成功，未过则由上游
-            # 返回真实 429/402，Codex 侧拿到的是可判断的错误而不是假性 503。
-            def cooldown_rank(ref: str) -> tuple:
-                state = self._state["accounts"].get(ref, {})
-                return float(state.get("cooldown_until") or 0), int(state.get("failures") or 0), ref
-
-            return [AccountCandidate(ref, self._managers[ref])
-                    for ref in sorted(self._managers, key=cooldown_rank)]
-
-    def mark_success(self, ref: str) -> None:
-        with self._lock:
-            if ref not in self._managers:
-                return
-            state = self._state["accounts"].setdefault(ref, {})
-            state.update({
-                "cooldown_until": 0,
-                "reason": "",
-                "failures": 0,
-                "last_used": time.time(),
-            })
-            self._state["active_ref"] = ref
-            self._save_locked()
-
-    def mark_failure(self, ref: str, reason: str, cooldown_seconds: int) -> None:
-        with self._lock:
-            if ref not in self._managers:
-                return
-            state = self._state["accounts"].setdefault(ref, {})
-            state["reason"] = str(reason)[:160]
-            state["failures"] = int(state.get("failures") or 0) + 1
-            state["cooldown_until"] = time.time() + max(1, int(cooldown_seconds))
-            if self._state.get("active_ref") == ref:
-                self._state["active_ref"] = None
-            self._save_locked()
-
-    def status(self) -> list[dict]:
-        now = time.time()
-        with self._lock:
-            entries = list(self._managers.items())
-            state_snapshot = json.loads(json.dumps(self._state))
-        result: list[dict] = []
-        for ref, manager in entries:
-            state = state_snapshot["accounts"].get(ref, {})
-            cooldown_until = float(state.get("cooldown_until") or 0)
-            try:
-                summary = manager.summary()
-                token_expired = bool(summary.get("token_expired"))
-                item_state = "cooling" if cooldown_until > now else "expired" if token_expired else "ready"
-                result.append({
-                    "ref": ref,
-                    "name": summary.get("nickname") or "WorkBuddy account",
-                    "uid": _mask_uid(summary.get("uid")),
-                    "enterprise_name": summary.get("enterpriseName") or "",
-                    "state": item_state,
-                    "primary": ref == state_snapshot.get("primary_ref"),
-                    "active": ref == state_snapshot.get("active_ref"),
-                    "reason": state.get("reason") or "",
-                    "cooldown_until": _iso_timestamp(cooldown_until),
-                    "last_used": _iso_timestamp(state.get("last_used")),
-                    "token_expires_at": _iso_timestamp(
-                        float(summary.get("token_expires_at") or 0) / 1000
-                    ),
-                })
-            except Exception:
-                result.append({
-                    "ref": ref,
-                    "name": "WorkBuddy account",
-                    "uid": "••••",
-                    "enterprise_name": "",
-                    "state": "error",
-                    "primary": ref == state_snapshot.get("primary_ref"),
-                    "active": ref == state_snapshot.get("active_ref"),
-                    "reason": "凭据无法读取",
-                    "cooldown_until": _iso_timestamp(cooldown_until),
-                    "last_used": _iso_timestamp(state.get("last_used")),
-                    "token_expires_at": None,
-                })
-        result.sort(key=lambda item: (not item["primary"], not item["active"], item["name"], item["ref"]))
-        return result
-
-    def summary(self) -> dict:
-        accounts = self.status()
-        return {
-            "accounts": accounts,
-            "count": len(accounts),
-            "ready": sum(item["state"] == "ready" for item in accounts),
-            "cooling": sum(item["state"] == "cooling" for item in accounts),
-            "auth_dir": str(self.auth_dir),
-        }
+    def account_row(self, row: dict, state: dict) -> dict:
+        """The base row plus the uid and enterprise the panel shows."""
+        entry = super().account_row(row, state)
+        entry.update({"uid": row.get("name") or "",
+                      "enterprise": state.get("enterprise") or ""})
+        return entry

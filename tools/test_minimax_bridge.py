@@ -312,9 +312,12 @@ def test_a_second_key_can_be_added_while_the_service_is_running(monkeypatch, tmp
 def test_points_reach_health_for_the_panel(monkeypatch, tmp_path):
     module = _load(monkeypatch, tmp_path, MINIMAX_API_KEY="sk-mm-real")
     read = []
-    module.POOL._read_points = lambda key: (read.append(key) or {
-        "points": 6420, "unit": "credits", "plan": "Token Plan",
-        "detail": "remains=6420", "error": ""})
+    def _reader(row):
+        read.append(row["key"])
+        return {"points": 6420, "unit": "credits", "plan": "Token Plan",
+                "detail": "remains=6420", "error": ""}
+
+    module.POOL.set_points_reader(_reader)
     _install_upstream(module, monkeypatch, status=200)
 
     with _client(module) as client:

@@ -33,6 +33,7 @@ PORT_OFFSETS = {
     "lingxi": 5, "xhx": 6, "gemini": 7, "catpaw": 8, "antigravity": 10,
     "qwen": 11, "cline": 12, "zcode": 13,
     "kimi-code": 15, "minimax": 16,
+    "doubao": 18,
 }
 # label suffixes as installed: com.local.<name>2codex
 LABEL_SUFFIX = {
@@ -42,6 +43,7 @@ LABEL_SUFFIX = {
     "catpaw": "catpaw2codex", "antigravity": "antigravity2codex",
     "qwen": "qwen2codex", "cline": "cline2codex", "zcode": "zcode2codex",
     "kimi-code": "kimi2codex", "minimax": "minimax2codex",
+    "doubao": "doubao2codex",
 }
 
 
@@ -124,11 +126,44 @@ def label_prefix():
     return os.environ.get("FLEET_LABEL_PREFIX", "com.local")
 
 
+def fleet_home():
+    """The runtime root, when neither FLEET_HOME nor FLEET_ENV_FILE names one.
+
+    deploy.sh sources fleet.env, so every process it starts inherits the right
+    FLEET_HOME. A process started any other way (a hand-run tool, a test, a
+    stray launchd job) inherited only the ~/FleetKit/runtime guess, and on a
+    machine whose install lives somewhere else that guess silently read an
+    empty fleet.env: STEPFUN_PLAN_API_KEY came back "" , route_for(HARBOR)
+    answered None and the gateway reported every provider fused shut.
+
+    The kit ships inside the runtime tree as <root>/kit, so the directory this
+    file lives in is a better answer than a guess: it works wherever the
+    deploy.sh --home pointed, without the caller knowing.
+    """
+    override = os.environ.get("FLEET_HOME")
+    if override:
+        return _native(override)
+    here = os.path.dirname(os.path.abspath(__file__))
+    # this file ships twice, in the same position in both trees: <kit>/tools
+    # inside the git checkout and <runtime>/tools next to the running fleet.
+    # So one directory up is right for the runtime copy, and one up plus
+    # "runtime" is right for the kit copy -- both are tried, and a layout with
+    # neither falls through to the documented home.
+    checkout = os.path.dirname(os.path.dirname(here))
+    for candidate in (
+        checkout,
+        os.path.join(checkout, "runtime"),
+        os.path.join(os.path.expanduser("~"), "FleetKit", "runtime"),
+        os.path.join(os.path.expanduser("~"), "fleet"),
+    ):
+        if os.path.isfile(os.path.join(candidate, "fleet.env")):
+            return _native(candidate)
+    return _native(os.path.join(os.path.expanduser("~"), "FleetKit", "runtime"))
+
+
 def fleet_env_path():
-    home = os.environ.get("FLEET_HOME") or os.path.join(
-        os.path.expanduser("~"), "FleetKit", "runtime")
     return os.environ.get("FLEET_ENV_FILE",
-                          os.path.join(_native(home), "fleet.env"))
+                          os.path.join(fleet_home(), "fleet.env"))
 
 
 def load_env(path=None):

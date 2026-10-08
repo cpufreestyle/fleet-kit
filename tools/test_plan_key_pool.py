@@ -116,7 +116,7 @@ class KeyPoolTest(unittest.TestCase):
         # and an account whose file was moved out from under the pool is not
         # deleted: remove() refuses a path it does not own
         added = pool.add("sk-second", source="admin")
-        object.__setattr__(pool._accounts[added["ref"]], "path", elsewhere / "moved.json")
+        pool._rows[added["ref"]]["path"] = elsewhere / "moved.json"
         with self.assertRaises(RuntimeError):
             pool.remove(added["ref"])
         # refused means nothing was unlinked: both files are still there
@@ -248,8 +248,8 @@ class KeyPoolTest(unittest.TestCase):
     def test_points_come_back_through_the_injected_reader(self):
         seen = []
 
-        def reader(key):
-            seen.append(key)
+        def reader(row):
+            seen.append(row["key"])
             return {"points": 4200, "unit": "credits", "plan": "Kimi Code",
                     "detail": "remains=4200", "error": ""}
 
@@ -266,7 +266,7 @@ class KeyPoolTest(unittest.TestCase):
         self.assertEqual(seen, ["sk-first"])
 
     def test_a_reader_that_cannot_answer_records_why_not(self):
-        def reader(key):
+        def reader(row):
             return {"points": None, "unit": "", "plan": "",
                     "detail": "GET /remains -> HTTP 401", "error": "401: needs a plan"}
 
@@ -277,7 +277,7 @@ class KeyPoolTest(unittest.TestCase):
         self.assertEqual(item["points_error"], "401: needs a plan")
 
     def test_a_reader_that_blows_up_does_not_take_the_pool_down(self):
-        def reader(key):
+        def reader(row):
             raise OSError("no route to host")
 
         pool = self.pool(reader=reader)

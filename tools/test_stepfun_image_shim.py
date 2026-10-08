@@ -104,7 +104,7 @@ class _Shim:
         config = shim.Config("127.0.0.1", 0,
                              upstream_url or "http://127.0.0.1:%d"
                              % upstream_port,
-                             max_images, models,
+                             max_images, models, fleet_upstream="",
                              watchdog_strikes=watchdog_strikes,
                              watchdog_interval=watchdog_interval,
                              watchdog_timeout=watchdog_timeout)

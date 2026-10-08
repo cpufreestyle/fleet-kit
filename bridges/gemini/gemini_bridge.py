@@ -171,74 +171,13 @@ BRIDGE_KEY = os.environ.get('GEMINI2CODEX_KEY') or ''
 # urllib，不足以再变成一次完整超时——那正是 180s + 180s 的由来。
 FALLBACK_FLOOR = float(os.environ.get('GEMINI_FALLBACK_FLOOR') or '1.0')
 
-# urlopen() hands the same timeout to every address getaddrinfo() returns, and
-# cloudcode-pa.googleapis.com resolves to 16 of them (8 IPv6 first). Measured
-# 2026-09-29 behind this VPN: a 20s timeout cost 40s on oauth2.googleapis.com's
-# two addresses, so a 60s CHAT_BUDGET could turn into 16 x 60s before IPv4 was
-# even tried. Every connect attempt is therefore capped at the time left on the
-# current request's deadline, which bounds the whole call. The deadline is
-# thread-local: each request runs in its own thread under ThreadingHTTPServer,
-# so concurrent requests cannot clobber one another. _tls itself is declared next
-# to the per-request state below, because rotating accounts has to reset that
-# state per request as well.
-_real_create_connection = socket.create_connection
-
-
-def _arm_deadline(when):
-    _tls.deadline = when
-
-
-def _disarm_deadline():
-    _tls.deadline = None
-
-
-def _budgeted_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
-                                source_address=None, **kwargs):
-    """socket.create_connection that charges every address to the deadline.
-
-    The stdlib hands each address getaddrinfo() returns the same timeout, so
-    one blocked urlopen() costs N x timeout -- and cloudcode-pa.googleapis.com
-    resolves to 16 of them (8 IPv6 first). Measured 2026-09-29 behind this VPN:
-    a 20s timeout cost 40s on oauth2.googleapis.com's two addresses, which is
-    how a 60s CHAT_BUDGET still produced a 90s request. Walk the addresses here
-    and cap each attempt at the time that is actually left, so the total -- not
-    just the first connect -- stays inside the budget.
-    """
-    deadline = getattr(_tls, 'deadline', None)
-    if deadline is None:
-        return _real_create_connection(address, timeout, source_address, **kwargs)
-    host, port = address[:2]
-    try:
-        infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
-    except OSError:
-        infos = []
-    requested = None if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
-    last = None
-    for af, socktype, proto, _canon, sa in infos:
-        left = deadline - time.time()
-        if left <= 0:
-            last = OSError('request budget exhausted')
-            break
-        sock = None
-        try:
-            sock = socket.socket(af, socktype, proto)
-            sock.settimeout(left if requested is None else min(requested, left))
-            if source_address:
-                sock.bind(source_address)
-            sock.connect(sa)
-            return sock
-        except OSError as exc:
-            if sock is not None:
-                sock.close()
-            last = exc
-    if last is not None:
-        raise last
-    # getaddrinfo itself failed; resolution surfaces immediately, so let the
-    # stdlib raise the familiar error.
-    return _real_create_connection(address, timeout, source_address, **kwargs)
-
-
-socket.create_connection = _budgeted_create_connection
+# Every outbound connect is charged to the request budget, so a black-holed
+# address family cannot turn one 180s timeout into sixteen of them (see
+# _basehttp for the measurement). Thread-local, so concurrent requests under
+# ThreadingHTTPServer stay independent.
+_arm_deadline = _basehttp.arm_deadline
+_disarm_deadline = _basehttp.disarm_deadline
+_basehttp.install_budgeted_connect()
 
 
 def _left(deadline, default):

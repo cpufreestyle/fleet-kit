@@ -43,6 +43,14 @@ def _load(name, rel):
 gemini = _load("gemini_bridge", os.path.join("gemini", "gemini_bridge.py"))
 antigravity = _load("antigravity_bridge",
                     os.path.join("antigravity", "antigravity_bridge.py"))
+# both bridges got their deadline machinery from _basehttp, so the tests pin
+# the shared module through the names the bridges re-exported
+basehttp = _load("_basehttp", os.path.join("_basehttp.py"))
+for _mod in (gemini, antigravity):
+    _mod._budgeted_create_connection = basehttp._budgeted_create_connection
+    _mod._arm_deadline = basehttp.arm_deadline
+    _mod._disarm_deadline = basehttp.disarm_deadline
+    _mod._tls = basehttp._tls
 
 
 class _FakeClock:
@@ -464,7 +472,8 @@ def test_every_address_is_charged_to_the_deadline(which, monkeypatch):
     """
     mod = gemini if which == "gemini" else antigravity
     clock = _FakeClock()
-    monkeypatch.setattr(mod, "time", clock)
+    # the deadline lives in _basehttp now, so the fake clock goes there too
+    monkeypatch.setattr(basehttp, "time", clock)
     blackhole = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.255.255.1", 443)),
                  (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.255.255.2", 443))]
     seen = []
@@ -524,11 +533,11 @@ def test_without_a_deadline_it_delegates_to_the_stdlib():
     listener.listen(1)
     port = listener.getsockname()[1]
     try:
-        sock = gemini._budgeted_create_connection(("127.0.0.1", port), 5.0)
+        sock = basehttp._budgeted_create_connection(("127.0.0.1", port), 5.0)
     finally:
         listener.close()
     sock.close()
-    assert getattr(gemini._tls, "deadline", None) is None
+    assert getattr(basehttp._tls, "deadline", None) is None
 
 
 def test_antigravity_the_deadline_is_disarmed_when_call_model_returns(monkeypatch):
