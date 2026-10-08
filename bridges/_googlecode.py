@@ -84,3 +84,66 @@ def write_json_file(path: str, payload: dict) -> None:
     with open(tmp, "w") as handle:
         json.dump(payload, handle, indent=2)
     os.replace(tmp, path)
+
+
+def upstream_proxy_info(env_name: str) -> dict:
+    """The exit a bridge is using: {'proxy': url|None, 'source': ...}.
+
+    urllib eats the macOS system proxy by default, and the 2026-10-02 system
+    proxy on this host has no international route: every google domain comes
+    back 000 / ProxyError 503 whether or not the account is verified. Setting
+    the bridge's own <NAME>_UPSTREAM_PROXY names an exit explicitly; unset, the
+    system proxy (or none) carries on as before. /health reports the result so
+    a dead bridge says which exit it was trying.
+    """
+    import urllib.request
+
+    explicit = (os.environ.get(env_name) or "").strip()
+    if explicit:
+        return {"proxy": explicit, "source": "env"}
+    try:
+        env_proxies = urllib.request.getproxies() or {}
+    except Exception:
+        env_proxies = {}
+    system = env_proxies.get("https") or env_proxies.get("http") or ""
+    return {"proxy": system or None, "source": "system" if system else "direct"}
+
+
+def upstream_urlopen(req, timeout: float, info: dict):
+    """Open req through the exit described by upstream_proxy_info().
+
+    With an explicit exit the opener is built per call, because ProxyHandler is
+    what picks the exit up and a module-level opener would pin the first one.
+    """
+    import urllib.request
+
+    if info["source"] == "env":
+        handler = urllib.request.ProxyHandler({"http": info["proxy"],
+                                               "https": info["proxy"]})
+        return urllib.request.build_opener(handler).open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def to_contents(msgs):
+    """Code Assist `contents` plus the system instruction, from OpenAI messages.
+
+    Gemini and Antigravity take the same chat shape and both flatten a
+    multi-part content list down to text, pull `system` out into a separate
+    instruction, and pad an empty conversation with a ping so the upstream
+    never sees a contents-less request.
+    """
+    contents, sys_parts = [], []
+    for m in msgs:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(str(c.get("text", "")) for c in content if isinstance(c, dict))
+        text = str(content)
+        if role == "system":
+            sys_parts.append({"text": text})
+            continue
+        gr = "model" if role == "assistant" else "user"
+        contents.append({"role": gr, "parts": [{"text": text}]})
+    if not contents:
+        contents = [{"role": "user", "parts": [{"text": "ping"}]}]
+    return contents, ({"parts": sys_parts} if sys_parts else None)

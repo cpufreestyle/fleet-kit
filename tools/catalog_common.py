@@ -84,3 +84,19 @@ def prune_backups(path: str, keep: int):
         except OSError:
             continue
     return removed
+
+
+def atomic_write_text(path: str, text: str, suffix: str) -> None:
+    """Replace a text file in one step so no reader sees a partial config.
+
+    Codex reads config.toml on every invocation, so a truncated config is a
+    broken Codex rather than a merely un-pinned one: write to a sibling temp
+    file, fsync it, then rename over the target. `suffix` names the temp file
+    so a crash leaves something identifiable behind.
+    """
+    tmp = "%s.%s" % (path, suffix)
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)

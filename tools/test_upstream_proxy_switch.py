@@ -10,7 +10,6 @@ GEMINI_UPSTREAM_PROXY / ANTIGRAVITY_UPSTREAM_PROXY now pin an explicit exit and
 /health reports the effective one. These tests pin that contract.
 """
 
-import importlib.util
 import os
 import sys
 
@@ -19,13 +18,9 @@ import pytest
 BRIDGES = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "bridges"))
 sys.path.insert(0, BRIDGES)
 
+from test_bridge_loader import load_bridge as _load
 
-def _load(name, rel):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(BRIDGES, rel))
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+
 
 
 class _Probe:

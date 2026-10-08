@@ -30,13 +30,9 @@ BRIDGES = os.path.abspath(os.path.join(HERE, os.pardir, 'bridges'))
 if BRIDGES not in sys.path:
     sys.path.insert(0, BRIDGES)
 
+from test_bridge_loader import load_bridge as _load
 
-def _load(name, rel):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(BRIDGES, rel))
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+
 
 
 gemini = _load('vali_gemini_bridge', os.path.join('gemini', 'gemini_bridge.py'))

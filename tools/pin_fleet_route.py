@@ -43,6 +43,9 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from catalog_common import atomic_write_text  # noqa: E402  (same-directory import)
+
 FLEET_PROVIDER = "opencodex"
 GATEWAY = os.environ.get("FLEET_GATEWAY") or "http://127.0.0.1:10100/v1"
 CATALOG_NAME = os.environ.get("FLEET_CATALOG_NAME") or "opencodex-catalog.json"
@@ -311,17 +314,7 @@ def rewrite(text, provider=FLEET_PROVIDER, catalog_path=CATALOG_NAME,
 
 
 def _atomic_write(path, text):
-    """Replace the file in one step so no reader sees a partial config.
-
-    Codex reads this file on every invocation, and a truncated config is a
-    broken Codex rather than a merely un-pinned one.
-    """
-    tmp = "%s.fleetroute.tmp" % path
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    return atomic_write_text(path, text, "fleetroute.tmp")
 
 
 def pin_once(path, codex_home=None, provider=FLEET_PROVIDER, gateway=GATEWAY,

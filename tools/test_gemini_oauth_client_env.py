@@ -13,7 +13,6 @@ order is the whole feature:
     because a stale pair costs one round trip, not the bridge.
 '''
 
-import importlib.util
 import itertools
 import json
 import os
@@ -22,6 +21,8 @@ import time
 
 BRIDGES = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, 'bridges'))
 sys.path.insert(0, BRIDGES)
+
+from test_bridge_loader import load_bridge as _load
 
 ENV_KEYS = ('GEMINI_OAUTH_CLIENT_ID', 'GEMINI_OAUTH_CLIENT_SECRET',
             'GEMINI_LEGACY_CLIENTS', 'GEMINI_LEGACY_CLIENT_ID',
@@ -33,14 +34,6 @@ DEAD_PAIR = ('681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleuserconte
 _counter = itertools.count()
 
 
-def _load(name, rel):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(BRIDGES, rel))
-    mod = importlib.util.module_from_spec(spec)
-    # Register before exec: dataclasses on 3.14 resolves cls.__module__ through
-    # sys.modules, so a module loaded by spec alone is not enough.
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def _bridge_with(env):

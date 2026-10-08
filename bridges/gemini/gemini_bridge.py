@@ -171,26 +171,11 @@ UPSTREAM_PROXY = 'GEMINI_UPSTREAM_PROXY'
 
 
 def proxy_info() -> dict:
-    """当前上游出口：{'proxy': url|None, 'source': 'env'|'system'|'direct'}。"""
-    explicit = (os.environ.get(UPSTREAM_PROXY) or '').strip()
-    if explicit:
-        return {'proxy': explicit, 'source': 'env'}
-    try:
-        env_proxies = urllib.request.getproxies() or {}
-    except Exception:
-        env_proxies = {}
-    system = env_proxies.get('https') or env_proxies.get('http') or ''
-    return {'proxy': system or None, 'source': 'system' if system else 'direct'}
+    return _googlecode.upstream_proxy_info(UPSTREAM_PROXY)
 
 
 def _urlopen(req, timeout):
-    """按 UPSTREAM_PROXY 走出口；未设置时与 urllib.request.urlopen 等价。"""
-    info = proxy_info()
-    if info['source'] == 'env':
-        handler = urllib.request.ProxyHandler({'http': info['proxy'],
-                                               'https': info['proxy']})
-        return urllib.request.build_opener(handler).open(req, timeout=timeout)
-    return urllib.request.urlopen(req, timeout=timeout)
+    return _googlecode.upstream_urlopen(req, timeout, proxy_info())
 
 
 def http_json(url, payload, headers=None, method='POST', timeout=90):
@@ -305,22 +290,7 @@ def load_code_assist(deadline=None):
     tier = j.get('currentTier') or {}
     _st()['tier'] = tier.get('id') or (tier.get('name') if isinstance(tier, dict) else None)
 
-def to_contents(msgs):
-    contents, sys_parts = [], []
-    for m in msgs:
-        role = m.get('role', 'user')
-        content = m.get('content', '')
-        if isinstance(content, list):
-            content = ' '.join(str(c.get('text', '')) for c in content if isinstance(c, dict))
-        text = str(content)
-        if role == 'system':
-            sys_parts.append({'text': text})
-            continue
-        gr = 'model' if role == 'assistant' else 'user'
-        contents.append({'role': gr, 'parts': [{'text': text}]})
-    if not contents:
-        contents = [{'role': 'user', 'parts': [{'text': 'ping'}]}]
-    return contents, ({'parts': sys_parts} if sys_parts else None)
+to_contents = _googlecode.to_contents
 
 def call_a(model, msgs, stream, timeout=180, deadline=None):
     at = get_access(deadline)

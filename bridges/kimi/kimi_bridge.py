@@ -142,18 +142,7 @@ def seed_keys():
     return pairs
 
 
-def plan_credits_module():
-    """plan_credits.py, imported from the fleet's tools/ directory.
-
-    It is stdlib-only (urllib) and already owns every Kimi quota endpoint,
-    auth shape and payload shape, so the bridge borrows it instead of keeping
-    a second copy that would drift the first time Kimi moves a route.
-    """
-    tools = Path(__file__).resolve().parents[2] / "tools"
-    if str(tools) not in sys.path:
-        sys.path.insert(0, str(tools))
-    import plan_credits
-    return plan_credits
+plan_credits_module = plan_key_pool.plan_credits_module
 
 
 def kimi_points(key: str) -> dict:
@@ -387,22 +376,7 @@ async def chat_completions(request: Request):
 
 # ---------------- 账号池管理 ----------------
 
-def _keys_from_payload(payload) -> list:
-    """[(key, source)] from an admin add body, JSON or bare text.
-
-    curl -d '{"key":"sk-..."}' is the documented shape, but so is
-    curl -d 'sk-a,sk-b' -- a second key is usually pasted straight from a
-    console, and rejecting that because of a missing brace is how a pool
-    stays at one account.
-    """
-    if isinstance(payload, dict):
-        keys = []
-        for value in [payload.get("key")] + list(payload.get("keys") or []):
-            keys += [part for part in str(value or "").replace(",", " ").split() if part]
-        return [(key, str(payload.get("source") or "admin")) for key in keys]
-    if isinstance(payload, str):
-        return [(key, "admin") for key in payload.replace(",", " ").split() if key]
-    return []
+_keys_from_payload = plan_key_pool.keys_from_payload
 
 
 @app.post("/admin/pool/add")

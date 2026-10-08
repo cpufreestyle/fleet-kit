@@ -738,18 +738,32 @@ def _load_route_model() -> str:
     return DEFAULT_ROUTE_MODEL
 
 
-def _save_route_model(model: str):
-    data = {}
-    try:
-        data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        data = {}
-    data["route_model"] = model
-    payload = json.dumps(data, ensure_ascii=False, indent=2)
-    tmp = SETTINGS_PATH.with_suffix(SETTINGS_PATH.suffix + ".tmp")
+def _save_setting(field: str, value: str):
+    """Set one key in bridge-settings.json, keeping every other key.
+
+    The admin endpoints that pick a model run in request threads, so the whole
+    read-modify-write sits under the settings lock -- reading outside it lets
+    two concurrent picks each start from the pre-write file, and the second
+    rename then drops the first model. The temp file is renamed over the
+    target in one step, so a crash never leaves a half-written settings file
+    for the next import to parse.
+    """
     with _SETTINGS_LOCK:
+        try:
+            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        data[field] = value
+        payload = json.dumps(data, ensure_ascii=False, indent=2)
+        tmp = SETTINGS_PATH.with_suffix(SETTINGS_PATH.suffix + ".tmp")
         tmp.write_text(payload + "\n", encoding="utf-8")
         os.replace(tmp, SETTINGS_PATH)
+
+
+def _save_route_model(model: str):
+    _save_setting("route_model", model)
 
 
 DEFAULT_IMAGE_ROUTE_MODEL = "hunyuan-image-v3.0-art"
@@ -767,17 +781,7 @@ def _load_image_route_model() -> str:
 
 
 def _save_image_route_model(model: str):
-    data = {}
-    try:
-        data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        data = {}
-    data["image_route_model"] = model
-    payload = json.dumps(data, ensure_ascii=False, indent=2)
-    tmp = SETTINGS_PATH.with_suffix(SETTINGS_PATH.suffix + ".tmp")
-    with _SETTINGS_LOCK:
-        tmp.write_text(payload + "\n", encoding="utf-8")
-        os.replace(tmp, SETTINGS_PATH)
+    _save_setting("image_route_model", model)
 
 
 def _resolve_route_model(requested_model: str) -> str:

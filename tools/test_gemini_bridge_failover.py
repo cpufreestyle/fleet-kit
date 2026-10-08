@@ -14,7 +14,6 @@ wrong:
     contract the workbuddy dashboard uses.
 '''
 
-import importlib.util
 import json
 import os
 import sys
@@ -27,15 +26,9 @@ from http.server import ThreadingHTTPServer
 BRIDGES = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, 'bridges'))
 sys.path.insert(0, BRIDGES)
 
+from test_bridge_loader import load_bridge as _load
 
-def _load(name, rel):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(BRIDGES, rel))
-    mod = importlib.util.module_from_spec(spec)
-    # Register before exec: dataclasses on 3.14 resolves cls.__module__ through
-    # sys.modules, so a module loaded by spec alone is not enough.
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+
 
 
 # gemini_accounts first, under its own name: gemini_bridge imports it by that

@@ -102,6 +102,38 @@ def keys_from_env(env_name: str, keys_env: str = "") -> list:
     return pairs
 
 
+def keys_from_payload(payload) -> list:
+    """[(key, source)] from an admin add body, JSON or bare text.
+
+    curl -d '{"key":"sk-..."}' is the documented shape, but so is
+    curl -d 'sk-a,sk-b' -- a second key is usually pasted straight from a
+    console, and rejecting that because of a missing brace is how a pool
+    stays at one account.
+    """
+    if isinstance(payload, dict):
+        keys = []
+        for value in [payload.get("key")] + list(payload.get("keys") or []):
+            keys += [part for part in str(value or "").replace(",", " ").split() if part]
+        return [(key, str(payload.get("source") or "admin")) for key in keys]
+    if isinstance(payload, str):
+        return [(key, "admin") for key in payload.replace(",", " ").split() if key]
+    return []
+
+
+def plan_credits_module():
+    """plan_credits.py, imported from the fleet's tools/ directory.
+
+    It is stdlib-only (urllib) and already owns every quota endpoint, auth
+    shape and payload shape, so a bridge borrows it instead of keeping a
+    second copy that would drift the first time a vendor moves a route.
+    """
+    tools = Path(__file__).resolve().parents[1] / "tools"
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    import plan_credits
+    return plan_credits
+
+
 def walk_numbers(body: Any, limit: int = 8) -> list:
     """Every number in a quota payload, as (path, value) pairs.
 

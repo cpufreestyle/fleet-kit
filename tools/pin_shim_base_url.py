@@ -36,6 +36,9 @@ import argparse
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from catalog_common import atomic_write_text  # noqa: E402  (same-directory import)
+
 
 def find_provider(lines, default="custom"):
     """The provider Codex opens on, from the top-level model_provider line."""
@@ -83,17 +86,7 @@ def rewrite(text, provider, from_hostport, to_hostport):
 
 
 def _atomic_write(path, text):
-    """Replace the file in one step so no reader sees a partial config.
-
-    Codex reads this file on every invocation, and a truncated config is a
-    broken Codex rather than a merely un-pinned one.
-    """
-    tmp = "%s.fleetpin.tmp" % path
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    return atomic_write_text(path, text, "fleetpin.tmp")
 
 
 def pin_once(path, provider=None, from_hostport="127.0.0.1:15721",
