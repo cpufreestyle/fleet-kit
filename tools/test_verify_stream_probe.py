@@ -10,22 +10,16 @@ and every automated check said otherwise.
 apply_stream_probe closes that gap: the REAL path is re-probed once with
 stream=true and downgraded to STREAM_BROKEN when no SSE block arrives.
 """
-import importlib.util
 import json
 import os
 import re
 import urllib.error
 
 import pytest
+from test_bridge_loader import HERE, load_tool as _load
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 vrc = _load("verify_real_calls", "verify_real_calls.py")

@@ -15,38 +15,18 @@ measured, not the span a quota ran over. Reading one as the other would invent
 windows that never existed.
 """
 import copy
-import importlib.util
 import json
 import os
 import shutil
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-spec = importlib.util.spec_from_file_location(
-    "free_models", os.path.join(HERE, "free_models.py"))
-free_models = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(free_models)
+from test_bridge_loader import load_free_models
 
-with open(os.path.join(ROOT, "free-windows.json"), encoding="utf-8") as fh:
-    DB = json.load(fh)
+free_models, DB, db_rows = load_free_models()
 
 # A fixed "now" so the state tests read as arithmetic, never as a moving target.
 NOW = free_models._parse_ts("2026-10-03T12:00:00+08:00")
 
 
-def db_rows():
-    """Annotate the rows the database itself declares.
-
-    build() shells out to "ocx models live" and reads the picker catalog, so on
-    a checkout with neither, snap["models"] is empty and every state assertion
-    lands on an empty set instead of on the data. These questions are about the
-    annotation, so read the rows straight from the database.
-    """
-    rows = [free_models.annotate(DB, *key.split("/", 1))
-            for key in DB["models"]]
-    rows += [free_models.annotate(DB, name, "__unknown-model__")
-             for name in DB["providers"]]
-    return rows
 
 
 def test_every_state_has_a_badge():

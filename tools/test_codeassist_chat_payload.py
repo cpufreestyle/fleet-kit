@@ -21,7 +21,6 @@ the cached one, and a gemini 502 hands the client a string message with
 the per-channel breakdown one level down.
 """
 
-import importlib.util
 import inspect
 import json
 import os
@@ -30,17 +29,12 @@ import threading
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+from test_bridge_loader import BRIDGES, load_bridge as _load
 
 
-BRIDGES = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "bridges"))
 sys.path.insert(0, BRIDGES)
 
 
-def _load(name, rel):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(BRIDGES, rel))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 antigravity = _load("antigravity_bridge",

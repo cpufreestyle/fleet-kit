@@ -16,22 +16,16 @@ the stream-head peek that lets a streaming request switch accounts before the
 first byte reaches the client.
 """
 import asyncio
-import importlib.util
 import os
 import sys
 
 import pytest
+from test_bridge_loader import BRIDGES, load_bridge as _load
 
-BRIDGES = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "bridges"))
 sys.path.insert(0, BRIDGES)
 sys.path.insert(0, os.path.join(BRIDGES, "trae"))
 
 
-def _load(name, rel):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(BRIDGES, rel))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 trae = _load("trae_bridge", os.path.join("trae", "trae_bridge.py"))

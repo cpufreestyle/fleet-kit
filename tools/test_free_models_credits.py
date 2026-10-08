@@ -10,19 +10,10 @@ exhaust an account.
 annotate() resolves provider defaults, per-model overrides, and a note that says
 where the quota comes from.
 """
-import importlib.util
-import json
-import os
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-spec = importlib.util.spec_from_file_location(
-    "free_models", os.path.join(HERE, "free_models.py"))
-free_models = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(free_models)
+from test_bridge_loader import load_free_models
 
-with open(os.path.join(ROOT, "free-windows.json"), encoding="utf-8") as fh:
-    DB = json.load(fh)
+free_models, DB, db_rows = load_free_models()
 
 
 def test_every_provider_declares_a_credits_kind():
@@ -54,20 +45,6 @@ def test_unknown_provider_falls_back_instead_of_raising():
     assert row["credits_badge"] == "N/A"
 
 
-def db_rows():
-    """Annotate the rows the database itself declares.
-
-    build() shells out to "ocx models live" and then reads
-    ~/.codex/cc-switch-model-catalog.json, so on a checkout with neither --
-    CI, a fresh clone -- snap["models"] is empty and every credits assertion
-    lands on an empty set instead of on the data. These questions are about
-    the annotation, not the picker, so read the rows straight from the database.
-    """
-    rows = [free_models.annotate(DB, *key.split("/", 1))
-            for key in DB["models"]]
-    rows += [free_models.annotate(DB, name, "__unknown-model__")
-             for name in DB["providers"]]
-    return rows
 
 
 def test_credits_counts_partition_every_row():

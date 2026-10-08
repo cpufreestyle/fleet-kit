@@ -31,3 +31,9 @@ runtime/
 
 # macOS
 .DS_Store
+
+# archived dead code -- recoverable, not part of the build
+../docs/archive-deadcode-*/
+
+# qoder editor hook state -- machine-local, never shared
+.mimosa/

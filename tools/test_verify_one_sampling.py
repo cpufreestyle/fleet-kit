@@ -16,9 +16,9 @@ itself.
 """
 import importlib.util
 import os
-import re
 
 import pytest
+from test_bridge_loader import probe_answer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location(
@@ -27,12 +27,7 @@ vrc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(vrc)
 
 
-def _answer(content):
-    """Build the reply a real model gives to verify_real_calls.make_probe."""
-    m = re.search(r"\((\d+)\+(\d+)", content)
-    n, add = int(m.group(1)), int(m.group(2))
-    nonce = re.search(r"暗号：(\S+)", content).group(1)
-    return "%s %d" % (nonce[:4], n + add)
+_answer = probe_answer
 
 
 def _chat_for(broken, missing):

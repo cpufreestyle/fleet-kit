@@ -9,23 +9,16 @@ scan keeps any new http.server service honest, and an import test keeps the
 wrap call itself from silently breaking (a bare name once passed py_compile
 and died with NameError on the first restart).
 """
-import importlib.util
 import json
 import os
 import re
 import sys
 import unittest
+from test_bridge_loader import KIT, load_kit as _load
 
-KIT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 BRIDGES = os.path.join(KIT, "bridges")
 
 
-def _load(name, rel):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(KIT, rel))
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
 
 
 basehttp = _load("_basehttp_under_test", os.path.join("bridges", "_basehttp.py"))

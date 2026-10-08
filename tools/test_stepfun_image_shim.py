@@ -30,6 +30,8 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 
 import image_cap  # noqa: E402
+from test_bridge_loader import closed_port
+from test_bridge_loader import site_factory as _site_factory_factory
 
 SHIM_PATH = os.path.join(TOOLS, "stepfun_image_shim.py")
 _spec = importlib.util.spec_from_file_location("stepfun_image_shim", SHIM_PATH)
@@ -173,25 +175,11 @@ def client():
 
 
 
-@pytest.fixture()
-def site_factory():
-    """Start the real shim app and stop it again when the test ends.
-
-    See _Shim.close: an abandoned shim keeps an event loop running for the
-    rest of the session, and that loop ticks asyncio.sleep into any
-    process-wide patch another test installed before it.
-    """
-    opened = []
-
-    def _open(upstream_port, **kwargs):
-        site = _Shim(upstream_port, **kwargs)
-        opened.append(site)
-        return site
-
-    yield _open
-
-    for site in reversed(opened):
-        site.close()
+# Start the real shim app and stop it again when the test ends. See _Shim.close:
+# an abandoned shim keeps an event loop running for the rest of the session, and
+# that loop ticks asyncio.sleep into any process-wide patch another test
+# installed before it.
+site_factory = _site_factory_factory(_Shim)
 
 def _request_body(count, model="stepfun/step-5-preview"):
     content = [{"type": "input_text", "text": "这些图里有什么"}]
@@ -331,23 +319,7 @@ def test_a_streaming_request_still_reaches_the_upstream(upstream, client, site_f
     assert response.json()["images"] == 2
 
 
-def _closed_port() -> int:
-    """A port nothing listens on, found by binding and releasing one.
-
-    A raw socket to a closed port really is refused here (connection refused,
-    errno 61), but a forward through httpx is not: this box exports
-    HTTP_PROXY=http://127.0.0.1:1082, and httpx trusts the environment by
-    default, so a forward to any unreachable address was handed to that proxy
-    instead and answered with its own empty 503 -- which the shim then relayed
-    faithfully, and the test proved nothing. Binding port 0 hands back a port
-    the kernel just gave away, which stays closed long enough for a connect to
-    fail once the shim stops inheriting the proxy (test below).
-    """
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    return port
+_closed_port = closed_port
 
 
 class _FakeProxy:

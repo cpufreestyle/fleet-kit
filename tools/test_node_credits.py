@@ -13,10 +13,10 @@ import importlib.util
 import json
 import os
 import re
-import socket
 import threading
 
 import pytest
+from test_bridge_loader import closed_port
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -85,12 +85,7 @@ class _Server:
         self.httpd.server_close()
 
 
-def _dead_port():
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    return port
+_dead_port = closed_port
 
 
 def test_every_node_in_the_fleet_has_a_row():

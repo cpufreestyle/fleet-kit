@@ -16,7 +16,6 @@ Both bridges now carry one CHAT_BUDGET deadline and charge each attempt only
 the time that is left. These tests pin the arithmetic and the fallback chain,
 and pin that writing into a hung-up client is not an error worth a traceback.
 """
-import importlib.util
 import json
 import os
 import socket
@@ -28,16 +27,11 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 
 import pytest
+from test_bridge_loader import BRIDGES, load_bridge as _load
 
-BRIDGES = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "bridges"))
 sys.path.insert(0, BRIDGES)
 
 
-def _load(name, rel):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(BRIDGES, rel))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 gemini = _load("gemini_bridge", os.path.join("gemini", "gemini_bridge.py"))

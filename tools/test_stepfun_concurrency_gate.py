@@ -35,6 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
+from test_bridge_loader import site_factory as _site_factory_factory
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
@@ -171,18 +172,7 @@ def upstream():
     site.close()
 
 
-@pytest.fixture()
-def site_factory():
-    opened = []
-
-    def _open(upstream_port, **kwargs):
-        site = _Shim(upstream_port, **kwargs)
-        opened.append(site)
-        return site
-
-    yield _open
-    for site in reversed(opened):
-        site.close()
+site_factory = _site_factory_factory(_Shim)
 
 
 def _post(client, url, model="step-5-preview"):

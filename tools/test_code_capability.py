@@ -11,21 +11,14 @@ sixteen are dead bridges. A model that was never measured must read "?", never
 a guess: several bridges expose deepseek-v4-pro under their own names, so a
 bare model id is trusted only when exactly one fleet row ends with it.
 """
-import importlib.util
 import json
 import os
 import time
+from test_bridge_loader import HERE, load_tool as _load
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 
-def _load(name, filename):
-    spec = importlib.util.spec_from_file_location(
-        name, os.path.join(HERE, filename))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 free_models = _load("free_models", "free_models.py")

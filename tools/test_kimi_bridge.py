@@ -26,6 +26,9 @@ from pathlib import Path
 import httpx
 import pytest
 
+from test_plan_bridge_common import load as plan_load  # noqa: F401
+import test_plan_bridge_common as plan
+
 BRIDGES = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "bridges"))
 sys.path.insert(0, BRIDGES)
 
@@ -42,52 +45,35 @@ STATIC_CATALOG = ["kimi/kimi-for-coding", "kimi/kimi-for-coding-highspeed",
                   "kimi/k3", "kimi/k3-256k"]
 
 
-def _load(monkeypatch, tmp_path, **env):
-    """A private copy of the bridge, its pool rooted in tmp_path.
 
-    The env patch is scoped to the import on purpose: the pool directory and
-    the keys are read once, while the module is being built. A pool dir outside
-    tmp_path would put keys on the developer's own machine.
-    """
-    settings = {"KIMI_AUTH_POOL_DIR": str(tmp_path / "auths"),
-                "KIMI_NO_APP_KEY": "1"}
-    for key in ("KIMI_CODING_API_KEY", "KIMI_CODING_API_KEYS", "KIMI2CODEX_KEY",
-                "KIMI_UPSTREAM_KEY_FILE"):
-        monkeypatch.delenv(key, raising=False)
-    settings.update(env)
-    for key, value in settings.items():
-        monkeypatch.setenv(key, value)
-    module = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(module)
-    return module
+
+
+
+
+
+# ---------------- what the caller sees ----------------
+
+def _load(monkeypatch, tmp_path, **env):
+    return plan.load("kimi_bridge_ut", os.path.join("kimi", "kimi_bridge.py"),
+                     monkeypatch, tmp_path,
+                     pool_dir_env="KIMI_AUTH_POOL_DIR",
+                     extra_env={"KIMI_NO_APP_KEY": "1"},
+                     clear_env=("KIMI_CODING_API_KEY", "KIMI_CODING_API_KEYS",
+                                "KIMI2CODEX_KEY", "KIMI_UPSTREAM_KEY_FILE"),
+                     env=env)
 
 
 def _install_upstream(module, monkeypatch, *, status=200, body=None, boom=None,
                       keys=None, seen=None):
-    """MockTransport answers /models and records which key was offered."""
-    def handler(request):
-        key = (request.headers.get("authorization") or "")
-        if seen is not None:
-            seen.append(key)
-        if boom is not None:
-            raise boom
-        # one answer per key: keys maps a key to what it answers, anything not
-        # in it (and the whole map when there is none) gets the canned status
-        answer = keys.get(key, 200) if keys is not None else status
-        if answer == 200:
-            return httpx.Response(200, json=UPSTREAM_CATALOG)
-        return httpx.Response(answer, json=body or {"error": {"message": "nope"}})
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(module, "client", lambda: client)
+    return plan.install_upstream(module, monkeypatch, status=status,
+                                 body=body or {"error": {"message": "nope"}},
+                                 boom=boom, keys=keys, seen=seen,
+                                 catalog=UPSTREAM_CATALOG)
 
 
 def _client(module):
-    from fastapi.testclient import TestClient
-    return TestClient(module.app)
+    return plan.client(module)
 
-
-# ---------------- what the caller sees ----------------
 
 def test_a_refused_key_is_reported_not_masked(monkeypatch, tmp_path):
     module = _load(monkeypatch, tmp_path, KIMI_CODING_API_KEY="sk-kimi-real")
@@ -116,14 +102,8 @@ def test_a_healthy_upstream_wins_and_junk_is_filtered(monkeypatch, tmp_path):
 
 
 def test_no_key_still_serves_the_static_catalog(monkeypatch, tmp_path):
-    module = _load(monkeypatch, tmp_path)
-
-    r = _client(module).get("/v1/models")
-
-    assert r.status_code == 200
-    assert [m["id"] for m in r.json()["data"]] == STATIC_CATALOG
-    assert "_fallback" not in r.json()
-    assert r.json()["data"][0]["owned_by"] == "kimi-code"
+    plan.assert_static_catalog(_load, STATIC_CATALOG, "kimi-code",
+                               monkeypatch, tmp_path)
 
 
 def test_an_unreachable_upstream_keeps_the_catalog_and_names_the_layer(

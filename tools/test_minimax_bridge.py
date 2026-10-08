@@ -30,6 +30,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+import test_plan_bridge_common as plan
+
 BRIDGES = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "bridges"))
 sys.path.insert(0, BRIDGES)
 
@@ -58,63 +60,38 @@ STATIC_CATALOG = [
 ]
 
 
-def _load(monkeypatch, tmp_path, **env):
-    """A private copy of the bridge, its pool rooted in tmp_path.
 
-    The env patch is scoped to the import on purpose: the pool directory and
-    the keys are read once, while the module is being built. A pool dir
-    outside tmp_path would put keys on the developer's own machine. The
-    points TTL is pushed past the epoch so /health never schedules the real
-    (blocking, network) reader in a unit test; the forced refresh behind
-    /admin/pool/points ignores the TTL and is what the points test calls.
-    """
-    settings = {"MINIMAX_AUTH_POOL_DIR": str(tmp_path / "auths"),
-                "MINIMAX_POINTS_TTL": "1000000000000"}
-    for key in ("MINIMAX_API_KEY", "MINIMAX_API_KEYS", "MINIMAX2CODEX_KEY",
-                "MINIMAX_UPSTREAM", "MINIMAX_UPSTREAM_PROXY"):
-        monkeypatch.delenv(key, raising=False)
-    settings.update(env)
-    for key, value in settings.items():
-        monkeypatch.setenv(key, value)
-    module = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(module)
-    return module
+
+
+
+
+
+# ---------------- what the caller sees ----------------
+
+def _load(monkeypatch, tmp_path, **env):
+    return plan.load("minimax_bridge_ut", os.path.join("minimax", "minimax_bridge.py"),
+                     monkeypatch, tmp_path,
+                     pool_dir_env="MINIMAX_AUTH_POOL_DIR",
+                     # pushed past the epoch so /health never schedules the real
+                     # (blocking, network) reader; the forced refresh behind
+                     # /admin/pool/points ignores the TTL
+                     extra_env={"MINIMAX_POINTS_TTL": "1000000000000"},
+                     clear_env=("MINIMAX_API_KEY", "MINIMAX_API_KEYS",
+                                "MINIMAX2CODEX_KEY", "MINIMAX_UPSTREAM",
+                                "MINIMAX_UPSTREAM_PROXY"),
+                     env=env)
 
 
 def _install_upstream(module, monkeypatch, *, status=200, body=None, boom=None,
                       keys=None, seen=None, bodies=None):
-    """MockTransport answers /models and /chat, recording what was offered."""
-    def handler(request):
-        auth = (request.headers.get("authorization") or "")
-        if seen is not None:
-            seen.append(auth)
-        if bodies is not None:
-            try:
-                bodies.append(json.loads(request.content or b"{}"))
-            except ValueError:
-                bodies.append(None)
-        if boom is not None:
-            raise boom
-        # one answer per key: keys maps an authorization header to what it
-        # answers, anything not in it (and the whole map when there is none)
-        # gets the canned status
-        answer = keys.get(auth, 200) if keys is not None else status
-        if answer == 200:
-            return httpx.Response(200, json=UPSTREAM_CATALOG)
-        return httpx.Response(answer, json=body or {
-            "error": {"type": "authorized_error",
-                      "message": "login fail: Please carry the API secret key"}})
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    monkeypatch.setattr(module, "client", lambda: client)
+    return plan.install_upstream(module, monkeypatch, status=status,
+                                 body=body, boom=boom, keys=keys, seen=seen,
+                                 bodies=bodies, catalog=UPSTREAM_CATALOG)
 
 
 def _client(module):
-    from fastapi.testclient import TestClient
-    return TestClient(module.app)
+    return plan.client(module)
 
-
-# ---------------- what the caller sees ----------------
 
 def test_a_refused_key_names_the_region_fix_too(monkeypatch, tmp_path):
     module = _load(monkeypatch, tmp_path, MINIMAX_API_KEY="sk-mm-real")
@@ -143,15 +120,8 @@ def test_a_healthy_upstream_wins_and_junk_is_filtered(monkeypatch, tmp_path):
 
 
 def test_no_key_still_serves_the_documented_catalog(monkeypatch, tmp_path):
-    """A fresh install has no key, so the static rows are the picker."""
-    module = _load(monkeypatch, tmp_path)
-
-    r = _client(module).get("/v1/models")
-
-    assert r.status_code == 200
-    assert [m["id"] for m in r.json()["data"]] == STATIC_CATALOG
-    assert "_fallback" not in r.json()
-    assert r.json()["data"][0]["owned_by"] == "minimax"
+    plan.assert_static_catalog(_load, STATIC_CATALOG, "minimax",
+                               monkeypatch, tmp_path)
 
 
 def test_an_unreachable_upstream_keeps_the_catalog_and_names_the_layer(

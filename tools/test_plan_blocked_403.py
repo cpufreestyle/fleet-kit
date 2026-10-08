@@ -16,9 +16,9 @@ a verdict that really is account-wide (401, or a 403 with no plan verb).
 import importlib.util
 import json
 import os
-import re
 
 import pytest
+from test_bridge_loader import probe_answer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location(
@@ -52,11 +52,7 @@ def _stream_ok(port, model, key):
                 data="data: {}", err="")
 
 
-def _answer(content):
-    m = re.search(r"\((\d+)\+(\d+)", content)
-    n, add = int(m.group(1)), int(m.group(2))
-    nonce = re.search(r"暗号：(\S+)", content).group(1)
-    return "%s %d" % (nonce[:4], n + add)
+_answer = probe_answer
 
 
 def test_plan_403_is_not_an_expired_session():

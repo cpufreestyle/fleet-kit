@@ -11,7 +11,6 @@ Incidents covered (all observed on 2026-09-30):
   command line only names their own directory.
 """
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -19,17 +18,11 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime
+from test_bridge_loader import KIT, load_kit as _load
 
-KIT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 BASE = datetime(2026, 9, 30, 12, 0, 0).timestamp()
 
 
-def _load(name, rel):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(KIT, rel))
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
 
 
 bf = _load("bridge_freshness", "tools/bridge_freshness.py")
