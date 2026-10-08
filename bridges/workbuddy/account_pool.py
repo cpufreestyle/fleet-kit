@@ -94,9 +94,10 @@ class AccountPool(_account_pool.AccountPool):
         """ref -> the manager a request is served through (the session file)."""
         return {ref: row["path"] for ref, row in self._rows.items()}
 
-    @property
-    def _paths(self) -> dict:
-        return {ref: row["path"] for ref, row in self._rows.items()}
+    def account_path(self, ref: str):
+        """The session file this account's credential lives in."""
+        row = self._rows.get(ref)
+        return row["path"] if row else None
 
     @staticmethod
     def _session_identity(session: dict) -> tuple[str, str, str]:
@@ -145,19 +146,6 @@ class AccountPool(_account_pool.AccountPool):
             if manager is None:
                 raise KeyError(ref)
             return manager
-
-    # ---------------- removal ----------------
-
-    def remove(self, ref: str) -> None:
-        with self._lock:
-            path = self._paths.get(ref)
-            if path is None:
-                raise KeyError(ref)
-            resolved = path.resolve()
-            if resolved.parent != self.auth_dir:
-                raise RuntimeError("account file is not inside the local auths dir")
-            resolved.unlink(missing_ok=True)
-            self.reload()
 
     # ---------------- selection ----------------
 

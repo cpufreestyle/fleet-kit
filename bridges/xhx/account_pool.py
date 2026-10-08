@@ -267,9 +267,10 @@ class AccountPool(_account_pool.AccountPool):
         """ref -> the session manager, what a request is served through."""
         return {ref: row["session"] for ref, row in self._rows.items()}
 
-    @property
-    def _paths(self) -> dict:
-        return {ref: row["path"] for ref, row in self._rows.items()}
+    def account_path(self, ref: str):
+        """The session file this account's credential lives in."""
+        row = self._rows.get(ref)
+        return row["path"] if row else None
 
     def import_current(self) -> dict:
         """Copy the desktop app current login into the pool (one-way)."""
@@ -315,24 +316,6 @@ class AccountPool(_account_pool.AccountPool):
             if item["ref"] == ref:
                 return item
         raise KeyError(ref)
-
-    def set_primary(self, ref: str) -> None:
-        with self._lock:
-            if ref not in self._managers:
-                raise KeyError(ref)
-            self._state["primary_ref"] = ref
-            self._save_locked()
-
-    def remove(self, ref: str) -> None:
-        with self._lock:
-            path = self._paths.get(ref)
-            if path is None:
-                raise KeyError(ref)
-            resolved = path.resolve()
-            if resolved.parent != self.auth_dir:
-                raise RuntimeError("account file is not inside the local auths dir")
-            resolved.unlink(missing_ok=True)
-            self.reload()
 
     # ---------------- selection ----------------
 

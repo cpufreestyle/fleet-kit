@@ -253,6 +253,11 @@ class KeyPool(poolmod.AccountPool):
 
     # ---------------- scanning ----------------
 
+    def account_path(self, ref: str):
+        """The key file this account's credential lives in."""
+        row = self._rows.get(ref)
+        return row["path"] if row else None
+
     def scan(self) -> list:
         """Every key file in auths/, as [{ref, key, path, name, ...}]."""
         out = []
@@ -345,25 +350,6 @@ class KeyPool(poolmod.AccountPool):
             if item["ref"] == ref:
                 return item
         raise KeyError(ref)
-
-    def remove(self, ref: str) -> None:
-        """Delete one key file, refusing anything the pool does not own.
-
-        The check is on the path the *pool* recorded, not on a handle a caller
-        may have swapped out from under it: a key whose file was moved
-        somewhere else is left where it is, because the pool's auths/ is the
-        only place it is allowed to delete from.
-        """
-        with self._lock:
-            row = self._rows.get(ref)
-            if row is None:
-                raise KeyError(ref)
-            resolved = row["path"].resolve()
-            if resolved.parent != self.auth_dir:
-                raise RuntimeError("account file is not inside the local auths dir")
-            resolved.unlink(missing_ok=True)
-            self.reload()
-
 
     def account_row(self, row: dict, state: dict) -> dict:
         entry = super().account_row(row, state)

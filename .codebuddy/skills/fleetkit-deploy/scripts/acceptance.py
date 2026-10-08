@@ -24,6 +24,11 @@ import shutil
 import socket
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _deploylib import git_bash
+
 import urllib.error
 import urllib.request
 
@@ -42,61 +47,6 @@ BRIDGES = [
     ("cline", 12, "CLINE2CODEX_KEY"),
     ("zcode", 13, "ZCODE2CODEX_KEY"),
 ]
-
-GIT_BASH_CANDIDATES = (
-    r"C:\Program Files\Git\bin\bash.exe",
-    r"C:\Program Files\Git\usr\bin\bash.exe",
-    r"C:\Program Files (x86)\Git\bin\bash.exe",
-)
-
-GIT_BASH_RELS = ("bin\\bash.exe", "usr\\bin\\bash.exe")
-
-
-def git_install_root():
-    """Git for Windows install root from the registry, else from git.exe.
-
-    Git is not always under C:\\Program Files. Hardcoding only the default
-    misses D: installs and silently falls back to the WSL launcher.
-    """
-    if sys.platform != "win32":
-        return ""
-    try:
-        import winreg
-    except ImportError:
-        winreg = None
-    if winreg:
-        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-            for sub in ("SOFTWARE\\GitForWindows",
-                        "SOFTWARE\\WOW6432Node\\GitForWindows"):
-                try:
-                    with winreg.OpenKey(hive, sub) as key:
-                        val, _ = winreg.QueryValueEx(key, "InstallPath")
-                except OSError:
-                    continue
-                if val and os.path.isdir(val):
-                    return val
-    git = shutil.which("git")
-    if git:
-        root = os.path.dirname(os.path.dirname(os.path.abspath(git)))
-        if os.path.isdir(root):
-            return root
-    return ""
-
-
-def git_bash():
-    root = git_install_root()
-    if root:
-        for rel in GIT_BASH_RELS:
-            candidate = os.path.join(root, rel)
-            if os.path.exists(candidate):
-                return candidate
-    for candidate in GIT_BASH_CANDIDATES:
-        if os.path.exists(candidate):
-            return candidate
-    found = shutil.which("bash")
-    if found and "system32" not in found.lower():
-        return found
-    return "bash"
 
 
 def finish_cmd(home, name="<name>"):

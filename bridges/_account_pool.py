@@ -324,6 +324,32 @@ class AccountPool:
                 self._state["active_ref"] = None
             self._save_locked()
 
+    def account_path(self, ref: str):
+        """Where this account's credential lives on disk, or None.
+
+        Overridden by a pool that stores one file per account; a pool that
+        keeps its credentials elsewhere has nothing to remove.
+        """
+        return None
+
+    def remove(self, ref: str) -> None:
+        """Delete one credential file, refusing anything the pool does not own.
+
+        The check is on the path the *pool* recorded, not on a handle a caller
+        may have swapped out from under it: a credential whose file was moved
+        somewhere else is left where it is, because the pool's auths/ is the
+        only place it is allowed to delete from.
+        """
+        with self._lock:
+            path = self.account_path(ref)
+            if path is None:
+                raise KeyError(ref)
+            resolved = path.resolve()
+            if resolved.parent != self.auth_dir:
+                raise RuntimeError("account file is not inside the local auths dir")
+            resolved.unlink(missing_ok=True)
+            self.reload()
+
     def set_primary(self, ref: str) -> None:
         with self._lock:
             if ref not in self._rows:

@@ -22,102 +22,15 @@ import shutil
 import socket
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _deploylib import GIT_BASH_CANDIDATES, find_bash, git_install_root, port_in_use
+
 BRIDGES = [
     ("workbuddy", 0), ("workbuddy-gpt", 1), ("qoder", 2), ("codely", 3),
     ("trae", 4), ("lingxi", 5), ("xhx", 6), ("gemini", 7), ("catpaw", 8),
     ("antigravity", 10), ("qwen", 11), ("cline", 12), ("zcode", 13),
 ]
-
-GIT_BASH_CANDIDATES = (
-    r"C:\Program Files\Git\bin\bash.exe",
-    r"C:\Program Files\Git\usr\bin\bash.exe",
-    r"C:\Program Files (x86)\Git\bin\bash.exe",
-    r"C:\Program Files\Git\git-bash.exe",
-)
-
-GIT_BASH_RELS = ("bin\\bash.exe", "usr\\bin\\bash.exe")
-
-PWSH_CANDIDATES = (
-    os.path.join(os.environ.get("LOCALAPPDATA",
-                                os.path.expanduser("~\\AppData\\Local")),
-                 "Programs", "PowerShell-7", "pwsh.exe"),
-    r"C:\Program Files\PowerShell\7\pwsh.exe",
-)
-
-
-def git_install_root():
-    """Best-effort Git for Windows install root.
-
-    Git is not always on C:. A D: install is invisible to the hardcoded
-    candidates below, which then falls through to the WSL launcher and blocks
-    the deploy for no real reason. Ask Windows first (registry), then back the
-    root out of git.exe (<root>\\cmd\\git.exe -> <root>).
-    """
-    if sys.platform != "win32":
-        return ""
-    try:
-        import winreg
-    except ImportError:
-        winreg = None
-    if winreg:
-        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-            for sub in ("SOFTWARE\\GitForWindows",
-                        "SOFTWARE\\WOW6432Node\\GitForWindows"):
-                try:
-                    with winreg.OpenKey(hive, sub) as key:
-                        val, _ = winreg.QueryValueEx(key, "InstallPath")
-                except OSError:
-                    continue
-                if val and os.path.isdir(val):
-                    return val
-    git = shutil.which("git")
-    if git:
-        root = os.path.dirname(os.path.dirname(os.path.abspath(git)))
-        if os.path.isdir(root):
-            return root
-    return ""
-
-
-def find_bash():
-    """Return (path, source, is_wsl_shim).
-
-    Windows ships C:\\Windows\\system32\\bash.exe as the WSL launcher. It is a
-    bash, but it runs the kit inside WSL where schtasks does not exist and the
-    runtime would land on a different filesystem, so it must not count as the
-    bash the deploy scripts need.
-    """
-    wsl = None
-    found = shutil.which("bash")
-    if found:
-        low = found.lower()
-        if "system32" in low or "syswow64" in low:
-            wsl = found
-        else:
-            return found, "PATH", False
-    root = git_install_root()
-    if root:
-        for rel in GIT_BASH_RELS:
-            candidate = os.path.join(root, rel)
-            if os.path.exists(candidate):
-                return candidate, "Git for Windows (%s)" % root, False
-    for candidate in GIT_BASH_CANDIDATES:
-        if os.path.exists(candidate):
-            return candidate, "Git for Windows", False
-    if wsl:
-        return wsl, "WSL launcher (system32\\bash.exe)", True
-    return None, "", False
-
-
-def port_in_use(port, host="127.0.0.1", timeout=0.4):
-    sock = socket.socket()
-    sock.settimeout(timeout)
-    try:
-        return sock.connect_ex((host, port)) == 0
-    except OSError:
-        return False
-    finally:
-        sock.close()
-
 
 def backend():
     system = sys.platform

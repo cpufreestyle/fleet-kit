@@ -8,6 +8,7 @@ import urllib.request, urllib.parse, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 import _basehttp
+import _googlecode
 
 PORT = int(os.environ.get('GEMINI2CODEX_PORT', '8794'))
 HOST = os.environ.get('GEMINI2CODEX_HOST', '127.0.0.1')
@@ -118,49 +119,15 @@ def _apply_account(cand):
 class UpstreamError(Exception):
     pass
 
-def google_validation_url(body):
-    """The verification link inside a Google 403, when the gate asks for one.
+# Google's Code Assist endpoint is the same one antigravity talks to, so the
+# VALI-403 unwrap, the unclipped verification exception and the token-file
+# read/write live in _googlecode.py. What stays here is what only this bridge
+# does: channel B's cookies, and raising the shared exception in its own
+# UpstreamError vocabulary.
+AccountVerification = _googlecode.make_account_verification(UpstreamError)
+google_validation_url = _googlecode.google_validation_url
+_clip = _googlecode.clip
 
-    Measured 2026-10-02: cloudcode-pa answers the VALI gate with 403 plus
-    ErrorInfo{reason: VALI, metadata.validation_url}. That link is the whole
-    fix -- the login itself is fine and only the account has to pass a browser
-    check -- and it sits deep in a JSON body the 502 envelope clips to 300
-    chars, so a truncated body reads as a bare "verify your account" dead end.
-    """
-    try:
-        j = json.loads(body)
-    except Exception:
-        return None
-    try:
-        for d in j["error"]["details"]:
-            u = (d.get("metadata") or {}).get("validation_url")
-            if u:
-                return u
-    except Exception:
-        pass
-    return None
-
-
-class AccountVerification(UpstreamError):
-    """Google wants the account verified in a browser before more calls.
-
-    Raised instead of a raw UpstreamError so the link survives every clip on
-    the way to the 502 envelope: _clip() prints this message in full, because
-    a truncated accounts.google.com/signin/continue/... URL is worthless to
-    the operator reading the error.
-    """
-
-    def __init__(self, url):
-        super().__init__("HTTP 403 VALIDATION_REQUIRED; account verification "
-                         "required, open: " + url)
-        self.validation_url = url
-
-
-def _clip(exc):
-    """Channel string for the 502 envelope -- long enough to keep a link."""
-    if getattr(exc, "validation_url", None):
-        return str(exc)
-    return str(exc)[:300]
 
 # 单次 chat 的总时限。原先 call_a(180s) 失败后再 call_b(180s)，最坏要 6 分钟
 # 才想起来回 502；客户端（Codex / 探测脚本）远早于此就超时断开，于是 502 写回
@@ -266,8 +233,7 @@ def http_json(url, payload, headers=None, method='POST', timeout=90):
 def read_token_file(path=None):
     p = path or _token_file()
     try:
-        with open(p) as f:
-            return json.load(f)
+        return _googlecode.read_json_file(p)
     except Exception as e:
         # Naming the path matters: an account that carries no token file has to
         # fail channel A with a reason a human can act on, not a bare
@@ -275,10 +241,7 @@ def read_token_file(path=None):
         raise UpstreamError('cannot read token file %s: %s' % (p, str(e)[:120]))
 
 def write_token_file(d):
-    tmp = _token_file() + '.tmp'
-    with open(tmp, 'w') as f:
-        json.dump(d, f, indent=2)
-    os.replace(tmp, _token_file())
+    _googlecode.write_json_file(_token_file(), d)
 
 def do_refresh(deadline=None):
     d = read_token_file()
