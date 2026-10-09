@@ -51,9 +51,18 @@ GATEWAY = os.environ.get("FLEET_GATEWAY") or "http://127.0.0.1:10100/v1"
 CATALOG_NAME = os.environ.get("FLEET_CATALOG_NAME") or "opencodex-catalog.json"
 FALLBACK_MODEL = "combo/fleetcore"
 
-ROOT_KEYS = ("model_catalog_json", "openai_base_url",
-             "experimental_realtime_ws_base_url")
-PROVIDER_KEYS = ("base_url", "wire_api", "requires_openai_auth")
+# experimental_realtime_ws_base_url is deliberately NOT pinned: the desktop
+# app prefers that WebSocket transport when the key exists, and this fleet's
+# opencodex answers the upgrade with 426 -- every compose then locks (measured
+# 2026-10-04: all turns served over the plain HTTP responses API). Leave the
+# key out of the config entirely.
+ROOT_KEYS = ("model_catalog_json", "openai_base_url")
+# experimental_bearer_token: ocx's own rewrite of the provider table drops it,
+# and without it requires_openai_auth=true leaves the desktop app unable to
+# authenticate the provider -- the compose/send control greys out (measured
+# 2026-10-04). Re-pinned to the proxy-managed placeholder on every repair.
+PROVIDER_KEYS = ("base_url", "wire_api", "requires_openai_auth",
+                 "experimental_bearer_token")
 
 
 def _key(raw):
@@ -89,7 +98,12 @@ def _prov_line(key, gateway):
     if key == "base_url":
         return "base_url = %s\n" % _toml_str(gateway)
     if key == "wire_api":
+        # responses: Codex 26.930 dropped wire_api = "chat" entirely (config
+        # load fails, discussion/7782) -- responses is the only supported wire,
+        # and FreeLLMAPI now accepts the full Responses payload.
         return 'wire_api = "responses"\n'
+    if key == "experimental_bearer_token":
+        return 'experimental_bearer_token = "PROXY_MANAGED"\n'
     return "requires_openai_auth = false\n"
 
 

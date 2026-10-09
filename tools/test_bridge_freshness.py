@@ -30,7 +30,10 @@ bf = _load("bridge_freshness", "tools/bridge_freshness.py")
 
 def _write(root, rel, when, text=""):
     """Create a file with mtime BASE+when (seconds)."""
-    full = os.path.join(root, rel)
+    # normpath: rel arrives with forward slashes, and the assess() marker
+    # match compares against the returned path -- real command lines carry
+    # the host separator, so the test should too.
+    full = os.path.normpath(os.path.join(root, rel))
     os.makedirs(os.path.dirname(full), exist_ok=True)
     with open(full, "w", encoding="utf-8") as fh:
         fh.write(text)

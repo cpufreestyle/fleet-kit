@@ -72,6 +72,16 @@ def platform_name():
     return sys.platform
 
 
+def _home_dir():
+    """$HOME when set, expanduser otherwise.
+
+    expanduser consults HOME only after USERPROFILE on Windows, so a wrapper
+    or test that points HOME at a scratch tree would be silently ignored --
+    breaking the POSIX location rules below exactly where they say ~.
+    """
+    return os.environ.get("HOME") or os.path.expanduser("~")
+
+
 def user_data_dir(home=None):
     """Where the app keeps its 3P profile, on this machine.
 
@@ -87,12 +97,12 @@ def user_data_dir(home=None):
         local = os.environ.get("LOCALAPPDATA")
         if local:
             return os.path.join(local, "Claude-3p")
-        return os.path.join(os.path.expanduser("~"), "AppData", "Local", "Claude-3p")
+        return os.path.join(_home_dir(), "AppData", "Local", "Claude-3p")
     if platform_name() == "darwin":
-        return os.path.join(os.path.expanduser("~"), "Library", "Application Support",
+        return os.path.join(_home_dir(), "Library", "Application Support",
                             "Claude-3p")
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
-        os.path.expanduser("~"), ".config")
+        _home_dir(), ".config")
     return os.path.join(base, "Claude-3p")
 
 

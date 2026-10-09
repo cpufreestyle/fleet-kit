@@ -166,9 +166,21 @@ class FleetRoutePin(unittest.TestCase):
         text = self._read()
         self.assertIn(self._decl(self.catalog), text)
         self.assertIn('openai_base_url = "%s"' % GATEWAY, text)
-        self.assertIn('experimental_realtime_ws_base_url = "%s"' % GATEWAY, text)
+        # The realtime-ws key is deliberately no longer pinned: the desktop
+        # app prefers that transport when it exists and the proxy answers the
+        # upgrade with 426, which locks compose.
+        self.assertNotIn("experimental_realtime_ws_base_url", text)
         self.assertIn("[model_providers.opencodex]", text)
         self.assertIn('model_provider = "opencodex"', text)
+        self.assertIn('wire_api = "responses"', text)
+        # Parse the file: string assertions can pass on the copied-through
+        # foreign section, so pin the fleet provider's own wire here -- the
+        # pin wrote "chat" once and Codex refused to load for whole days.
+        import tomllib
+        with open(self.config, "rb") as fh:
+            written = tomllib.load(fh)
+        self.assertEqual(
+            written["model_providers"]["opencodex"]["wire_api"], "responses")
 
     def test_the_foreign_provider_section_survives_verbatim(self):
         """Sessions already open on the switcher's provider must keep working.

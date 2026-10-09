@@ -93,6 +93,8 @@ def _run_cli(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
                           timeout=timeout, cwd=str(Path.home()))
 
 
+
+
 def _auth_state() -> dict:
     auth = Path.home() / ".qoder-cn/.auth/user"
     exists = auth.is_file()

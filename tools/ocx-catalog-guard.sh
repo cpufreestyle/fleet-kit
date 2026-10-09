@@ -65,10 +65,24 @@ MIN_MODELS=60
 INTERVAL=300
 CODEX_HOME="${CODEX_HOME:-${HOME}/.codex}"
 LOG_FILE="${OCX_GUARD_LOG:-${HOME}/Library/Logs/ocx-catalog-guard.log}"
+
 # Platform abstraction: launchd / Task Scheduler / Linux supervisor.
 if [ -f "${SCRIPT_DIR}/platform.sh" ]; then
   # shellcheck source=platform.sh
   . "${SCRIPT_DIR}/platform.sh"
+fi
+
+# The inline JSON probe and the route pin need a real interpreter. A bare
+# "python3" on Windows usually resolves to the Store/WSL stub, which either
+# launches WSL (where the C:\\... argv paths do not exist) or prints a proxy
+# warning -- so Windows prefers "python", POSIX prefers "python3".
+FLEET_PY_BIN="${FLEET_PYTHON:-}"
+if [ -z "$FLEET_PY_BIN" ] || [ ! -x "$FLEET_PY_BIN" ]; then
+  if fleet_is_windows 2>/dev/null; then
+    FLEET_PY_BIN="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || printf '')"
+  else
+    FLEET_PY_BIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || printf '')"
+  fi
 fi
 if command -v fleet_service_dir >/dev/null 2>&1; then
   LAUNCH_DIR="$(fleet_service_dir)"
@@ -110,7 +124,10 @@ log() {
 # filter hides rows for bridges verified not REAL, and healing that would
 # re-add every broken row for the filter to hide again 300s later.
 catalog_bridge_count() {
-  python3 - "$CODEX_HOME" <<PY
+  # No interpreter (or only the WSL stub) reads as "cannot count" and
+  # the caller degrades to its no-heal path.
+  [ -n "$FLEET_PY_BIN" ] || { echo "no python interpreter found 0"; return 0; }
+  "$FLEET_PY_BIN" - "$CODEX_HOME" <<PY
 import json, os, sys
 
 home = sys.argv[1]
@@ -163,13 +180,23 @@ PY
 # FLEET_ROUTE_PIN=0 turns it off for a caller that owns the config itself.
 route_pin() {
   [ "${FLEET_ROUTE_PIN:-1}" = "1" ] || return 0
-  command -v python3 >/dev/null 2>&1 || return 0
+  [ -n "$FLEET_PY_BIN" ] || return 0
   local pin="${FLEET_ROUTE_PIN_TOOL:-${SCRIPT_DIR}/pin_fleet_route.py}"
   [ -f "$pin" ] || return 0
+  # The pin target follows the deployment's dispatcher: fleet.env's
+  # FLEET_GATEWAY (this deployment pins CC Switch's gateway) overrides the
+  # tool's default, so the guard restores the switcher's own route instead of
+  # fighting it.
+  local fleet_env="${FLEET_HOME:-$HOME/FleetKit/runtime}/fleet.env"
+  if [ -f "$fleet_env" ]; then
+    local gw
+    gw="$(sed -n 's/^FLEET_GATEWAY=//p' "$fleet_env" | head -1 | tr -d '\r"')"
+    [ -n "$gw" ] && export FLEET_GATEWAY="$gw"
+  fi
   local extra=""
   [ "$DRY_RUN" = "1" ] && extra="--dry-run"
   # shellcheck disable=SC2086  # $extra is either empty or one flag
-  python3 "$pin" --config "${CODEX_HOME}/config.toml" \
+  "$FLEET_PY_BIN" "$pin" --config "${CODEX_HOME}/config.toml" \
       --codex-home "$CODEX_HOME" $extra >>"$LOG_FILE" 2>&1 \
       || log "route pin failed on ${CODEX_HOME}/config.toml"
   return 0

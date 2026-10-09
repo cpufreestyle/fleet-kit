@@ -243,7 +243,11 @@ def _pid_alive(pid):
 
 def launchd_info(label, port=None):
     """Service state for a label: launchd on macOS, schtasks on Windows,
-    pgrep on Linux. Kept under the old name so callers do not change."""
+    pgrep on Linux. Kept under the old name so callers do not change.
+
+    On Windows a missing per-bridge task is not yet a verdict: the bridges may
+    be owned by the shared bridges launcher, whose pid files tell the truth.
+    """
     if fleet_platform.is_macos():
         code, out = run(["launchctl", "print", "gui/%d/%s" % (os.getuid(), label)], timeout=6.0)
         if code != 0:
@@ -274,9 +278,13 @@ def launchd_info(label, port=None):
             return {"loaded": False, "state": "not loaded", "pid": None, "last_exit": None}
         out = "state = %s" % state + ("\npid = %d" % pid if pid else "")
     else:
-        out = ""
         state = fleet_platform.service_status(label)
         if state == "missing":
+            if name and log_dir and fleet_platform.is_windows():
+                pid = windows_pidfile_alive(log_dir, name)
+                if pid:
+                    return {"loaded": True, "state": "logon task", "pid": pid,
+                            "last_exit": None}
             return {"loaded": False, "state": "not loaded", "pid": None, "last_exit": None}
         out = "state = %s" % state
 
@@ -293,6 +301,24 @@ def launchd_info(label, port=None):
     if match:
         last_exit = int(match.group(1))
     return {"loaded": True, "state": state or "unknown", "pid": pid, "last_exit": last_exit}
+
+
+def windows_pidfile_alive(log_dir, name):
+    """The bridges launcher records every pid it starts in <log_dir>/<name>.pid.
+
+    A live pid is the truth about "is this bridge service-managed" on Windows,
+    where no per-bridge launchd agent exists and the bridges may be owned by
+    the shared logon task instead of one task each. Returns the pid or None.
+    """
+    try:
+        with open(os.path.join(log_dir, name + ".pid"), encoding="utf-8") as fh:
+            pid = int(fh.read().strip().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    code, out = run(["tasklist", "/FI", "PID eq %d" % pid, "/NH"], timeout=8.0)
+    if code != 0 or not out or str(pid) not in out:
+        return None
+    return pid
 
 
 def listen_info(port):
@@ -540,7 +566,8 @@ def collect(cfg):
                 and cfg["env_found"]):
             warnings.append("%s: HTTP %d 且 key 未读取到 - 登录后执行 bash %s/bridges/finish.sh %s"
                             % (bridge["name"], bridge["probe"]["http"], cfg["home"], bridge["name"]))
-        if not fleet_platform.service_kind(bridge["label"]):
+        if not (fleet_platform.service_kind(bridge["label"])
+                or os.path.isfile(os.path.join(cfg["home"], "start-bridges.cmd"))):
             warnings.append("%s: 服务定义缺失 %s" % (bridge["name"], bridge["label"]))
 
     summary = {
@@ -548,7 +575,8 @@ def collect(cfg):
         # "not running" must not count as up: compare the whole state, not a substring.
         "agent_up": sum(1 for b in bridges
                         if b["agent"]["loaded"]
-                        and (b["agent"]["state"] or "").strip().lower() == "running"),
+                        and (b["agent"]["state"] or "").strip().lower()
+                        in ("running", "logon task")),
         "listening": sum(1 for b in bridges if b["listen"]["ok"]),
         "models": sum(b["probe"]["count"] for b in bridges),
         "probe_ok": sum(1 for b in bridges if b["probe"]["ok"]),
@@ -817,9 +845,11 @@ def _default_home():
     did not match where install.sh had actually put things.
 
     Evaluated per call, not at import: HOME is read when the question is asked,
-    so a process that changes HOME (tests, a wrapper) is honoured.
+    so a process that changes HOME (tests, a wrapper) is honoured. HOME wins
+    over expanduser explicitly: on Windows expanduser consults it only after
+    USERPROFILE, which would ignore exactly that override.
     """
-    home = os.path.expanduser("~")
+    home = os.environ.get("HOME") or os.path.expanduser("~")
     candidates = (
         os.path.join(home, "FleetKit", "runtime"),
         os.path.join(home, "fleet"),
@@ -864,10 +894,11 @@ def build_config(args):
                     or keys.get("LABEL_PREFIX") or "com.local")
     log_dir = (args.log_dir or os.environ.get("LOG_DIR")
                or keys.get("LOG_DIR") or "/tmp/fleet-logs")
-    if fleet_platform.is_windows() and log_dir.replace("\\", "/").startswith("/tmp"):
-        # fleet.env is written by the Git Bash installer, where /tmp is the
-        # user's temp dir; native Windows python resolves /tmp to <drive>:\tmp.
-        log_dir = os.path.join(tempfile.gettempdir(), log_dir[5:].lstrip("/\\"))
+    if fleet_platform.is_windows() and not re.match(r"^[A-Za-z]:", log_dir):
+        # The bridges launcher refuses POSIX-style log dirs on Windows and
+        # writes next to the fleet home instead; the pid files and the log
+        # tails the panel shows live there, so read the same place.
+        log_dir = os.path.join(home, "logs")
     launch_dir = (args.launch_dir or os.environ.get("FLEET_SERVICE_DIR")
                   or os.environ.get("FLEET_LAUNCH_DIR")
                   or keys.get("LAUNCH_DIR")

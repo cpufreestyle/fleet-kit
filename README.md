@@ -67,6 +67,48 @@ Codex 里模型以 `桥名/模型` 出现，例如 `workbuddy/hy4-preview`。
     bash "<R>/bridges/finish.sh" <name>         # 某座桥登录后收尾
     bash "<R>/uninstall.sh"                     # 卸载
 
+Windows 上桥不归 launchd 管，`install.sh` 不会自动拉起它们。桥全掉线时，opencodex
+（127.0.0.1:10100）仍然把 13 座桥当作 provider，于是每个 fleet 模型都报：
+
+    unexpected status 502 Bad Gateway: Provider unreachable: Unable to connect.
+    Is the computer able to access the url?, url: http://127.0.0.1:10100/v1/responses
+
+用 `tools/fleet-bridges.ps1` 启停（读 `fleet.env`，缺 key 的桥自动跳过）：
+
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" status
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" start
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" restart -Only trae
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" stop
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" install-task   # 登录时自动拉起
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\fleet-bridges.ps1" remove-task
+
+`install-task` 先试 `schtasks`；非管理员失败时回落到当前用户的「启动」目录快捷方式，
+所以未提权也能做到开机自启。
+
+上面的命令默认只用 **PowerShell 7**（`pwsh`）；机器上没有 pwsh 时会直接报错
+（不回落到 5.1），pwsh 不在 PATH 里时可用 `FLEET_POWERSHELL` 指定完整路径。
+
+## 默认模型与自动回退
+
+舰队上游十几个，任何一个当天挂掉（登录过期、额度、VPN、上游故障）都会让选中它的
+每一轮失败。`tools/default_model_guard.py` 负责守住默认模型：拿 `config.toml`
+里活配置的 `model` 键，去这条模型**自己的路由**上打一次真实聊天，已死且当前默认
+不是港湾（`stepfun/step-5-preview`）就把 `model` 改钉回港湾；港湾自己也死了就只
+报告、不改写。`opencodex/setup-providers.sh` 每次 pin 完默认模型后自动跑一遍，
+常态下无需手动执行。锚点由 `fleet.env` 的 `FLEET_DEFAULT_MODEL` 指定，机制细节见
+下文「默认模型出问题，跳回 step-5-preview」。
+
+Windows 上可用 `tools/default-model-guard.ps1` 手动检查或装成登录自启守护
+（守护是脚本自身的循环，间隔由 `-Interval` 控制，默认 120 秒）：
+
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" run      # 单次检查
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" status   # 概览 + dry-run
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" install  # 登录自启守护
+    pwsh -ExecutionPolicy Bypass -File "<R>\tools\default-model-guard.ps1" remove
+
+守护只改 `config.toml` 的 `model` 键，已经在跑的会话不受影响（Codex 读它是在
+启动时）。
+
 ## 两座 WorkBuddy 桥
 
 FleetKit 里有两座 WorkBuddy 桥，分别打国内版和海外版，端口固定：

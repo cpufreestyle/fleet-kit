@@ -43,7 +43,9 @@ $BRIDGES = @(
     @{ Name = 'antigravity';   Dir = 'antigravity';   Script = 'antigravity_bridge.py';       Offset = 10; Key = 'ANTIGRAVITY2CODEX_KEY'; PortArg = $false; Env = @('ANTIGRAVITY2CODEX_PORT=@PORT@', 'ANTIGRAVITY2CODEX_HOST=127.0.0.1') },
     @{ Name = 'qwen';          Dir = 'qwen';          Script = 'qwen_bridge.py';              Offset = 11; Key = 'QWEN2CODEX_KEY';        PortArg = $true;  Env = @('QWEN_CALL_TIMEOUT=300') },
     @{ Name = 'cline';         Dir = 'cline';         Script = 'cline_bridge.py';             Offset = 12; Key = 'CLINE2CODEX_KEY';       PortArg = $true;  Env = @('CLINE_CALL_TIMEOUT=300') },
-    @{ Name = 'zcode';         Dir = 'zcode';         Script = 'zcode_bridge.py';             Offset = 13; Key = 'ZCODE2CODEX_KEY';       PortArg = $true;  Env = @('ZCODE_CALL_TIMEOUT=300') }
+    @{ Name = 'zcode';         Dir = 'zcode';         Script = 'zcode_bridge.py';             Offset = 13; Key = 'ZCODE2CODEX_KEY';       PortArg = $true;  Env = @('ZCODE_CALL_TIMEOUT=300') },
+    @{ Name = 'kimi';          Dir = 'kimi';          Script = 'kimi_bridge.py';              Offset = 15; Key = 'KIMI2CODEX_KEY';        PortArg = $true;  Env = @('KIMI_CALL_TIMEOUT=300') },
+    @{ Name = 'minimax';       Dir = 'minimax';       Script = 'minimax_bridge.py';           Offset = 16; Key = 'MINIMAX2CODEX_KEY';     PortArg = $true;  Env = @('MINIMAX_CALL_TIMEOUT=300') }
 )
 
 function Resolve-FleetHome {
@@ -116,8 +118,8 @@ function Get-Specs {
         if (-not (Test-Path $scriptPath)) { continue }
         $keyValue = $EnvMap[$b.Key]
         if (-not $keyValue) { continue }
-        $args = @($scriptPath)
-        if ($b.PortArg) { $args += @('--host', '127.0.0.1', '--port', "$port") }
+        $scriptArgs = @($scriptPath)
+        if ($b.PortArg) { $scriptArgs += @('--host', '127.0.0.1', '--port', "$port") }
         $extra = @()
         foreach ($entry in $b.Env) {
             $v = $entry -replace '@PORT@', "$port" `
@@ -135,12 +137,37 @@ function Get-Specs {
             Port       = $port
             WorkDir    = Join-Path $FleetHome "bridges\$($b.Dir)"
             Python     = $Python
-            Args       = $args
+            Args       = $scriptArgs
             KeyEnv     = "$($b.Key)=$keyValue"
             ExtraEnv   = $extra
         }
     }
     return $specs
+}
+
+function Ensure-ClineHub {
+    # The cline bridge's upstream is the Cline CLI's local hub daemon
+    # (ws://127.0.0.1:25463, discovered via ~/.cline/data/locks/hub). When the
+    # daemon is down -- after a reboot, or because the app was closed -- every
+    # cline call dies with WinError 1225 and the bridge just logs
+    # "chat error: ConnectionRefusedError" forever. Ask the CLI to ensure it.
+    param($Specs)
+    if (-not ($Specs | Where-Object { $_.Name -eq 'cline' })) { return }
+    $clineCmd = Get-Command cline -ErrorAction SilentlyContinue
+    if (-not $clineCmd) {
+        $clineCmd = Get-Command (Join-Path $env:APPDATA 'npm\cline.cmd') -ErrorAction SilentlyContinue
+    }
+    if (-not $clineCmd) {
+        Write-Host "  [warn ] cline CLI not found; the cline bridge needs 'cline hub ensure'" -ForegroundColor Yellow
+        return
+    }
+    try {
+        & $clineCmd.Source hub ensure 2>$null | Out-Null
+        Write-Host "  [ensure] cline hub daemon"
+    }
+    catch {
+        Write-Host "  [warn ] 'cline hub ensure' failed: $_" -ForegroundColor Yellow
+    }
 }
 
 function Start-Bridge {
@@ -225,11 +252,16 @@ if ($Action -eq 'install-task' -or $Action -eq 'remove-task') {
     if (-not $scriptPath) { $scriptPath = Join-Path $fleetHome 'tools\fleet-bridges.ps1' }
     if ($Action -eq 'install-task') {
         $wrapper = Join-Path $fleetHome 'start-bridges.cmd'
+        # pwsh only: 5.1's parameter handling diverges from what these scripts
+        # are written and tested against.
         Set-Content -Path $wrapper -Encoding ASCII -Value @(
             '@echo off',
-            'set "PS=pwsh.exe"',
-            'where pwsh.exe >nul 2>nul || set "PS=powershell.exe"',
-            '"%PS%" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0tools\fleet-bridges.ps1" -Action start'
+            'where pwsh.exe >nul 2>nul',
+            'if errorlevel 1 (',
+            '  echo FleetKit requires PowerShell 7 ^(pwsh^); install it or set FLEET_POWERSHELL.',
+            '  exit /b 1',
+            ')',
+            '"pwsh.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0tools\fleet-bridges.ps1" -Action start'
         )
         & schtasks /Create /TN $TASK_NAME /TR "`"$wrapper`"" /SC ONLOGON /F | Out-Null
         if ($LASTEXITCODE -eq 0) {
@@ -244,7 +276,7 @@ if ($Action -eq 'install-task' -or $Action -eq 'remove-task') {
             $ws = New-Object -ComObject WScript.Shell
             $sc = $ws.CreateShortcut($link)
             $psExe = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
-            if (-not $psExe) { $psExe = 'powershell.exe' }
+            if (-not $psExe) { throw "PowerShell 7 (pwsh) not found; install it or set FLEET_POWERSHELL" }
             $sc.TargetPath = $psExe
             $sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" -Action start"
             $sc.WorkingDirectory = $fleetHome
@@ -254,8 +286,18 @@ if ($Action -eq 'install-task' -or $Action -eq 'remove-task') {
         }
     }
     else {
+        # install-task falls back to a per-user Startup shortcut when schtasks
+        # cannot elevate, so removal must cover both; otherwise an uninstall
+        # leaves the bridges auto-starting at logon.
+        $removed = @()
         & schtasks /Delete /TN $TASK_NAME /F | Out-Null
-        Write-Host "removed logon task '$TASK_NAME'"
+        if ($LASTEXITCODE -eq 0) { $removed += "logon task '$TASK_NAME'" }
+        $startup = [Environment]::GetFolderPath('Startup')
+        if (-not $startup) { $startup = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup' }
+        $link = Join-Path $startup 'FleetKit Bridges.lnk'
+        if (Test-Path $link) { Remove-Item $link -Force; $removed += "Startup shortcut $link" }
+        if ($removed.Count -gt 0) { Write-Host ("removed " + ($removed -join ' and ')) }
+        else { Write-Host "nothing to remove (no '$TASK_NAME' task, no Startup shortcut)" }
     }
     exit 0
 }
@@ -266,12 +308,14 @@ if (-not $specs -or $specs.Count -eq 0) { throw "no bridges matched (fleet home:
 switch ($Action) {
     'start' {
         Write-Host "starting bridges (fleet home: $fleetHome, python: $python)"
+        Ensure-ClineHub -Specs $specs
         foreach ($s in $specs) { Start-Bridge -Spec $s -LogDir $logDir }
     }
     'stop' {
         foreach ($s in $specs) { Stop-Bridge -Spec $s -LogDir $logDir }
     }
     'restart' {
+        Ensure-ClineHub -Specs $specs
         foreach ($s in $specs) { Stop-Bridge -Spec $s -LogDir $logDir; Start-Bridge -Spec $s -LogDir $logDir }
     }
     'status' {
